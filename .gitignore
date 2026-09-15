@@ -1,0 +1,47 @@
+# ---- Node / TypeScript ----
+node_modules/
+dist/
+build/
+.turbo/
+.vite/
+coverage/
+*.tsbuildinfo
+apps/frontend/dist/
+pnpm-debug.log*
+npm-debug.log*
+yarn-error.log*
+
+# ---- Python ----
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# ---- Secrets / env (keep .env.example) ----
+.env
+.env.*
+!.env.example
+
+# ---- Local runtime / data ----
+localstack-data/
+content-store/
+*.log
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# ---- Office lock files ----
+~$*

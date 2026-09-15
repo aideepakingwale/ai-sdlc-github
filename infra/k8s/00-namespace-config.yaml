@@ -1,0 +1,60 @@
+# AI-SDLC Platform — Kubernetes base (namespace + configuration).
+# Cloud data plane: use MANAGED services and point env at them —
+#   Postgres -> Aurora/Cloud SQL, Redis -> ElastiCache/Memorystore,
+#   DynamoDB -> real DynamoDB (drop DYNAMO_ENDPOINT), S3 -> real S3,
+#   Keycloak -> managed IdP or a dedicated Keycloak deployment/operator.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ai-sdlc
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sdlc-config
+  namespace: ai-sdlc
+data:
+  NODE_ENV: 'production'
+  LOG_LEVEL: 'info'
+  AUTH_MODE: 'keycloak'
+  KEYCLOAK_REALM: 'sdlc'
+  KEYCLOAK_CLIENT_ID: 'sdlc-orchestrator'
+  KEYCLOAK_INTERNAL_URL: 'http://keycloak.ai-sdlc.svc:8080'
+  KEYCLOAK_PUBLIC_URL: 'https://auth.example.com'
+  APP_PUBLIC_URL: 'https://sdlc.example.com'
+  AI_CLIENT_URL: 'http://ai-client.ai-sdlc.svc:8081'
+  TOOLS_MCP_URL: 'http://tool-connector.ai-sdlc.svc:8082/mcp'
+  AWS_REGION: 'eu-west-2'
+  AUDIT_BUCKET: 'sdlc-audit-logs'
+  TOOLS_MODE: 'auto'
+  BUILD_LOOP_MAX_ITERATIONS: '5'
+  # AWS Bedrock is the AI service platform in the cloud deployment:
+  # Claude runs the frontier tier; key-based providers are optional fallbacks.
+  # Auth = pod identity (EKS IRSA / ECS task role) with bedrock:InvokeModel —
+  # no API key. Bedrock model IDs carry the `anthropic.` prefix.
+  BEDROCK_MODEL_ID: 'anthropic.claude-opus-4-8'
+  BEDROCK_REGION: 'eu-west-2'
+---
+# TEMPLATE ONLY — in production create this from AWS Secrets Manager /
+# External Secrets Operator, never commit real values.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sdlc-secrets
+  namespace: ai-sdlc
+type: Opaque
+stringData:
+  DATABASE_URL: 'postgresql://USER:PASS@aurora-endpoint:5432/sdlc'
+  REDIS_URL: 'redis://elasticache-endpoint:6379'
+  JWT_SECRET: 'REPLACE-openssl-rand-hex-32'
+  KEYCLOAK_CLIENT_SECRET: 'REPLACE'
+  GITHUB_WEBHOOK_SECRET: 'REPLACE'
+  GROQ_API_KEY: ''
+  GEMINI_API_KEY: ''
+  XAI_API_KEY: ''
+  JIRA_BASE_URL: ''
+  JIRA_EMAIL: ''
+  JIRA_API_TOKEN: ''
+  CONFLUENCE_BASE_URL: ''
+  GITHUB_TOKEN: ''
+  GITHUB_REPO: ''

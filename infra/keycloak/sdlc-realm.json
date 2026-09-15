@@ -1,0 +1,127 @@
+{
+  "realm": "sdlc",
+  "enabled": true,
+  "displayName": "AI-SDLC Platform",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "bruteForceProtected": true,
+  "failureFactor": 5,
+  "accessTokenLifespan": 900,
+  "roles": {
+    "realm": [
+      { "name": "SUPER_ADMIN", "description": "Platform management: all projects, users, break-glass gate override (audited)" },
+      { "name": "PROJECT_MANAGER", "description": "Creates and manages projects and team membership; never approves phase gates" },
+      { "name": "PO", "description": "Phase 01 Product Owner — Epics & User Stories gate" },
+      { "name": "SA", "description": "Phase 02 Solution Architect — High-Level Design gate" },
+      { "name": "TA", "description": "Phase 03 Technical Architect — Low-Level Design gate" },
+      { "name": "QA", "description": "Phase 04 QA Lead — Test Strategy & Cases gate" },
+      { "name": "DEVOPS", "description": "Phase 05 DevOps Engineer — CI/CD Pipeline gate" },
+      { "name": "DEV", "description": "Phase 06 Developer — App Code & Build Loop gate" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "sdlc-orchestrator",
+      "name": "AI-SDLC Orchestrator (BFF confidential client)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "sdlc-dev-client-secret-change-in-prod",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:3000/api/auth/callback",
+        "http://localhost:8080/api/auth/callback",
+        "http://localhost:5173/api/auth/callback"
+      ],
+      "webOrigins": ["http://localhost:3000", "http://localhost:5173"],
+      "attributes": { "post.logout.redirect.uris": "http://localhost:3000/*" }
+    }
+  ],
+  "users": [
+    {
+      "username": "superadmin@sdlc.local",
+      "email": "superadmin@sdlc.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Platform",
+      "lastName": "SuperAdmin",
+      "credentials": [{ "type": "password", "value": "Password123!", "temporary": false }],
+      "realmRoles": ["SUPER_ADMIN"]
+    },
+    {
+      "username": "pm@sdlc.local",
+      "email": "pm@sdlc.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Parker",
+      "lastName": "Manager",
+      "credentials": [{ "type": "password", "value": "Password123!", "temporary": false }],
+      "realmRoles": ["PROJECT_MANAGER"]
+    },
+    {
+      "username": "po@sdlc.local",
+      "email": "po@sdlc.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Priya",
+      "lastName": "Owner",
+      "credentials": [{ "type": "password", "value": "Password123!", "temporary": false }],
+      "realmRoles": ["PO"]
+    },
+    {
+      "username": "sa@sdlc.local",
+      "email": "sa@sdlc.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Sol",
+      "lastName": "Architect",
+      "credentials": [{ "type": "password", "value": "Password123!", "temporary": false }],
+      "realmRoles": ["SA"]
+    },
+    {
+      "username": "ta@sdlc.local",
+      "email": "ta@sdlc.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Tech",
+      "lastName": "Architect",
+      "credentials": [{ "type": "password", "value": "Password123!", "temporary": false }],
+      "realmRoles": ["TA"]
+    },
+    {
+      "username": "qa@sdlc.local",
+      "email": "qa@sdlc.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Quinn",
+      "lastName": "Assurance",
+      "credentials": [{ "type": "password", "value": "Password123!", "temporary": false }],
+      "realmRoles": ["QA"]
+    },
+    {
+      "username": "devops@sdlc.local",
+      "email": "devops@sdlc.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Devi",
+      "lastName": "Ops",
+      "credentials": [{ "type": "password", "value": "Password123!", "temporary": false }],
+      "realmRoles": ["DEVOPS"]
+    },
+    {
+      "username": "dev@sdlc.local",
+      "email": "dev@sdlc.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Dev",
+      "lastName": "Eloper",
+      "credentials": [{ "type": "password", "value": "Password123!", "temporary": false }],
+      "realmRoles": ["DEV"]
+    }
+  ]
+}

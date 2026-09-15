@@ -1,0 +1,20 @@
+FROM python:3.12-slim AS runtime
+ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+RUN groupadd -g 10001 sdlc && useradd -u 10001 -g sdlc -m sdlc
+# graphviz: the `dot` binary the mingrammer `diagrams` renderer shells out to
+# for professional architecture SVGs.
+RUN apt-get update && apt-get install -y --no-install-recommends graphviz tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY services/orchestrator-py/pyproject.toml ./
+COPY services/orchestrator-py/app ./app
+COPY services/orchestrator-py/skills ./skills
+COPY services/orchestrator-py/prompts ./prompts
+RUN pip install .
+COPY infra/migrations ./migrations
+# Pre-create the content-store mountpoint owned by sdlc so a fresh named volume
+# (or K8s PVC) inherits writable ownership for the non-root runtime user.
+RUN mkdir -p /data/content-store && chown -R sdlc:sdlc /data
+USER sdlc
+EXPOSE 8080
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log"]

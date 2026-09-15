@@ -1,0 +1,12 @@
+**/node_modules
+**/dist
+**/.turbo
+**/coverage
+.git
+.env
+*.log
+localstack-data
+apps/frontend/dist
+**/.venv
+**/__pycache__
+**/.pytest_cache

@@ -1,0 +1,310 @@
+name: ai-sdlc
+
+networks:
+  sdlc-net:
+
+volumes:
+  pgdata:
+  redisdata:
+  dynamodata:
+  contentstore:
+  ollamadata:
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sdlc}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sdlc_local_pw}
+      POSTGRES_DB: ${POSTGRES_DB:-sdlc}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [sdlc-net]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [sdlc-net]
+
+  dynamodb:
+    image: amazon/dynamodb-local:2.5.3
+    restart: unless-stopped
+    # root: the named volume is root-owned; the image's default user cannot
+    # write to it, which crash-loops SQLite and hangs every API call.
+    user: root
+    command: ['-jar', 'DynamoDBLocal.jar', '-sharedDb', '-dbPath', '/home/dynamodblocal/data']
+    volumes:
+      - dynamodata:/home/dynamodblocal/data
+    networks: [sdlc-net]
+
+  localstack:
+    image: localstack/localstack:3.8
+    restart: unless-stopped
+    environment:
+      SERVICES: s3
+      EAGER_SERVICE_LOADING: '1'
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -sf http://localhost:4566/_localstack/health | grep -q ''"s3"'' ']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [sdlc-net]
+
+  # One-shot: create the keycloak database if absent (idempotent; works with
+  # pre-existing pgdata volumes where /docker-entrypoint-initdb.d never re-runs).
+  keycloak-db-init:
+    image: postgres:16-alpine
+    restart: 'no'
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-sdlc_local_pw}
+      PGUSER: ${POSTGRES_USER:-sdlc}
+    entrypoint:
+      - sh
+      - -c
+      - |
+        until pg_isready -h postgres -U "$$PGUSER"; do sleep 1; done
+        psql -h postgres -U "$$PGUSER" -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='keycloak'" | grep -q 1 \
+          || psql -h postgres -U "$$PGUSER" -d postgres -c "CREATE DATABASE keycloak"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [sdlc-net]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    restart: unless-stopped
+    command: ['start-dev', '--import-realm']
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin_local_pw}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: ${POSTGRES_USER:-sdlc}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-sdlc_local_pw}
+      KC_HTTP_ENABLED: 'true'
+      KC_HOSTNAME: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8180}
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: 'true'
+      KC_HEALTH_ENABLED: 'true'
+    volumes:
+      - ./infra/keycloak:/opt/keycloak/data/import:ro
+    ports:
+      - '8180:8080'
+    healthcheck:
+      # ubi-micro image has bash but no curl: raw HTTP over /dev/tcp against the realm endpoint.
+      test:
+        - CMD-SHELL
+        - |
+          exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /realms/sdlc HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 && head -1 <&3 | grep -q '200'
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+    depends_on:
+      keycloak-db-init:
+        condition: service_completed_successfully
+    networks: [sdlc-net]
+
+  # Official Atlassian MCP server (Jira + Confluence) — opt-in.
+  # Start with:  docker compose --profile mcp up -d mcp-atlassian
+  # Then set ATLASSIAN_MCP_ENABLED=true in .env and restart the orchestrator.
+  mcp-atlassian:
+    image: ghcr.io/sooperset/mcp-atlassian:latest
+    profiles: ['mcp']
+    command: ['--transport', 'streamable-http', '--host', '0.0.0.0', '--port', '9000']
+    environment:
+      JIRA_URL: ${JIRA_BASE_URL:-}
+      JIRA_USERNAME: ${JIRA_EMAIL:-}
+      JIRA_API_TOKEN: ${JIRA_API_TOKEN:-}
+      CONFLUENCE_URL: ${CONFLUENCE_BASE_URL:-}
+      CONFLUENCE_USERNAME: ${JIRA_EMAIL:-}
+      CONFLUENCE_API_TOKEN: ${JIRA_API_TOKEN:-}
+    ports: ['9000:9000']
+    networks: [sdlc-net]
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.orchestrator-py
+    command: ['python', '-m', 'app.scripts', 'migrate']
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://sdlc:sdlc_local_pw@postgres:5432/sdlc}
+      DYNAMO_ENDPOINT: ${DYNAMO_ENDPOINT:-http://dynamodb:8000}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-change-me-0000000000000000000000000000000000000000000000}
+      AI_CLIENT_URL: ${AI_CLIENT_URL:-http://ai-client:8081}
+      TOOLS_MCP_URL: ${TOOLS_MCP_URL:-http://tool-connector:8082/mcp}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [sdlc-net]
+    restart: 'no'
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.orchestrator-py
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://sdlc:sdlc_local_pw@postgres:5432/sdlc}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      DYNAMO_ENDPOINT: ${DYNAMO_ENDPOINT:-http://dynamodb:8000}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://localstack:4566}
+      AI_CLIENT_URL: ${AI_CLIENT_URL:-http://ai-client:8081}
+      TOOLS_MCP_URL: ${TOOLS_MCP_URL:-http://tool-connector:8082/mcp}
+      AUTH_MODE: ${AUTH_MODE:-keycloak}
+      KEYCLOAK_INTERNAL_URL: ${KEYCLOAK_INTERNAL_URL:-http://keycloak:8080}
+      KEYCLOAK_PUBLIC_URL: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8180}
+      CONTENT_STORE_MODE: ${CONTENT_STORE_MODE:-filesystem}
+      CONTENT_STORE_PATH: /data
+      # Live-tune prompts + skills without a rebuild: the dirs below are
+      # bind-mounted from the host, so editing a template and restarting the
+      # container applies it. Set PROMPTS_RELOAD=true to reload on every render.
+      PROMPTS_DIR: /app/prompts
+      PROMPTS_RELOAD: ${PROMPTS_RELOAD:-false}
+      SKILLS_DIR: /app/skills
+    volumes:
+      - contentstore:/data/content-store
+      # Prompt/skill packs mounted from the repo so prompt engineers edit the
+      # markdown on the host; comment out to use the image's baked-in copies.
+      - ./services/orchestrator-py/prompts:/app/prompts
+      - ./services/orchestrator-py/skills:/app/skills
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      dynamodb:
+        condition: service_started
+      ai-client:
+        condition: service_healthy
+      tool-connector:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/healthz', timeout=3).status==200 else 1)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    ports:
+      - '8080:8080'
+    networks: [sdlc-net]
+
+  # Optional local lightweight model for the `local` tier.
+  # Enable with: docker compose --profile local-llm up -d
+  # then set LOCAL_LLM_BASE_URL=http://local-llm:11434/v1 in .env.
+  local-llm:
+    image: ollama/ollama:0.5.4
+    profiles: ['local-llm']
+    restart: unless-stopped
+    volumes:
+      - ollamadata:/root/.ollama
+    networks: [sdlc-net]
+
+  ai-client:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.ai-client
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://localhost:8081/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks: [sdlc-net]
+
+  tool-connector:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.tools
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      AI_CLIENT_URL: ${AI_CLIENT_URL:-http://ai-client:8081}
+    depends_on:
+      redis:
+        condition: service_healthy
+      ai-client:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://localhost:8082/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks: [sdlc-net]
+
+  # PlantUML render server: renders.puml/PLANTUML artifacts to SVG,
+  # proxied same-origin via nginx at /plantuml so it works offline and within
+  # the strict CSP. Optional — the viewer degrades to source if it is absent.
+  plantuml:
+    image: plantuml/plantuml-server:jetty
+    restart: unless-stopped
+    networks: [sdlc-net]
+
+  # Self-hosted draw.io / diagrams.net webapp: the frontend embeds it
+  # same-origin at /drawio for the WYSIWYG diagram editor — no external egress,
+  # keeping the offline/air-gapped posture. Apache-2.0.
+  drawio:
+    image: jgraph/drawio:latest
+    restart: unless-stopped
+    environment:
+      # Keep it self-contained: no external plugins/integrations fetched.
+      DRAWIO_SELF_CONTAINED: "1"
+    networks: [sdlc-net]
+
+  frontend:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.frontend
+    restart: unless-stopped
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+    ports:
+      - '3000:80'
+    networks: [sdlc-net]

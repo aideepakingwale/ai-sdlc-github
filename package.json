@@ -1,0 +1,32 @@
+{
+  "name": "ai-sdlc-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Enterprise AI-Powered SDLC Automation Platform — agentic six-phase pipeline with Human-in-the-Loop gates",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@9.15.9",
+  "scripts": {
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "dev": "turbo run dev --parallel",
+    "db:migrate": "docker compose run --rm migrate",
+    "seed": "docker compose exec orchestrator python -m app.scripts seed",
+    "py:test": "cd services/orchestrator-py && .venv/Scripts/python -m pytest -q",
+    "format": "prettier --write \"**/*.{ts,tsx,json,md,yml,yaml,css}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,json,yml,yaml,css}\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "eslint": "^9.18.0",
+    "prettier": "^3.4.2",
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.19.1",
+    "vitest": "^2.1.8"
+  }
+}

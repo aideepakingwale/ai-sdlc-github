@@ -1,0 +1,174 @@
+# AI-SDLC Platform — application deployments + services.
+# Replace image references with your registry (pushed by CI).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator
+  namespace: ai-sdlc
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: orchestrator } }
+  template:
+    metadata:
+      labels: { app: orchestrator }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+      initContainers:
+        - name: migrate
+          image: REGISTRY/sdlc/orchestrator:latest
+          command: ['python', '-m', 'app.scripts', 'migrate']
+          envFrom:
+            - configMapRef: { name: sdlc-config }
+            - secretRef: { name: sdlc-secrets }
+      containers:
+        - name: orchestrator
+          image: REGISTRY/sdlc/orchestrator:latest
+          ports: [{ containerPort: 8080 }]
+          envFrom:
+            - configMapRef: { name: sdlc-config }
+            - secretRef: { name: sdlc-secrets }
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 15
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { cpu: '1', memory: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: orchestrator, namespace: ai-sdlc }
+spec:
+  selector: { app: orchestrator }
+  ports: [{ port: 8080, targetPort: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-client
+  namespace: ai-sdlc
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: ai-client } }
+  template:
+    metadata:
+      labels: { app: ai-client }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+      # Bedrock auth: annotate this service account with the IAM role
+      # that allows bedrock:InvokeModel / InvokeModelWithResponseStream on the
+      # configured model (EKS IRSA), or use the task role on ECS. No API key.
+      serviceAccountName: ai-client
+      containers:
+        - name: ai-client
+          image: REGISTRY/sdlc/ai-client:latest
+          ports: [{ containerPort: 8081 }]
+          envFrom:
+            - configMapRef: { name: sdlc-config }
+            - secretRef: { name: sdlc-secrets }
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8081 }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: ai-client, namespace: ai-sdlc }
+spec:
+  selector: { app: ai-client }
+  ports: [{ port: 8081, targetPort: 8081 }]
+---
+# Bind to a Bedrock-scoped IAM role via IRSA, e.g.:
+#   eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/sdlc-ai-client-bedrock
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ai-client
+  namespace: ai-sdlc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tool-connector
+  namespace: ai-sdlc
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: tool-connector } }
+  template:
+    metadata:
+      labels: { app: tool-connector }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+      containers:
+        - name: tool-connector
+          image: REGISTRY/sdlc/tools:latest
+          ports: [{ containerPort: 8082 }]
+          envFrom:
+            - configMapRef: { name: sdlc-config }
+            - secretRef: { name: sdlc-secrets }
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8082 }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: tool-connector, namespace: ai-sdlc }
+spec:
+  selector: { app: tool-connector }
+  ports: [{ port: 8082, targetPort: 8082 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: ai-sdlc
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: frontend } }
+  template:
+    metadata:
+      labels: { app: frontend }
+    spec:
+      containers:
+        - name: frontend
+          image: REGISTRY/sdlc/frontend:latest
+          ports: [{ containerPort: 80 }]
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 200m, memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: frontend, namespace: ai-sdlc }
+spec:
+  selector: { app: frontend }
+  ports: [{ port: 80, targetPort: 80 }]
+---
+# TLS terminates here via cert-manager (or at the cloud load balancer).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sdlc
+  namespace: ai-sdlc
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  tls:
+    - hosts: [sdlc.example.com]
+      secretName: sdlc-tls
+  rules:
+    - host: sdlc.example.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend: { service: { name: orchestrator, port: { number: 8080 } } }
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: frontend, port: { number: 80 } } }
