@@ -162,15 +162,10 @@ class FlowService:
         if not current or current["status"] == "NOT_STARTED":
             raise SdlcError("GATE_CONFLICT", f"Stage {phase} has not run yet — nothing to retrigger")
 
-        # Purge this stage's artifacts from the content-store + DB, and rewind
-        # the project to this phase so the pipeline regenerates it.
-        deleted = await self._db.delete_phase_artefacts(project_id, phase)
-        for row in deleted:
-            if row["storage_key"]:
-                try:
-                    await self._content.put(row["storage_key"], "")  # tombstone; overwrite body
-                except Exception:  # noqa: BLE001 — purge is best-effort
-                    pass
+        # Version, don't destroy: supersede this stage's current artifacts (kept
+        # as history, bodies retained), then rewind so the pipeline regenerates —
+        # the new set becomes the latest versions.
+        await self._db.supersede_phase_artefacts(project_id, phase)
         await self._db.set_project_phase(project_id, phase, "ACTIVE")
         # rewind to NOT_STARTED and route through the Plan Review gate — the
         # writer reviews (and may edit) the plan, then explicitly triggers. No

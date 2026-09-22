@@ -105,16 +105,12 @@ async def lifespan(app: FastAPI):
 
     async def regenerate(project_id: str, phase: int, reviewer: UserPublic) -> None:
         log.info("amend regeneration started project=%s phase=%s by=%s", project_id, phase, reviewer.email)
-        # Replace, don't duplicate: purge the phase's prior artifacts so a
-        # revision produces a clean set (e.g. renamed Jira keys) rather than
-        # leaving the superseded ones alongside the new ones.
-        deleted = await db.delete_phase_artefacts(project_id, phase)
-        for row in deleted:
-            if row.get("storage_key"):
-                try:
-                    await content.put(row["storage_key"], "")  # tombstone the body
-                except Exception:  # noqa: BLE001 — purge is best-effort
-                    pass
+        # Version, don't destroy: supersede the phase's current artifacts (kept as
+        # history, bodies retained), then regenerate — the new set becomes the
+        # latest versions, with prior generations still viewable.
+        superseded = await db.supersede_phase_artefacts(project_id, phase)
+        if superseded:
+            log.info("superseded %s prior artifact(s) as history before regeneration", superseded)
         await chat.handle(
             user=reviewer, project_id=project_id,
             message="Regenerate this phase's artifacts, fully addressing the gate reviewer's feedback.",

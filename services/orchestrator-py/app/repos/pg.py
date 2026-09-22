@@ -236,23 +236,62 @@ class Database:
     async def insert_artefact(
         self, *, project_id: str, phase: int, type_: str, title: str, content: str, url: str | None,
         storage_key: str | None = None, storage_mode: str | None = None, artefact_id: str | None = None,
+        lineage_id: str | None = None, version: int = 1,
     ) -> str:
         """When storage_key is set, the body lives in the content-store tier
- and only a short pointer/preview is kept in the `content` column."""
+ and only a short pointer/preview is kept in the `content` column.
+        Each row is a version in its lineage; the newest is is_latest=true."""
         assert self.pool
         artefact_id = artefact_id or new_id()
+        lineage_id = lineage_id or artefact_id
         db_content = content if storage_key is None else content[:2000]
         await self.pool.execute(
-            "INSERT INTO artefacts (id, project_id, phase, type, title, content, url, storage_key, storage_mode) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            "INSERT INTO artefacts (id, project_id, phase, type, title, content, url, storage_key, storage_mode, "
+            " lineage_id, version, is_latest) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, true)",
             artefact_id, project_id, phase, type_, title, db_content, url, storage_key, storage_mode,
+            lineage_id, version,
         )
         return artefact_id
+
+    async def latest_artefact_version(
+        self, project_id: str, phase: int, type_: str, title: str,
+    ) -> asyncpg.Record | None:
+        """Most recent version of a logical artifact (matched by phase/type/title)
+        across all versions — used to compute the next version + lineage when a
+        stage regenerates."""
+        assert self.pool
+        return await self.pool.fetchrow(
+            "SELECT lineage_id, version FROM artefacts "
+            "WHERE project_id=$1 AND phase=$2 AND type=$3 AND title=$4 ORDER BY version DESC LIMIT 1",
+            project_id, phase, type_, title,
+        )
+
+    async def list_artefact_versions(self, project_id: str, lineage_id: str) -> list[asyncpg.Record]:
+        """All versions of one logical artifact, newest first (version history)."""
+        assert self.pool
+        return await self.pool.fetch(
+            "SELECT id, version, is_latest, created_at, title, type FROM artefacts "
+            "WHERE project_id=$1 AND lineage_id=$2 ORDER BY version DESC",
+            project_id, lineage_id,
+        )
+
+    async def supersede_phase_artefacts(self, project_id: str, phase: int) -> int:
+        """Mark a stage's current artifacts as superseded (retained as history) on
+        amend/retrigger — the versioning replacement for delete_phase_artefacts.
+        Bodies stay in the content-store so old versions remain viewable."""
+        assert self.pool
+        result = await self.pool.execute(
+            "UPDATE artefacts SET is_latest=false, superseded_at=now() "
+            "WHERE project_id=$1 AND phase=$2 AND is_latest=true",
+            project_id, phase,
+        )
+        return int(result.rsplit(" ", 1)[-1]) if result else 0
 
     async def list_artefacts(self, project_id: str) -> list[asyncpg.Record]:
         assert self.pool
         return await self.pool.fetch(
-            "SELECT * FROM artefacts WHERE project_id=$1 ORDER BY created_at DESC LIMIT 500", project_id
+            "SELECT * FROM artefacts WHERE project_id=$1 AND is_latest ORDER BY created_at DESC LIMIT 500", project_id
         )
 
     async def list_phase_artefacts(self, project_id: str, phase: int) -> list[asyncpg.Record]:

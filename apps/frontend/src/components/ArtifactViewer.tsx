@@ -81,10 +81,20 @@ export default function ArtifactViewer({
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
+  // Version history: amend/retrigger keep prior generations as versions.
+  const [viewId, setViewId] = useState(artefactId);
+  useEffect(() => setViewId(artefactId), [artefactId]);
   const detail = useQuery({
-    queryKey: ['artefact', projectId, artefactId],
-    queryFn: () => api.get<ArtefactDetail>(`/api/projects/${projectId}/artefacts/${artefactId}`),
+    queryKey: ['artefact', projectId, viewId],
+    queryFn: () => api.get<ArtefactDetail>(`/api/projects/${projectId}/artefacts/${viewId}`),
   });
+  const versions = useQuery({
+    queryKey: ['artefact-versions', projectId, artefactId],
+    queryFn: () => api.get<{ versions: { id: string; version: number; isLatest: boolean; createdAt: string }[] }>(
+      `/api/projects/${projectId}/artefacts/${artefactId}/versions`),
+  });
+  const versionList = versions.data?.versions ?? [];
+  const viewingLatest = versionList.find((v) => v.id === viewId)?.isLatest !== false;
 
   type SaveResult = { ok: boolean; version?: number; masked?: string[] };
 
@@ -100,7 +110,8 @@ export default function ArtifactViewer({
         + (r.masked && r.masked.length ? ` — ${r.masked.length} secret/PII value(s) were masked` : ''),
       );
       if (closeEditor) setEditing(false);
-      await qc.invalidateQueries({ queryKey: ['artefact', projectId, artefactId] });
+      await qc.invalidateQueries({ queryKey: ['artefact', projectId, viewId] });
+      void qc.invalidateQueries({ queryKey: ['artefact-versions', projectId, artefactId] });
       void qc.invalidateQueries({ queryKey: ['artefacts', projectId] });
     } catch (err) {
       setSaveMsg(err instanceof Error ? err.message : `${label} failed`);
@@ -132,7 +143,8 @@ export default function ArtifactViewer({
             ? (r.message ?? 'The diagram already parses; nothing to fix.')
             : `✓ ${mode === 'regenerate' ? 'Regenerated' : 'Fixed'} (v${r.version}${r.via === 'llm' ? ' · AI' : ''})`,
         );
-        await qc.invalidateQueries({ queryKey: ['artefact', projectId, artefactId] });
+        await qc.invalidateQueries({ queryKey: ['artefact', projectId, viewId] });
+        void qc.invalidateQueries({ queryKey: ['artefact-versions', projectId, artefactId] });
         void qc.invalidateQueries({ queryKey: ['artefacts', projectId] });
       } else {
         setRepairMsg(r.message ?? r.issues?.join('; ') ?? 'Could not repair the diagram.');
@@ -202,7 +214,21 @@ export default function ArtifactViewer({
                   </button>
                 </div>
               )}
-              {a.canEdit && !editing && (
+              {versionList.length > 1 && (
+                <select
+                  value={viewId}
+                  onChange={(e) => { setViewId(e.target.value); setEditing(false); }}
+                  className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-600 focus:border-brand-500 focus:outline-none"
+                  title="View a previous version of this artifact (kept on amend/re-run)"
+                >
+                  {versionList.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      v{v.version}{v.isLatest ? ' · latest' : ''} · {new Date(v.createdAt).toLocaleDateString()}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {a.canEdit && !editing && viewingLatest && (
                 <>
                   <button
                     onClick={() => { setDraft(a.content); setEditing(true); setSaveMsg(''); }}
@@ -251,6 +277,11 @@ export default function ArtifactViewer({
             }`}
           >
             {repairMsg}
+          </div>
+        )}
+        {!viewingLatest && (
+          <div className="border-b border-amber-200 bg-amber-50 px-5 py-1.5 text-xs text-amber-800">
+            Viewing a previous version (superseded) — read-only. Select the latest version to edit.
           </div>
         )}
         {saveMsg && (

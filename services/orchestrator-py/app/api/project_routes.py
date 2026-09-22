@@ -583,6 +583,27 @@ async def artefact_detail(
     }
 
 
+@router.get("/api/projects/{project_id}/artefacts/{artefact_id}/versions")
+async def artefact_versions(
+    project_id: str, artefact_id: str,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Version history of an artifact's lineage, newest first. Amend/retrigger
+    supersede prior generations instead of deleting them; each entry is an
+    artefact id whose content loads via the artefact detail endpoint."""
+    await container.authz.assert_project_access(project_id, user)
+    row = await container.db.get_artefact(artefact_id)
+    if not row or row["project_id"] != project_id:
+        raise SdlcError("NOT_FOUND", "Artefact not found")
+    lineage = row["lineage_id"] or row["id"]
+    versions = await container.db.list_artefact_versions(project_id, lineage)
+    return {"versions": [
+        {"id": v["id"], "version": v["version"], "isLatest": v["is_latest"],
+         "title": v["title"], "type": v["type"], "createdAt": v["created_at"].isoformat()}
+        for v in versions
+    ]}
+
+
 async def _save_artefact_edit(
     container: Container, row, project_id: str, new_content: str, user: UserPublic, *, via: str,
 ) -> dict:

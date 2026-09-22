@@ -165,10 +165,17 @@ async def _save_artifact(
     # NOT surfaced as a clickable link until then.
     pending = bool(url and url.startswith(PENDING_URL_PREFIX))
     ref_url = None if pending else url
+    # Versioning: link this generation to the prior version of the same logical
+    # artifact (phase/type/title). On amend/retrigger the previous rows are kept
+    # as superseded history; this one becomes the latest at version+1.
+    prev = await deps.db.latest_artefact_version(state.project_id, state.current_phase, type_, title)
+    lineage_id = prev["lineage_id"] if prev else artefact_id
+    version = (prev["version"] + 1) if prev else 1
     await deps.db.insert_artefact(
         project_id=state.project_id, phase=state.current_phase,
         type_=type_, title=title, content=content, url=url,
         storage_key=key, storage_mode=deps.content.mode, artefact_id=artefact_id,
+        lineage_id=lineage_id, version=version,
     )
     artifact = ContextArtifact(
         phase=state.current_phase, type=type_, title=title, summary=summary,
