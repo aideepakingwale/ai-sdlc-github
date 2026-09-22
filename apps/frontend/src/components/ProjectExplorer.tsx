@@ -70,7 +70,7 @@ function ExplorerCard({ project, onOpen }: { project: Project; onOpen: (id: stri
         </span>
       </div>
       <div className="mt-0.5 text-[11px] text-slate-400">
-        Phase {project.currentPhase}/6 · {project.techStack ?? ''}
+        Phase {project.currentPhase} · {project.techStack ?? ''}
       </div>
       <div className="mt-2 flex gap-1">
         {(flow.data?.stages ?? []).map((s) => (

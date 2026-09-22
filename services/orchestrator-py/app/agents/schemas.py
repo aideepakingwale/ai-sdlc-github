@@ -363,3 +363,10 @@ PHASE_SCHEMAS: dict[int, type[BaseModel]] = {
     5: Phase5Output,
     6: Phase6Output,
 }
+
+
+class ClarificationOutput(BaseModel):
+    """Ambiguity pre-check: whether the stage's inputs are clear enough to
+    generate without assuming, and the concrete questions to ask if not."""
+    needs_clarification: bool = False
+    questions: list[str] = Field(default_factory=list)

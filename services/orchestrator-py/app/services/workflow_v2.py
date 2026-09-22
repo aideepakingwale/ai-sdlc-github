@@ -91,7 +91,11 @@ class WorkflowConfig(BaseModel):
 
 
 def default_workflow() -> WorkflowConfig:
-    """The classic linear 6-phase SDLC as a workflow config."""
+    """The complete end-to-end SDLC as a workflow config: the six built-in engine
+    phases (Requirements -> Solution Architecture -> Technical Design -> Test
+    Engineering -> CI/CD -> Implementation) PLUS Deployment and Maintenance as
+    dynamic (custom) stages, each mapped to the right persona. v1 keeps the
+    classic six; v2 extends it because only v2 supports custom stages."""
     stages: list[StageConfig] = []
     prev_key: str | None = None
     prev_outputs: list[str] = [ENTRY_INPUT]
@@ -104,6 +108,22 @@ def default_workflow() -> WorkflowConfig:
             dependsOn=[prev_key] if prev_key else [],
         ))
         prev_key, prev_outputs = key, list(p.produces)
+    # Dynamic stages that complete the SDLC beyond the built-in engines. Personas
+    # resolve their expert steering by name (DevOps Engineer, SRE); reviewer role
+    # is DEVOPS (no new roles introduced).
+    for key, name, persona, outputs in (
+        ("deployment", "Deployment & Release", "DevOps Engineer",
+         ["DEPLOYMENT_PLAN", "RELEASE_NOTES", "ROLLBACK_PLAN"]),
+        ("maintenance", "Maintenance & Monitoring", "SRE",
+         ["RUNBOOK", "MONITORING_PLAN", "SLO_REPORT"]),
+    ):
+        stages.append(StageConfig(
+            key=key, name=name, template=CUSTOM_TEMPLATE, persona=persona,
+            reviewerRole="DEVOPS", team=["DEVOPS"],
+            inputs=list(prev_outputs), outputs=outputs,
+            dependsOn=[prev_key] if prev_key else [],
+        ))
+        prev_key, prev_outputs = key, outputs
     return WorkflowConfig(stages=stages)
 
 

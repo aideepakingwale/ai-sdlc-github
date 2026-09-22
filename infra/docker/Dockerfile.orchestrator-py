@@ -10,6 +10,7 @@ COPY services/orchestrator-py/pyproject.toml ./
 COPY services/orchestrator-py/app ./app
 COPY services/orchestrator-py/skills ./skills
 COPY services/orchestrator-py/prompts ./prompts
+COPY services/orchestrator-py/steering ./steering
 RUN pip install .
 COPY infra/migrations ./migrations
 # Pre-create the content-store mountpoint owned by sdlc so a fresh named volume

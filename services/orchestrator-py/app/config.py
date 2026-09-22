@@ -104,6 +104,15 @@ class Settings(BaseSettings):
     # concrete modification instructions, up to VALIDATION_MAX_REPAIRS times.
     # Set VALIDATION_ENABLED=false to skip (e.g. to conserve free-tier tokens).
     VALIDATION_ENABLED: bool = True
+    # Ambiguity pre-check: when a stage is triggered with no curated plan and
+    # the inputs are ambiguous, ask clarifying questions (written into the plan
+    # overlay for the reviewer to answer) instead of assuming and generating.
+    CLARIFY_ENABLED: bool = True
+    CLARIFY_MAX_QUESTIONS: int = 6
+    # Optional override for the project-creation technology catalog (language →
+    # version → frameworks). Point at a JSON file to reconfigure without a
+    # rebuild; unset uses the built-in default. Hot-reloaded on mtime change.
+    TECH_CATALOG_PATH: str | None = None
     VALIDATION_MAX_REPAIRS: int = 1
 
 

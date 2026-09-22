@@ -2,8 +2,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import CodeView from './CodeView';
-import DrawioEditor from './DrawioEditor';
-import { MarkdownDoc, resolveViewer, type ViewerContext } from './viewerRegistry';
+import DiagramWorkbench from './DiagramWorkbench';
+import { MarkdownDoc, diagramKindOf, resolveViewer, type ViewerContext } from './viewerRegistry';
 
 interface RepairResult {
   ok: boolean;
@@ -157,7 +157,8 @@ export default function ArtifactViewer({
     ? { content: a.content, ext, type: a.type, filename: fileName }
     : null;
   const plugin = ctx ? resolveViewer(ctx) : null;
-  const repairable = plugin?.id === 'mermaid' || plugin?.id === 'plantuml';
+  const diagramKind = diagramKindOf(plugin?.id);
+  const repairable = plugin?.id === 'mermaid' || plugin?.id === 'plantuml' || plugin?.id === 'structurizr';
   const tabs = plugin?.hasSource ? [plugin.label, 'Source'] : [];
   const activeTab = tab || tabs[0] || '';
 
@@ -206,9 +207,9 @@ export default function ArtifactViewer({
                   <button
                     onClick={() => { setDraft(a.content); setEditing(true); setSaveMsg(''); }}
                     className="rounded-lg border border-brand-300 bg-brand-50 px-2.5 py-1 text-xs font-semibold text-brand-700 hover:bg-brand-100"
-                    title={plugin?.id === 'drawio' ? 'Open the visual draw.io editor' : 'Edit this artifact and save in place'}
+                    title={diagramKind ? 'Open the diagram workbench (source + live preview)' : 'Edit this artifact and save in place'}
                   >
-                    {plugin?.id === 'drawio' ? '✏️ Edit diagram' : '✏️ Edit'}
+                    {diagramKind ? '✏️ Edit diagram' : '✏️ Edit'}
                   </button>
                   <label
                     className="cursor-pointer rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:border-brand-400 hover:text-brand-700"
@@ -269,15 +270,16 @@ export default function ArtifactViewer({
               {detail.error instanceof Error ? detail.error.message : 'Failed to load artifact'}
             </div>
           )}
-          {a && editing && plugin?.id === 'drawio' && (
-            <DrawioEditor
-              xml={a.content}
+          {a && editing && diagramKind && (
+            <DiagramWorkbench
+              kind={diagramKind}
+              source={a.content}
               saving={saving}
-              onSave={(x) => void saveContent(x, false)}
+              onSave={(s) => void saveContent(s, diagramKind !== 'drawio')}
               onExit={() => { setEditing(false); setSaveMsg(''); }}
             />
           )}
-          {a && editing && plugin?.id !== 'drawio' && (
+          {a && editing && !diagramKind && (
             <div className="flex h-full min-h-[50vh] flex-col gap-2">
               <div className="flex items-center gap-2 text-xs text-slate-500">
                 <span className="rounded bg-brand-50 px-2 py-0.5 font-semibold text-brand-700">Editing</span>

@@ -84,9 +84,14 @@ def test_default_workflow_unchanged_in_both_engines():
     from app.services import workflow_v1 as v1
     from app.services import workflow_v2 as v2
 
-    for eng in (v1, v2):
-        wf = eng.default_workflow()
-        assert [s.template for s in wf.stages] == [1, 2, 3, 4, 5, 6]  # classic 6-phase SDLC
+    # v1 (frozen) is the classic 6-phase SDLC.
+    assert [s.template for s in v1.default_workflow().stages] == [1, 2, 3, 4, 5, 6]
+    # v2 keeps that as its built-in prefix, then extends with dynamic (custom)
+    # SDLC stages (Deployment, Maintenance) that v1 cannot express.
+    v2_templates = [s.template for s in v2.default_workflow().stages]
+    assert v2_templates[:6] == [1, 2, 3, 4, 5, 6]
+    assert v2_templates[6:] == [7, 7]
+    assert [s.key for s in v2.default_workflow().stages][6:] == ["deployment", "maintenance"]
 
 
 async def test_run_custom_phase_multi_output_and_declared_tools(fake_audit):

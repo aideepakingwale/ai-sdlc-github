@@ -130,6 +130,9 @@ class AgentState(BaseModel):
     gate_status: PhaseStatus = "IN_PROGRESS"
     amend_comments: str | None = None
     tech_stack: str = "Node.js + TypeScript"
+    # Compact project profile (name, stack, integrations) threaded into every
+    # stage so the whole run stays in sync with the project configuration.
+    project_profile: str = ""
     has_codebase: bool = False
     # User-curated context for THIS run: resolved @references + attachment
     # text, rendered into a labelled block injected into the phase prompt.
@@ -231,7 +234,15 @@ class ProjectIntegrations(BaseModel):
 
 class CreateProjectRequest(BaseModel):
     name: str = Field(min_length=3, max_length=120)
-    techStack: str = Field(default="Node.js + TypeScript", max_length=80)
+    # Legacy single-string stack (kept for backward compatibility). When the
+    # structured fields below are supplied, the route composes tech_stack from
+    # them and this is ignored.
+    techStack: str = Field(default="Node.js + TypeScript", max_length=120)
+    # Structured stack from the configurable catalog: programming language →
+    # version → framework(s). Composed server-side into the tech_stack string.
+    language: str | None = Field(default=None, max_length=40)
+    languageVersion: str | None = Field(default=None, max_length=40)
+    frameworks: list[str] = Field(default_factory=list, max_length=12)
     # System asks for the GitHub repo + Atlassian (Jira + Confluence) endpoints at
     # creation so the project's operations target the right places.
     integrations: ProjectIntegrations = Field(default_factory=ProjectIntegrations)

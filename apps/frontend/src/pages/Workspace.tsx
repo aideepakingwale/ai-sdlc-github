@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import type { ProjectFlow } from '../api/flow';
-import { ROLE_LABELS, TECH_STACKS, type Artefact, type Project, type ProjectDetail } from '../api/types';
+import { ROLE_LABELS, type Artefact, type Project, type ProjectDetail, type TechCatalog } from '../api/types';
 import GovernancePanel from '../components/GovernancePanel';
 import NotificationBell from '../components/NotificationBell';
 import ObservabilityPanel from '../components/ObservabilityPanel';
@@ -20,7 +20,12 @@ export default function Workspace() {
   const { user, setUser, activeProjectId, setActiveProject } = useApp();
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
-  const [newProjectStack, setNewProjectStack] = useState<string>(TECH_STACKS[0]);
+  // Structured, configurable stack (language → version → frameworks).
+  const [newLanguage, setNewLanguage] = useState<string>('');
+  const [customLanguage, setCustomLanguage] = useState(false);
+  const [newVersion, setNewVersion] = useState<string>('');
+  const [newFrameworks, setNewFrameworks] = useState<string[]>([]);
+  const [customFramework, setCustomFramework] = useState<string>('');
   // Per-project GitHub/Atlassian targets asked at creation.
   const [newIntegrations, setNewIntegrations] = useState({
     githubRepo: '', atlassianSiteUrl: '', jiraProjectKey: '', confluenceSpaceKey: '',
@@ -46,11 +51,19 @@ export default function Workspace() {
       const integrations = Object.fromEntries(
         Object.entries(newIntegrations).filter(([, v]) => v.trim()).map(([k, v]) => [k, v.trim()]),
       );
-      return api.post<{ project: Project }>('/api/projects', { name, techStack: newProjectStack, integrations });
+      return api.post<{ project: Project }>('/api/projects', {
+        name,
+        language: newLanguage.trim() || undefined,
+        languageVersion: newVersion.trim() || undefined,
+        frameworks: newFrameworks,
+        integrations,
+      });
     },
     onSuccess: (res) => {
       setNewProjectOpen(false);
       setNewProjectName('');
+      setNewFrameworks([]);
+      setCustomFramework('');
       setNewIntegrations({ githubRepo: '', atlassianSiteUrl: '', jiraProjectKey: '', confluenceSpaceKey: '' });
       void qc.invalidateQueries({ queryKey: ['projects'] });
       setActiveProject(res.project.id);
@@ -59,6 +72,26 @@ export default function Workspace() {
       setAutoDesignerId(res.project.id);
     },
   });
+
+  // Configurable technology catalog (language → version → frameworks).
+  const techCatalog = useQuery({
+    queryKey: ['tech-catalog'],
+    queryFn: () => api.get<TechCatalog>('/api/meta/tech-catalog'),
+    staleTime: Infinity,
+  });
+  const languages = techCatalog.data?.languages ?? [];
+  const selectedLang = languages.find((l) => l.name === newLanguage);
+  function toggleFramework(fw: string) {
+    setNewFrameworks((s) => (s.includes(fw) ? s.filter((f) => f !== fw) : [...s, fw]));
+  }
+  // Default to the first catalog language once it loads (unless the PM chose custom).
+  useEffect(() => {
+    const first = languages[0];
+    if (!customLanguage && !newLanguage && first) {
+      setNewLanguage(first.name);
+      setNewVersion(first.versions[0] ?? '');
+    }
+  }, [languages, newLanguage, customLanguage]);
 
   const projects = useQuery({
     queryKey: ['projects'],
@@ -193,18 +226,107 @@ export default function Workspace() {
                     if (e.key === 'Escape') setNewProjectOpen(false);
                   }}
                 />
-                <select
-                  className="w-full rounded-lg border border-white/20 bg-white/10 px-2 py-1.5 text-xs text-white focus:outline-none [&>option]:text-slate-900"
-                  value={newProjectStack}
-                  onChange={(e) => setNewProjectStack(e.target.value)}
-                  title="Target technology stack — all designs and generated code will use it"
-                >
-                  {TECH_STACKS.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
+                {/* Structured, configurable stack: language → version → frameworks */}
+                <div className="rounded-lg border border-white/10 bg-white/5 p-2">
+                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                    Technology stack
+                  </div>
+                  {/* Programming language */}
+                  <select
+                    className="mb-1 w-full rounded border border-white/20 bg-white/10 px-2 py-1.5 text-xs text-white focus:outline-none [&>option]:text-slate-900"
+                    value={customLanguage ? '__other__' : newLanguage}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === '__other__') {
+                        setCustomLanguage(true);
+                        setNewLanguage('');
+                        setNewVersion('');
+                        setNewFrameworks([]);
+                        return;
+                      }
+                      setCustomLanguage(false);
+                      setNewLanguage(v);
+                      const lang = languages.find((l) => l.name === v);
+                      setNewVersion(lang?.versions[0] ?? '');
+                      setNewFrameworks([]);
+                    }}
+                    title="Programming language — all designs and generated code will target it"
+                  >
+                    {languages.map((l) => (
+                      <option key={l.name} value={l.name}>
+                        {l.name}
+                      </option>
+                    ))}
+                    <option value="__other__">Other…</option>
+                  </select>
+                  {customLanguage && (
+                    <input
+                      autoFocus
+                      className="mb-1 w-full rounded border border-white/20 bg-white/10 px-2 py-1 text-xs text-white placeholder:text-slate-500 focus:border-brand-400 focus:outline-none"
+                      placeholder="Language name…"
+                      value={newLanguage}
+                      onChange={(e) => setNewLanguage(e.target.value)}
+                    />
+                  )}
+                  {/* Version (pick from the catalog or type your own) */}
+                  <input
+                    list="tech-versions"
+                    className="mb-1 w-full rounded border border-white/20 bg-white/10 px-2 py-1 text-xs text-white placeholder:text-slate-500 focus:border-brand-400 focus:outline-none"
+                    placeholder="Version — e.g. 3.12"
+                    value={newVersion}
+                    onChange={(e) => setNewVersion(e.target.value)}
+                  />
+                  <datalist id="tech-versions">
+                    {(selectedLang?.versions ?? []).map((v) => (
+                      <option key={v} value={v} />
+                    ))}
+                  </datalist>
+                  {/* Frameworks — toggle from the catalog, or add your own */}
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {(selectedLang?.frameworks ?? []).map((fw) => (
+                      <button
+                        key={fw}
+                        type="button"
+                        onClick={() => toggleFramework(fw)}
+                        className={`rounded-full px-2 py-0.5 text-[11px] transition ${
+                          newFrameworks.includes(fw)
+                            ? 'bg-brand-500 text-white'
+                            : 'border border-white/20 bg-white/10 text-slate-200 hover:border-brand-400'
+                        }`}
+                      >
+                        {fw}
+                      </button>
+                    ))}
+                    {/* custom frameworks not present in the catalog list */}
+                    {newFrameworks
+                      .filter((fw) => !(selectedLang?.frameworks ?? []).includes(fw))
+                      .map((fw) => (
+                        <button
+                          key={fw}
+                          type="button"
+                          onClick={() => toggleFramework(fw)}
+                          className="rounded-full bg-brand-500 px-2 py-0.5 text-[11px] text-white"
+                          title="Remove"
+                        >
+                          {fw} ✕
+                        </button>
+                      ))}
+                  </div>
+                  <input
+                    className="mt-1 w-full rounded border border-white/20 bg-white/10 px-2 py-1 text-xs text-white placeholder:text-slate-500 focus:border-brand-400 focus:outline-none"
+                    placeholder="Add framework + Enter…"
+                    value={customFramework}
+                    onChange={(e) => setCustomFramework(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        const v = customFramework.trim();
+                        if (v && !newFrameworks.includes(v)) toggleFramework(v);
+                        setCustomFramework('');
+                      }
+                    }}
+                  />
+                </div>
                 {/* Per-project GitHub + Atlassian targets — all optional */}
                 <div className="rounded-lg border border-white/10 bg-white/5 p-2">
                   <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
@@ -263,7 +385,7 @@ export default function Workspace() {
               >
                 <div className="truncate font-medium">{p.name}</div>
                 <div className="text-[10px] text-slate-400">
-                  Phase {p.currentPhase}/6 · {p.status}
+                  Phase {p.currentPhase} · {p.status}
                 </div>
               </button>
             ))}
@@ -323,7 +445,7 @@ export default function Workspace() {
             </div>
             <div className="text-xs text-slate-500">
               {activeProjectId
-                ? `Phase ${currentPhase}/6 · ${phaseStates.find((s) => s.phase === currentPhase)?.name ?? ''}` +
+                ? `Phase ${currentPhase}${phaseStates.length ? `/${phaseStates.length}` : ''} · ${phaseStates.find((s) => s.phase === currentPhase)?.name ?? ''}` +
                   (detail.data?.project.techStack ? ` · ${detail.data.project.techStack}` : '')
                 : 'Describe requirements to begin'}
             </div>
@@ -458,7 +580,7 @@ export default function Workspace() {
       {governanceOpen && <GovernancePanel onClose={() => setGovernanceOpen(false)} />}
       {obsOpen && <ObservabilityPanel onClose={() => setObsOpen(false)} />}
       {contextOpen && activeProjectId && (
-        <ProjectContextPanel projectId={activeProjectId} onClose={() => setContextOpen(false)} />
+        <ProjectContextPanel projectId={activeProjectId} techStack={detail.data?.project.techStack} onClose={() => setContextOpen(false)} />
       )}
     </div>
   );

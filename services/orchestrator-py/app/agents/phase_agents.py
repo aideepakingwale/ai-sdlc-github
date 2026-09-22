@@ -27,6 +27,7 @@ from ..services.context import build_context_block
 from ..services.diagram_render import render_architecture
 from ..services.guardrails import sanitise_output
 from ..services.prompt_library import render as render_prompt
+from ..services.steering import resolve_steering
 from ..services.rag import RagService
 from .prompts import build_phase_prompt, openapi_fix_prompt
 from .schemas import (
@@ -226,6 +227,7 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
         user_input=state.user_input,
         amend_comments=amend_comments,
         tech_stack=state.tech_stack,
+        project_profile=state.project_profile,
         has_codebase=state.has_codebase,
         canon_block=canon_block,
         formwork_block=formwork_block,
@@ -1251,9 +1253,13 @@ async def _run_custom(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         emit({"type": "node", "node": "compressor", "label": "Context compressed to fit token budget"})
 
     tools = state.custom_tools or []
-    system = render_prompt("policy.responsible_ai") + "\n\n" + render_prompt(
+    # Dynamic persona/domain steering — applies to custom stages too.
+    steering = resolve_steering(persona)
+    profile = f"## Project profile\n{state.project_profile}\n\n" if state.project_profile else ""
+    system = render_prompt("policy.responsible_ai") + "\n\n" + (f"{steering}\n\n" if steering else "") + profile + render_prompt(
         "phase.custom.system", persona=persona, stage_name=state.stage_name or "Custom stage",
         outputs=", ".join(outputs), tools=", ".join(tools) or "(none)",
+        tech_stack=state.tech_stack,
     )
     # An optional PM-chosen library prompt layers extra, stage-specific instruction.
     if state.custom_prompt_id:

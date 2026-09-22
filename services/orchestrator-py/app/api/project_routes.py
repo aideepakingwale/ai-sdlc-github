@@ -56,6 +56,15 @@ async def list_models(
     return data
 
 
+@router.get("/api/meta/tech-catalog")
+async def tech_catalog(user: UserPublic = Depends(current_user)) -> dict:
+    """Configurable technology catalog for the New Project form — programming
+    language → version → framework(s). Platform-level (any authenticated user);
+    sourced from TECH_CATALOG_PATH or the built-in default. Zero-token."""
+    from ..services.tech_catalog import get_tech_catalog
+    return get_tech_catalog()
+
+
 def _project_row(p) -> dict:  # noqa: ANN001
     return {
         "id": p["id"], "name": p["name"], "status": p["status"],
@@ -102,8 +111,12 @@ async def create_project(
         wf_errors = validate_workflow(wf_cfg)
         if wf_errors:
             raise SdlcError("VALIDATION_FAILED", " | ".join(wf_errors[:6]), {"errors": wf_errors})
+    # Compose the tech_stack string from the structured selection (language →
+    # version → frameworks); fall back to the legacy single-string value.
+    from ..services.tech_catalog import compose_stack
+    tech_stack = compose_stack(body.language, body.languageVersion, body.frameworks, fallback=body.techStack)
     project = await container.db.create_project(
-        name=body.name, created_by=user.id, tech_stack=body.techStack,
+        name=body.name, created_by=user.id, tech_stack=tech_stack,
         integrations=body.integrations.model_dump(),
     )
     if body.workflow is not None:
@@ -111,7 +124,7 @@ async def create_project(
     container.audit.record(
         project_id=project["id"], phase=1, agent_role="Orchestrator",
         event="project.created", human_reviewer=user.email,
-        detail={"name": body.name, "via": "api", "techStack": body.techStack,
+        detail={"name": body.name, "via": "api", "techStack": tech_stack,
                 "integrations": body.integrations.model_dump(exclude_none=True)},
     )
     return {"project": _project_row(project)}

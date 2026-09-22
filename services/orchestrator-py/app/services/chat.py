@@ -168,6 +168,7 @@ class ChatService:
                 stage_reviewer=stage["reviewerRole"],
                 user_input=message, context_window=list(context), amend_comments=amend,
                 tech_stack=project.get("tech_stack") or "Node.js + TypeScript",
+                project_profile=self._project_profile(project),
                 has_codebase=has_codebase, extra_context=extra_context,
                 model_overrides=self._model_overrides_from(self._step_overrides(sp_row)), # per-step model
                 **self._custom_fields(stage), # custom phase config
@@ -335,10 +336,14 @@ class ChatService:
             # Custom phase: preview the generic prompt the runner will use —
             # build_phase_prompt is for the six built-in engines only.
             from .prompt_library import render as render_prompt
+            from .steering import resolve_steering
             persona = stage.get("persona") or "Specialist"
-            system = render_prompt("policy.responsible_ai") + "\n\n" + render_prompt(
+            steering = resolve_steering(persona)
+            system = render_prompt("policy.responsible_ai") + "\n\n" + (f"{steering}\n\n" if steering else "") + render_prompt(
                 "phase.custom.system", persona=persona, stage_name=stage["name"],
                 outputs=", ".join(produces or ["DELIVERABLE"]),
+                tools=", ".join(stage.get("tools") or []) or "(none)",
+                tech_stack=project.get("tech_stack") or "Node.js + TypeScript",
             )
             if stage.get("promptId"):
                 try:
@@ -352,6 +357,7 @@ class ChatService:
                 phase=stage["template"], context_block=context_block, rag_block=rag_block,
                 user_input=user_input, amend_comments=None,
                 tech_stack=project.get("tech_stack") or "Node.js + TypeScript",
+                project_profile=self._project_profile(project),
                 has_codebase=(await self._db.count_codebase_files(project["id"])) > 0,
                 canon_block=canon_block, formwork_block=formwork_block, user_context_block=extra_context,
             )
@@ -370,6 +376,60 @@ class ChatService:
             except json.JSONDecodeError:
                 raw = {}
         return raw or {}
+
+    @staticmethod
+    def _project_profile(project: dict) -> str:
+        """Compact project profile threaded into every stage: name, tech
+        stack and integration targets, so the whole run stays configuration-aware."""
+        parts = [f"- Project: {project.get('name') or '(unnamed)'}"]
+        if project.get("tech_stack"):
+            parts.append(f"- Technology stack: {project['tech_stack']}")
+        for label, key in (
+            ("GitHub repository", "github_repo"),
+            ("Atlassian site", "atlassian_site_url"),
+            ("Jira project key", "jira_project_key"),
+            ("Confluence space key", "confluence_space_key"),
+        ):
+            if project.get(key):
+                parts.append(f"- {label}: {project[key]}")
+        return "\n".join(parts)
+
+    async def _clarification_questions(
+        self, *, project: dict, stage: dict, user_input: str,
+        context: list[ContextArtifact], extra_context: str,
+    ) -> list[str]:
+        """Ambiguity pre-check: return clarifying questions when the inputs are
+        too ambiguous to generate without assuming; [] to proceed. Never raises —
+        a failed check must not block generation."""
+        from ..agents.schemas import ClarificationOutput
+        from ..domain.models import get_phase
+        from .prompt_library import render as render_prompt
+        persona = stage.get("persona") or ""
+        if not persona:
+            try:
+                persona = get_phase(stage["template"]).agent_persona
+            except Exception:
+                persona = "Specialist"
+        digest = "\n".join(f"- [P{a.phase}] {a.type}: {a.title}" for a in context[-20:]) or "(no upstream artifacts yet)"
+        if extra_context:
+            digest = f"{digest}\n\nCurated context:\n{extra_context[:2000]}"
+        req = user_input.strip() or f"Produce {', '.join(stage.get('outputs') or ['the deliverables'])} for the '{stage['name']}' stage."
+        try:
+            out, _ = await self._deps.llm.generate_json(
+                intent="standard", tier="light", tag="clarify", max_tokens=512,
+                schema=ClarificationOutput,
+                messages=[
+                    {"role": "system", "content": render_prompt(
+                        "clarify.system", persona=persona, stage_name=stage["name"],
+                        max_questions=self._settings.CLARIFY_MAX_QUESTIONS)},
+                    {"role": "user", "content": render_prompt(
+                        "clarify.user", request=req, project_profile=self._project_profile(project),
+                        context_digest=digest)},
+                ],
+            )
+        except Exception:
+            return []
+        return list(out.questions)[: self._settings.CLARIFY_MAX_QUESTIONS] if out.needs_clarification else []
 
     @staticmethod
     def _custom_fields(stage: dict) -> dict[str, Any]:
@@ -530,6 +590,32 @@ class ChatService:
             project_id, overlay["referencedArtifactIds"], overlay["attachmentIds"], overlay["formworkIds"], emit
         )
         context = [ContextArtifact.model_validate(a) for a in (session.get("context_window") or [])]
+
+        # Ambiguity pre-check: on a fresh, un-curated trigger, ask clarifying
+        # questions instead of assuming. Questions are written into the plan overlay
+        # so the reviewer answers them in Plan Review, then re-runs; once the overlay
+        # is non-empty the check is skipped and generation proceeds.
+        if getattr(self._settings, "CLARIFY_ENABLED", True) and not prompt_overlay and status == "NOT_STARTED":
+            questions = await self._clarification_questions(
+                project=project, stage=stage, user_input=prompt_overlay, context=context, extra_context=extra_context)
+            if questions:
+                block = ("## Clarifying questions\n\nThese inputs look ambiguous. Please answer inline, then re-run this "
+                         "stage — your answers become the stage's plan and guide generation:\n\n"
+                         + "\n".join(f"{i + 1}. {q}\n   - Answer: " for i, q in enumerate(questions)))
+                await self._db.upsert_stage_plan(
+                    project_id=project_id, phase=phase, prompt_overlay=block,
+                    referenced_artifact_ids=overlay["referencedArtifactIds"],
+                    attachment_ids=overlay["attachmentIds"], formwork_ids=overlay["formworkIds"],
+                    origin="clarification", updated_by=user.email,
+                )
+                self._audit.record(project_id=project_id, phase=phase, agent_role="Orchestrator",
+                                   event="clarification.requested", human_reviewer=user.email,
+                                   detail={"stage": stage["key"], "questions": questions})
+                emit({"type": "clarification", "phase": phase, "stage": stage["name"], "questions": questions})
+                emit({"type": "node", "node": "agent",
+                      "label": f"Clarification needed — {len(questions)} question(s) written to the plan; answer and re-run"})
+                return
+
         set_run_context(project_id, phase)
         emit({"type": "session", "projectId": project_id, "sessionId": session["id"], "phase": phase})
         emit({"type": "node", "node": "executor", "label": f"Triggering reviewed plan — {stage['name']}"})
@@ -540,6 +626,7 @@ class ChatService:
             user_input=prompt_overlay or f"Generate {', '.join(stage.get('outputs') or [])} for '{stage['name']}'.",
             context_window=list(context), amend_comments=None,
             tech_stack=project.get("tech_stack") or "Node.js + TypeScript",
+            project_profile=self._project_profile(project),
             has_codebase=(await self._db.count_codebase_files(project_id)) > 0, extra_context=extra_context,
             model_overrides=self._model_overrides_from(self._step_overrides(row)), # per-step model
             **self._custom_fields(stage), # custom phase config

@@ -177,12 +177,14 @@ services:
       PROMPTS_DIR: /app/prompts
       PROMPTS_RELOAD: ${PROMPTS_RELOAD:-false}
       SKILLS_DIR: /app/skills
+      STEERING_DIR: /app/steering
     volumes:
       - contentstore:/data/content-store
       # Prompt/skill packs mounted from the repo so prompt engineers edit the
       # markdown on the host; comment out to use the image's baked-in copies.
       - ./services/orchestrator-py/prompts:/app/prompts
       - ./services/orchestrator-py/skills:/app/skills
+      - ./services/orchestrator-py/steering:/app/steering
     depends_on:
       migrate:
         condition: service_completed_successfully

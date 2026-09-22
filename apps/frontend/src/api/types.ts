@@ -60,13 +60,17 @@ export interface Project {
   techStack?: string;
 }
 
-export const TECH_STACKS = [
-  'Node.js + TypeScript',
-  'Python + FastAPI',
-  'Java + Spring Boot',
-  'Go + Gin',
-  'C# + .NET',
-] as const;
+// Configurable technology catalog served by GET /api/meta/tech-catalog:
+// programming language → version(s) → framework(s). Replaces the old hardcoded
+// TECH_STACKS list; the New Project form builds a structured stack from this.
+export interface TechCatalogLanguage {
+  name: string;
+  versions: string[];
+  frameworks: string[];
+}
+export interface TechCatalog {
+  languages: TechCatalogLanguage[];
+}
 
 export interface PhaseStateView {
   phase: number;

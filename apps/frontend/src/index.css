@@ -8,15 +8,29 @@ body,
   height: 100%;
 }
 
+/* British Airways "BAgel" design language: navy text on an off-white ground,
+   Open Sans / BA fallback stack, subtle letter-spacing. */
 body {
   @apply bg-slate-50 text-slate-900 antialiased;
+  letter-spacing: 0.012em;
+}
+
+/* BA headings read light and calm. */
+h1, h2, h3 {
+  @apply font-semibold tracking-tight text-navy;
+}
+
+/* BA-blue focus ring for keyboard accessibility. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid theme('colors.brand.500');
+  outline-offset: 2px;
 }
 
 .prose-chat h2 {
-  @apply mb-2 mt-4 text-lg font-semibold text-slate-800;
+  @apply mb-2 mt-4 text-lg font-semibold text-navy;
 }
 .prose-chat h3 {
-  @apply mb-1 mt-3 text-base font-semibold text-slate-800;
+  @apply mb-1 mt-3 text-base font-semibold text-navy;
 }
 .prose-chat p {
   @apply my-2 leading-relaxed;
@@ -31,7 +45,7 @@ body {
   @apply rounded bg-slate-100 px-1 py-0.5 text-[13px] text-brand-700;
 }
 .prose-chat pre {
-  @apply my-2 overflow-x-auto rounded-lg bg-slate-900 p-3 text-[13px] text-slate-100;
+  @apply my-2 overflow-x-auto rounded-lg bg-navy p-3 text-[13px] text-slate-100;
 }
 .prose-chat pre code {
   @apply bg-transparent p-0 text-inherit;
@@ -43,9 +57,12 @@ body {
 .prose-chat td {
   @apply border border-slate-200 px-2 py-1 text-left;
 }
+.prose-chat th {
+  @apply bg-slate-100 font-semibold text-navy;
+}
 .prose-chat a {
   @apply text-brand-600 underline;
 }
 .prose-chat blockquote {
-  @apply my-2 border-l-4 border-amber-400 bg-amber-50 px-3 py-1 text-sm;
+  @apply my-2 border-l-4 border-bared-500 bg-bared-200/40 px-3 py-1 text-sm;
 }

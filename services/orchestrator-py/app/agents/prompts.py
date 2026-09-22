@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from ..domain.models import get_phase
 from ..services.prompt_library import render
+from ..services.steering import resolve_steering
 
 PHASE_JSON_SHAPES: dict[int, str] = {
     1: '{"epics":[{"title":"...","businessCase":"...","successMetric":"metric, baseline, target",'
@@ -105,6 +106,7 @@ def build_phase_prompt(
     user_input: str,
     amend_comments: str | None,
     tech_stack: str = "Node.js + TypeScript",
+    project_profile: str = "",
     has_codebase: bool = False,
     canon_block: str = "",
     formwork_block: str = "",
@@ -115,8 +117,14 @@ def build_phase_prompt(
         render("policy.responsible_ai"),
         render("phase.system.persona",
                persona=phase_def.agent_persona, phase_id=phase_def.id, phase_name=phase_def.name),
+        # Expert steering: resolved DYNAMICALLY by the stage's persona/domain
+        # (not the phase number), so it also applies to reordered and custom stages.
+        resolve_steering(phase_def.agent_persona),
         render("phase.system.produces", produces=", ".join(phase_def.produces)),
         render("phase.system.stack", tech_stack=tech_stack),
+        # Project profile: name, stack and integration targets, so every
+        # stage generates against the same project configuration.
+        (f"## Project profile\n{project_profile}" if project_profile else ""),
         render("phase.system.grounding"),
         # Professional quality bars: the universal craft standard plus
         # the stage-specific rubric a senior reviewer would apply.
@@ -149,7 +157,7 @@ def build_phase_prompt(
         system_parts.append("\n" + rag_block)
     if context_block:
         system_parts.append(f"\n## Approved context from previous phases\n{context_block}")
-    system = "\n".join(system_parts)
+    system = "\n".join(p for p in system_parts if p)
 
     user = (
         render("phase.user.amend", user_input=user_input, amend_comments=amend_comments)

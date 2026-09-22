@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import CodeView, { langForExt, langForFile } from './CodeView';
 import { isStaleChunkError, recoverFromStaleChunk } from '../staleChunk';
+import { structurizrToMermaid } from './structurizr';
 
 /**
  * Viewer plugin registry: a declarative, extensible mapping from a file
@@ -354,6 +355,32 @@ export function DrawioView({ source }: { source: string }) {
   );
 }
 
+// ---------------------------------------------------------------- Structurizr DSL (C4)
+/**
+ * C4 model authored as Structurizr DSL. No browser renders the DSL directly, so
+ * convert it to a Mermaid C4 diagram and render that; on any conversion error
+ * fall back to the raw DSL source (like the other diagram renderers).
+ */
+export function StructurizrView({ source }: { source: string }) {
+  try {
+    return <MermaidView source={structurizrToMermaid(source)} />;
+  } catch (err) {
+    return (
+      <div>
+        <div className="mb-2 rounded bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Could not render the C4 preview from the Structurizr DSL
+          ({err instanceof Error ? err.message : 'parse error'}). The editable source is shown below.
+        </div>
+        <CodeView source={source} lang="plaintext" filename="workspace.dsl" showDiagnostics={false} />
+      </div>
+    );
+  }
+}
+
+export function isStructurizr(c: ViewerContext): boolean {
+  return c.ext === '.dsl' || c.type === 'STRUCTURIZR_DSL' || /^\s*workspace\b[^]*\bmodel\b/.test(c.content);
+}
+
 // ---------------------------------------------------------------- Markdown (diagram-aware)
 /**
  * Render a markdown document (HLD/LLD/PRD/ADR …) with GFM tables (remark-gfm)
@@ -411,7 +438,7 @@ function CsvView({ source }: { source: string }) {
 }
 
 // ---------------------------------------------------------------- registry
-const MARKDOWN_TYPES = new Set(['PRD', 'HLD', 'LLD', 'TEST_STRATEGY', 'RTM', 'ADR', 'EPIC', 'FEATURE', 'USER_STORY', 'PULL_REQUEST', 'SECURITY_SCAN', 'TEST_EXECUTION_REPORT', 'QUALITY_REPORT']);
+const MARKDOWN_TYPES = new Set(['PRD', 'HLD', 'LLD', 'TEST_STRATEGY', 'RTM', 'ADR', 'EPIC', 'FEATURE', 'USER_STORY', 'PULL_REQUEST', 'SECURITY_SCAN', 'TEST_EXECUTION_REPORT', 'QUALITY_REPORT', 'BRD', 'DEPLOYMENT_PLAN', 'RELEASE_NOTES', 'ROLLBACK_PLAN', 'RUNBOOK', 'MONITORING_PLAN', 'SLO_REPORT']);
 const JSON_TYPES = new Set(['CLOUDCRAFT_JSON', 'GRAFANA_DASHBOARD', 'POSTMAN_COLLECTION', 'XRAY_TESTS']);
 
 function pretty(json: string): string {
@@ -453,6 +480,12 @@ export const VIEWERS: ViewerPlugin[] = [
     render: (c) => <DrawioView source={c.content} />,
   },
   {
+    // C4 model as Structurizr DSL: rendered by converting to Mermaid C4.
+    id: 'structurizr', label: 'C4 diagram', hasSource: true,
+    matches: (c) => isStructurizr(c),
+    render: (c) => <StructurizrView source={c.content} />,
+  },
+  {
     id: 'markdown', label: 'Document', hasSource: true,
     matches: (c) => c.ext === '.md' || c.ext === '.markdown' || (!c.ext && MARKDOWN_TYPES.has(c.type)),
     render: (c) => <MarkdownDoc content={c.content} />,
@@ -476,4 +509,41 @@ export const VIEWERS: ViewerPlugin[] = [
 
 export function resolveViewer(ctx: ViewerContext): ViewerPlugin {
   return VIEWERS.find((v) => v.matches(ctx)) ?? VIEWERS[VIEWERS.length - 1]!;
+}
+
+// ---------------------------------------------------------------- Unified Diagram Workbench support
+/** The diagram families the unified workbench can render + live-preview. */
+export type DiagramKind = 'mermaid' | 'plantuml' | 'drawio' | 'svg' | 'structurizr';
+
+/** Map a resolved viewer plugin id to a diagram kind, or null if it isn't a diagram. */
+export function diagramKindOf(pluginId: string | undefined): DiagramKind | null {
+  switch (pluginId) {
+    case 'mermaid': return 'mermaid';
+    case 'plantuml': return 'plantuml';
+    case 'drawio': return 'drawio';
+    case 'svg': return 'svg';
+    case 'structurizr': return 'structurizr';
+    default: return null;
+  }
+}
+
+/**
+ * Render a diagram straight from source text — the live-preview half of the
+ * unified workbench. Reuses the same renderers as the read-only viewers so the
+ * preview matches exactly what will be saved.
+ */
+export function LivePreview({ kind, source }: { kind: DiagramKind; source: string }) {
+  switch (kind) {
+    case 'mermaid': return <MermaidView source={source} />;
+    case 'plantuml': return <PlantUmlView source={source} />;
+    case 'structurizr': return <StructurizrView source={source} />;
+    case 'drawio': return <DrawioView source={source} />;
+    case 'svg':
+      return (
+        <div
+          className="overflow-auto rounded-lg border border-slate-200 bg-white p-4 [&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-w-full"
+          dangerouslySetInnerHTML={{ __html: source }}
+        />
+      );
+  }
 }
