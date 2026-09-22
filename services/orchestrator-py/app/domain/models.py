@@ -133,6 +133,10 @@ class AgentState(BaseModel):
     # Compact project profile (name, stack, integrations) threaded into every
     # stage so the whole run stays in sync with the project configuration.
     project_profile: str = ""
+    # Provider/model that served the most recent generation — lets the validator
+    # flag deterministic-mock output (which reads as hard-coded/drifted).
+    last_provider: str = ""
+    last_model: str = ""
     has_codebase: bool = False
     # User-curated context for THIS run: resolved @references + attachment
     # text, rendered into a labelled block injected into the phase prompt.

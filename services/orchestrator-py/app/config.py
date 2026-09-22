@@ -109,6 +109,9 @@ class Settings(BaseSettings):
     # overlay for the reviewer to answer) instead of assuming and generating.
     CLARIFY_ENABLED: bool = True
     CLARIFY_MAX_QUESTIONS: int = 6
+    # AI quality validator: overall score (0-100) below this floor is flagged for
+    # the human reviewer (and drives rework within the repair budget).
+    QUALITY_MIN_SCORE: int = 70
     # Optional override for the project-creation technology catalog (language →
     # version → frameworks). Point at a JSON file to reconfigure without a
     # rebuild; unset uses the built-in default. Hot-reloaded on mtime change.

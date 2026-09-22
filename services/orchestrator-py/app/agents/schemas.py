@@ -337,9 +337,15 @@ class ValidationIssue(BaseModel):
 
 class ValidationVerdict(BaseModel):
     """The validation agent's judgement of a phase's generated output against the
-    user's intent + the phase quality bar. `ok=false` with error-severity
-    issues triggers a bounded rework of the phase agent with `reworkInstructions`."""
+    user's intent, the upstream context and the phase quality bar. `ok=false`
+    with error-severity issues triggers a bounded rework with `reworkInstructions`;
+    `score` (0-100) below the quality floor is flagged for the human reviewer."""
     ok: bool
+    # Overall quality 0-100 and its per-dimension breakdown (intent, completeness,
+    # correctness, grounding). Grounding = builds on the given context, no drift.
+    score: int = Field(default=100, ge=0, le=100)
+    dimensions: dict[str, int] = Field(default_factory=dict)
+    summary: str = ""
     issues: list[ValidationIssue] = Field(default_factory=list)
     reworkInstructions: str = ""
 

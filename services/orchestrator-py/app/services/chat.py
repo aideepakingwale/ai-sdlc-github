@@ -404,12 +404,15 @@ class ChatService:
         from ..agents.schemas import ClarificationOutput
         from ..domain.models import get_phase
         from .prompt_library import render as render_prompt
+        from .steering import resolve_mandatory_inputs
         persona = stage.get("persona") or ""
         if not persona:
             try:
                 persona = get_phase(stage["template"]).agent_persona
             except Exception:
                 persona = "Specialist"
+        mandatory = resolve_mandatory_inputs(persona)
+        mandatory_block = "\n".join(f"- {m}" for m in mandatory) or "- (no persona-specific mandatory inputs)"
         digest = "\n".join(f"- [P{a.phase}] {a.type}: {a.title}" for a in context[-20:]) or "(no upstream artifacts yet)"
         if extra_context:
             digest = f"{digest}\n\nCurated context:\n{extra_context[:2000]}"
@@ -421,7 +424,8 @@ class ChatService:
                 messages=[
                     {"role": "system", "content": render_prompt(
                         "clarify.system", persona=persona, stage_name=stage["name"],
-                        max_questions=self._settings.CLARIFY_MAX_QUESTIONS)},
+                        max_questions=self._settings.CLARIFY_MAX_QUESTIONS,
+                        mandatory_inputs=mandatory_block)},
                     {"role": "user", "content": render_prompt(
                         "clarify.user", request=req, project_profile=self._project_profile(project),
                         context_digest=digest)},

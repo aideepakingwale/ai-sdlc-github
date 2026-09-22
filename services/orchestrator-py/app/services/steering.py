@@ -77,6 +77,7 @@ def _load_packs() -> list[dict[str, Any]]:
             "persona": meta.get("persona", p.stem),
             "aliases": [a for a in aliases if a],
             "domains": [str(d) for d in (meta.get("domains") or [])],
+            "mandatory": [str(x) for x in (meta.get("mandatory_inputs") or [])],
             "fallback": bool(meta.get("fallback")) or ("*" in aliases),
             "body": m.group(2).strip(),
         })
@@ -84,34 +85,37 @@ def _load_packs() -> list[dict[str, Any]]:
     return packs
 
 
-def resolve_steering(persona: str | None, domain: str | None = None) -> str:
-    """Return the steering body for a persona (optionally biased by domain), or
-    the fallback pack's body, or '' when there is no steering at all. Never raises."""
+def _match_pack(persona: str | None, domain: str | None = None) -> dict[str, Any] | None:
+    """Resolve the steering pack for a persona (optionally biased by domain):
+    exact alias/persona → substring → domain → fallback. None if nothing at all."""
     packs = _load_packs()
     if not packs:
-        return ""
+        return None
     specific = [p for p in packs if not p["fallback"]]
     np = _norm(persona or "")
-
-    # 1) exact alias / persona match.
     if np:
         for p in specific:
             if any(_norm(a) == np for a in p["aliases"]) or _norm(p["persona"]) == np:
-                return p["body"]
-        # 2) substring either way (e.g. "Lead Solution Architect" ~ "Solution Architect").
-        for p in specific:
+                return p
+        for p in specific:  # substring either way, e.g. "Lead Solution Architect"
             if any(_norm(a) and (_norm(a) in np or np in _norm(a)) for a in p["aliases"]):
-                return p["body"]
-
-    # 3) domain hint.
+                return p
     if domain:
         nd = _norm(domain)
         for p in specific:
             if any(_norm(d) == nd or nd in _norm(d) for d in p["domains"]):
-                return p["body"]
+                return p
+    return next((p for p in packs if p["fallback"]), None)
 
-    # 4) fallback pack.
-    for p in packs:
-        if p["fallback"]:
-            return p["body"]
-    return ""
+
+def resolve_steering(persona: str | None, domain: str | None = None) -> str:
+    """The steering body for a persona (or the fallback), or '' if none. Never raises."""
+    p = _match_pack(persona, domain)
+    return p["body"] if p else ""
+
+
+def resolve_mandatory_inputs(persona: str | None, domain: str | None = None) -> list[str]:
+    """The mandatory inputs a persona must have to produce quality output — used by
+    the clarification step to ask for missing, must-have information."""
+    p = _match_pack(persona, domain)
+    return list(p["mandatory"]) if p else []

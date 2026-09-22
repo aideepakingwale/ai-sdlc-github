@@ -9,6 +9,7 @@ variables:
 - amend_comments
 - output_digest
 - syntax_errors
+- context_digest
 ---
 ## Stage under validation
 ${stage_name}
@@ -18,6 +19,9 @@ ${quality_bar}
 
 ## The user's request (intent)
 ${user_intent}
+
+## Upstream context this stage MUST build on (check for drift)
+${context_digest}
 
 ## Reviewer's requested changes (must be honoured exactly; empty if none)
 ${amend_comments}
