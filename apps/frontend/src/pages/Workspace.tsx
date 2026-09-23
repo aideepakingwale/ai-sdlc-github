@@ -7,6 +7,7 @@ import Dashboard from '../components/Dashboard';
 import GovernancePanel from '../components/GovernancePanel';
 import NewProjectModal from '../components/NewProjectModal';
 import NotificationBell from '../components/NotificationBell';
+import QualityMetricsPanel from '../components/QualityMetricsPanel';
 import ObservabilityPanel from '../components/ObservabilityPanel';
 import { useResizableWidth } from '../components/Panel';
 import ProjectContextPanel from '../components/ProjectContextPanel';
@@ -27,6 +28,7 @@ export default function Workspace() {
   const [governanceOpen, setGovernanceOpen] = useState(false);
   const [obsOpen, setObsOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
+  const [qualityOpen, setQualityOpen] = useState(false);
   const [focusedPhase, setFocusedPhase] = useState<number | null>(null);
   const [selectedStage, setSelectedStage] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -272,6 +274,13 @@ export default function Workspace() {
               >
                 📖 Project Context
               </button>
+              <button
+                onClick={() => setQualityOpen(true)}
+                className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:border-brand-300 hover:text-brand-700"
+                title="Quality metrics — validator-score trend, first-pass vs. rework rate, issues caught at the gate"
+              >
+                📊 Quality
+              </button>
               {detail.data?.me?.canManageTeam && (
                 <button
                   onClick={deleteProject}
@@ -379,6 +388,9 @@ export default function Workspace() {
       )}
       {newProjectOpen && (
         <NewProjectModal onClose={() => setNewProjectOpen(false)} onCreated={onProjectCreated} />
+      )}
+      {qualityOpen && activeProjectId && (
+        <QualityMetricsPanel projectId={activeProjectId} onClose={() => setQualityOpen(false)} />
       )}
     </div>
   );

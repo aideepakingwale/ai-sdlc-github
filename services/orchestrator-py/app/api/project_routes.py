@@ -831,6 +831,84 @@ async def artefact_download(
     return _file_response(content, filename)
 
 
+@router.get("/api/projects/{project_id}/quality-metrics")
+async def project_quality_metrics(
+    project_id: str, user: UserPublic = Depends(current_user),
+    container: Container = Depends(get_container),
+) -> dict:
+    """Quality-metrics dashboard data: validator-score trend, first-pass approval
+    vs. rework rate, issues caught at the gate, and stale-propagation churn —
+    aggregated from the immutable audit trail (real signals, not estimates)."""
+    await container.authz.assert_project_access(project_id, user)
+    rows = await container.db.list_quality_events(project_id)
+
+    scores: list[dict] = []          # chronological validator scores
+    latest_by_phase: dict[int, dict] = {}
+    dim_totals: dict[str, float] = {}
+    dim_n = 0
+    approvals = amends = pending = escalations = stale_flags = 0
+    below_bar = 0
+
+    for r in rows:
+        ev = r["event"]
+        phase = r["phase"]
+        detail = r["detail"] or {}
+        ts = r["timestamp"].isoformat() if r["timestamp"] else None
+        if ev == "ai.validation":
+            score = detail.get("score")
+            if isinstance(score, (int, float)):
+                entry = {"phase": phase, "score": int(score), "timestamp": ts,
+                         "belowBar": bool(detail.get("belowBar")), "issues": detail.get("issues", 0)}
+                scores.append(entry)
+                if phase is not None:
+                    latest_by_phase[phase] = entry
+                if detail.get("belowBar"):
+                    below_bar += 1
+                dims = detail.get("dimensions") or {}
+                if isinstance(dims, dict) and dims:
+                    for k, v in dims.items():
+                        if isinstance(v, (int, float)):
+                            dim_totals[k] = dim_totals.get(k, 0.0) + float(v)
+                    dim_n += 1
+        elif ev in ("gate.approved", "gate.approved_override"):
+            approvals += 1
+        elif ev == "gate.amend_requested":
+            amends += 1
+        elif ev == "gate.pending_review":
+            pending += 1
+        elif ev == "stage.escalated":
+            escalations += 1
+        elif ev == "downstream.stale_flagged":
+            stale_flags += 1
+
+    graded = approvals + amends
+    avg_score = round(sum(s["score"] for s in scores) / len(scores), 1) if scores else None
+    dims_avg = {k: round(v / dim_n, 1) for k, v in dim_totals.items()} if dim_n else {}
+    coverage_target = getattr(container.settings, "COVERAGE_MIN_PERCENT", 80)
+
+    return {
+        "projectId": project_id,
+        "coverageTarget": coverage_target,
+        "averageScore": avg_score,
+        "latestScore": scores[-1]["score"] if scores else None,
+        "belowBarCount": below_bar,
+        "dimensionsAvg": dims_avg,
+        "scoreTrend": scores[-50:],
+        "perStageScore": [
+            {"phase": p, "score": latest_by_phase[p]["score"], "belowBar": latest_by_phase[p]["belowBar"]}
+            for p in sorted(latest_by_phase)
+        ],
+        "gate": {
+            "approvals": approvals, "amendsRequested": amends, "pendingReview": pending,
+            "escalations": escalations, "graded": graded,
+            "firstPassRate": round(approvals / graded * 100, 1) if graded else None,
+            "reworkRate": round(amends / graded * 100, 1) if graded else None,
+        },
+        "issuesCaughtAtGate": amends + escalations,
+        "staleFlagged": stale_flags,
+    }
+
+
 @router.get("/api/projects/{project_id}/audit")
 async def project_audit(
     project_id: str, user: UserPublic = Depends(current_user),

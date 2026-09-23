@@ -547,6 +547,21 @@ class Database:
             "SELECT * FROM audit_index WHERE project_id=$1 ORDER BY timestamp DESC LIMIT 200", project_id
         )
 
+    # Quality-metrics source: the validation scores + gate outcomes over time that
+    # feed the quality dashboard (trend, first-pass rate, rework, flags).
+    _QUALITY_EVENTS = (
+        "ai.validation", "gate.approved", "gate.approved_override", "gate.amend_requested",
+        "gate.pending_review", "stage.escalated", "downstream.stale_flagged",
+    )
+
+    async def list_quality_events(self, project_id: str) -> list[asyncpg.Record]:
+        assert self.pool
+        return await self.pool.fetch(
+            "SELECT phase, event, timestamp, detail, agent_role FROM audit_index "
+            "WHERE project_id=$1 AND event = ANY($2::text[]) ORDER BY timestamp ASC",
+            project_id, list(self._QUALITY_EVENTS),
+        )
+
     # ------------------------------------------------------------ chat transcript
     async def insert_chat_turn(self, session_id: str, phase: int, user_msg: str, assistant_msg: str) -> None:
         assert self.pool

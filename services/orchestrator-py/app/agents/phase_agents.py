@@ -385,6 +385,18 @@ async def _validate_output(
           "label": f"Quality score {verdict.score}/100"
                    + (f" · {verdict.summary}" if verdict.summary else "")
                    + (" · below the quality bar — flagged for review" if verdict.score < floor else "")})
+    # Persist the score as a timestamped audit event so the quality-metrics
+    # dashboard can trend validator scores per stage over time.
+    try:
+        deps.audit.record(
+            project_id=state.project_id, phase=state.current_phase,
+            agent_role=state.stage_name or "ValidationAgent", event="ai.validation",
+            provider=state.last_provider, model=state.last_model,
+            detail={"score": verdict.score, "dimensions": verdict.dimensions or {},
+                    "ok": verdict.ok, "issues": len(verdict.issues), "belowBar": verdict.score < floor},
+        )
+    except Exception:  # audit must never break the pipeline
+        pass
     return verdict
 
 
