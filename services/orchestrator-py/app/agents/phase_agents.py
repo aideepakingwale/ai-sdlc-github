@@ -29,6 +29,7 @@ from ..services.guardrails import sanitise_output
 from ..services.prompt_library import render as render_prompt
 from ..services.steering import resolve_steering
 from ..services.rag import RagService
+from ..services.scaffold import quality_gate_files
 from .prompts import build_phase_prompt, openapi_fix_prompt
 from .schemas import (
     PHASE_SCHEMAS,
@@ -36,6 +37,7 @@ from .schemas import (
     CustomPhaseOutput,
     DiagramEdge,
     DiagramNode,
+    FileEntry,
     OpenapiFix,
     Phase1Output,
     Phase2Output,
@@ -1188,6 +1190,25 @@ async def _run_phase5(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
 async def _run_phase6(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAgentResult:
     out: Phase6Output = await _generate_validated(deps, state, emit)  # type: ignore[assignment]
     artifacts: list[ContextArtifact] = []
+
+    # Deterministic quality-gate config: the coverage + linter/formatter
+    # config files are pure boilerplate parameterised by (stack, threshold), so
+    # the platform writes them in code rather than spending model tokens on them —
+    # and the coverage threshold is guaranteed to equal the configured gate. These
+    # paths are authoritative: any same-path file the model emitted is replaced.
+    if getattr(deps.settings, "QUALITY_GATE_ENABLED", True):
+        det = quality_gate_files(
+            state.tech_stack,
+            getattr(deps.settings, "COVERAGE_MIN_PERCENT", 80),
+            getattr(deps.settings, "LINT_REQUIRED", True),
+        )
+        if det:
+            det_paths = {d["path"].lower() for d in det}
+            kept = [f for f in out.files if f.path.lower() not in det_paths]
+            out.files = kept + [FileEntry(path=d["path"], content=d["content"]) for d in det]
+            emit({"type": "node", "node": "agent",
+                  "label": f"Added {len(det)} deterministic quality-gate config file(s) "
+                           f"(coverage {getattr(deps.settings, 'COVERAGE_MIN_PERCENT', 80)}% + lint) — no tokens spent"})
 
     await _tool(deps, emit, "github_create_branch", {"branch": out.branch, "from": "main"})
     push = await _tool(deps, emit, "github_commit_code", {

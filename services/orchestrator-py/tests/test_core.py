@@ -1863,3 +1863,33 @@ def test_prompt_loader_validates_and_ships_all_templates(tmp_path):
     ok.write_text("---\nid: ok\nversion: 3\ndescription: d\n---\nhi ${name}, JSON stays literal: {\"k\":1}", encoding="utf-8")
     parsed = parse_prompt_markdown(ok)
     assert parsed["variables"] == ["name"] and parsed["version"] == 3
+
+
+def test_deterministic_scaffold():
+    """#3 deterministic tasks: quality-gate config is generated in code, with the
+    coverage threshold pinned exactly and no LLM involvement."""
+    from app.services.scaffold import detect_stack, jira_project_key, quality_gate_files
+
+    assert detect_stack("Python + FastAPI") == "python"
+    assert detect_stack("Node.js + TypeScript") == "node"
+    assert detect_stack("Java + Spring Boot") == "java"
+    assert detect_stack("") == "generic"
+
+    # Stable, deterministic Jira key from the project name.
+    assert jira_project_key("Agile Quality Demo Platform") == "AQDP"
+    assert jira_project_key("Payments") == "PAYM"
+    assert 2 <= len(jira_project_key("x")) <= 6
+
+    # Python: coverage threshold pinned exactly into pytest.ini.
+    py = {f["path"]: f["content"] for f in quality_gate_files("Python + FastAPI", 85, True)}
+    assert "pytest.ini" in py and "--cov-fail-under=85" in py["pytest.ini"]
+    assert "ruff.toml" in py and ".editorconfig" in py
+
+    # Node: the threshold appears in the Jest coverageThreshold block.
+    node = {f["path"]: f["content"] for f in quality_gate_files("Node.js + TypeScript", 75, True)}
+    assert "jest.config.cjs" in node and "lines: 75" in node["jest.config.cjs"]
+    assert ".eslintrc.json" in node
+
+    # lint_required=False drops the linter config but keeps coverage + editorconfig.
+    no_lint = {f["path"] for f in quality_gate_files("Python", 80, False)}
+    assert "pytest.ini" in no_lint and "ruff.toml" not in no_lint
