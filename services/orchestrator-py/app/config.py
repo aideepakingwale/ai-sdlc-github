@@ -115,6 +115,13 @@ class Settings(BaseSettings):
     # AI quality validator: overall score (0-100) below this floor is flagged for
     # the human reviewer (and drives rework within the repair budget).
     QUALITY_MIN_SCORE: int = 70
+    # Coverage + lint quality gate: the code, test and CI/CD stages must target at
+    # least this unit-test coverage and produce lint-clean code, and the generated
+    # pipeline must BLOCK below it. Enforced in the prompts and checked by the
+    # validator. Set QUALITY_GATE_ENABLED=false to disable the gate entirely.
+    QUALITY_GATE_ENABLED: bool = True
+    COVERAGE_MIN_PERCENT: int = 80
+    LINT_REQUIRED: bool = True
     # Optional override for the project-creation technology catalog (language →
     # version → frameworks). Point at a JSON file to reconfigure without a
     # rebuild; unset uses the built-in default. Hot-reloaded on mtime change.

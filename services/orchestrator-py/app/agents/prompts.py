@@ -111,8 +111,25 @@ def build_phase_prompt(
     canon_block: str = "",
     formwork_block: str = "",
     user_context_block: str = "",
+    quality_gate_enabled: bool = True,
+    coverage_min: int = 80,
+    lint_required: bool = True,
 ) -> tuple[str, str]:
     phase_def = get_phase(phase)
+    # Coverage + lint quality gate applies to the test, CI/CD and implementation
+    # stages (QA, DevOps, Developer) — the stages that produce or enforce runnable
+    # code. Injected as a configurable policy the output must be able to pass.
+    quality_gate_block = ""
+    if quality_gate_enabled and phase_def.id in (4, 5, 6):
+        lint_requirement = (
+            "Code MUST be lint-clean and pass static analysis for the target stack — zero linter errors, "
+            "consistent formatting, no unused imports/dead code; include the linter and formatter config."
+            if lint_required else
+            "Follow the target stack's standard style; a linter/formatter config is recommended."
+        )
+        quality_gate_block = render(
+            "phase.system.quality_gate", coverage_min=coverage_min, lint_requirement=lint_requirement,
+        )
     system_parts = [
         render("policy.responsible_ai"),
         render("phase.system.persona",
@@ -130,6 +147,7 @@ def build_phase_prompt(
         # the stage-specific rubric a senior reviewer would apply.
         render("phase.system.craft"),
         render(f"phase.quality.{phase_def.id}"),
+        quality_gate_block,
     ]
     if has_codebase:
         # Brownfield mode: retrieved snippets include the uploaded codebase.

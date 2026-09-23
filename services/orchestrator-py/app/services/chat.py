@@ -361,6 +361,9 @@ class ChatService:
                 project_profile=self._project_profile(project),
                 has_codebase=(await self._db.count_codebase_files(project["id"])) > 0,
                 canon_block=canon_block, formwork_block=formwork_block, user_context_block=extra_context,
+                quality_gate_enabled=getattr(self._settings, "QUALITY_GATE_ENABLED", True),
+                coverage_min=getattr(self._settings, "COVERAGE_MIN_PERCENT", 80),
+                lint_required=getattr(self._settings, "LINT_REQUIRED", True),
             )
         return system, user, extra_context, context, snippets
 

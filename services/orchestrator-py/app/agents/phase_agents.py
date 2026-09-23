@@ -239,6 +239,9 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
         canon_block=canon_block,
         formwork_block=formwork_block,
         user_context_block=state.extra_context,
+        quality_gate_enabled=getattr(deps.settings, "QUALITY_GATE_ENABLED", True),
+        coverage_min=getattr(deps.settings, "COVERAGE_MIN_PERCENT", 80),
+        lint_required=getattr(deps.settings, "LINT_REQUIRED", True),
     )
     if state.extra_context:
         emit({"type": "node", "node": "agent",
