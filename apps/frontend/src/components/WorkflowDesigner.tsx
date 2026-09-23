@@ -74,7 +74,10 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const nodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const [edges, setEdges] = useState<Array<{ id: string; d: string; active: boolean }>>([]);
+  const [edges, setEdges] = useState<Array<{ id: string; d: string; active: boolean; from: string; to: string }>>([]);
+  // Drag-to-connect state: the source stage key + the live pointer position.
+  const [connectFrom, setConnectFrom] = useState<string | null>(null);
+  const [connectPos, setConnectPos] = useState<{ x: number; y: number } | null>(null);
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
 
   const wf = useQuery({
@@ -148,6 +151,25 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
     return acc;
   }, []);
 
+  /** Draw a dependency edge from → to (to depends on from). Guards self-links,
+   *  duplicates and cycles. Used by the canvas drag-to-connect. */
+  const connectEdge = useCallback((from: string, to: string) => {
+    if (!stages || from === to) return;
+    if (ancestorsOf(stages, from).has(to)) return;  // would create a cycle
+    const next = stages.map((s) =>
+      s.key === to && !s.dependsOn.includes(from)
+        ? { ...s, dependsOn: [...s.dependsOn, from] }
+        : { ...s, dependsOn: [...s.dependsOn] });
+    setStages(autoFixInputs(next));
+  }, [stages, ancestorsOf]);
+
+  /** Remove the dependency edge from → to (click an arrow to disconnect). */
+  const disconnectEdge = useCallback((from: string, to: string) => {
+    if (!stages) return;
+    setStages(stages.map((s) =>
+      s.key === to ? { ...s, dependsOn: s.dependsOn.filter((d) => d !== from) } : s));
+  }, [stages]);
+
   /** Per-stage issue list (client-side mirror of the server's intent) so each
    *  node/inspector can show precisely what is wrong with it. */
   const issuesFor = useCallback(
@@ -178,7 +200,7 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
     const cv = canvasRef.current;
     if (!cv || !stages) return;
     const base = cv.getBoundingClientRect();
-    const es: Array<{ id: string; d: string; active: boolean }> = [];
+    const es: Array<{ id: string; d: string; active: boolean; from: string; to: string }> = [];
     for (const s of stages) {
       const tgt = nodeRefs.current.get(s.key);
       if (!tgt) continue;
@@ -196,6 +218,7 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
           id: `${dep}->${s.key}`,
           d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`,
           active: selectedKey === s.key || selectedKey === dep,
+          from: dep, to: s.key,
         });
       }
     }
@@ -533,7 +556,17 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
           </div>
 
           {/* ===== center: node canvas ===== */}
-          <div ref={canvasRef} className="relative min-w-0 flex-1 overflow-auto bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:18px_18px]">
+          <div
+            ref={canvasRef}
+            className="relative min-w-0 flex-1 overflow-auto bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:18px_18px]"
+            onPointerMove={(e) => {
+              if (!connectFrom) return;
+              const cv = canvasRef.current; if (!cv) return;
+              const base = cv.getBoundingClientRect();
+              setConnectPos({ x: e.clientX - base.left + cv.scrollLeft, y: e.clientY - base.top + cv.scrollTop });
+            }}
+            onPointerUp={() => { setConnectFrom(null); setConnectPos(null); }}
+          >
             {cyclic && (
               <div className="sticky top-0 z-10 m-3 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-[11px] text-red-700">
                 ⚠ Dependency cycle detected — the layout is approximate until you break the loop.
@@ -553,15 +586,39 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
                 </marker>
               </defs>
               {edges.map((e) => (
-                <path
-                  key={e.id}
-                  d={e.d}
-                  fill="none"
-                  className={e.active ? 'stroke-brand-500' : 'stroke-slate-300'}
-                  strokeWidth={e.active ? 2 : 1.5}
-                  markerEnd={`url(#${e.active ? 'wf-arrow-active' : 'wf-arrow'})`}
-                />
+                <g key={e.id}>
+                  <path
+                    d={e.d}
+                    fill="none"
+                    className={e.active ? 'stroke-brand-500' : 'stroke-slate-300'}
+                    strokeWidth={e.active ? 2 : 1.5}
+                    markerEnd={`url(#${e.active ? 'wf-arrow-active' : 'wf-arrow'})`}
+                  />
+                  {/* wide, transparent hit target — click an edge to disconnect */}
+                  <path
+                    d={e.d}
+                    fill="none"
+                    stroke="transparent"
+                    strokeWidth={14}
+                    style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
+                    onClick={() => disconnectEdge(e.from, e.to)}
+                  >
+                    <title>Click to remove this dependency ({e.from} → {e.to})</title>
+                  </path>
+                </g>
               ))}
+              {/* live drag-to-connect line */}
+              {connectFrom && connectPos && (() => {
+                const src = nodeRefs.current.get(connectFrom);
+                const cv = canvasRef.current;
+                if (!src || !cv) return null;
+                const base = cv.getBoundingClientRect();
+                const sb = src.getBoundingClientRect();
+                const x1 = sb.right - base.left + cv.scrollLeft;
+                const y1 = sb.top + sb.height / 2 - base.top + cv.scrollTop;
+                return <path d={`M ${x1} ${y1} L ${connectPos.x} ${connectPos.y}`} fill="none"
+                  className="stroke-brand-500" strokeWidth={2} strokeDasharray="5 4" markerEnd="url(#wf-arrow-active)" />;
+              })()}
             </svg>
 
             <div className="relative inline-flex items-start gap-16 p-8">
@@ -584,7 +641,10 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
                         draggable
                         onDragStart={(e) => { setCanvasDrag(key); if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'; }}
                         onDragEnd={() => { setCanvasDrag(null); setDropZone(null); }}
-                        className={`relative w-52 cursor-grab rounded-xl border-2 bg-white px-3 py-2 shadow-sm transition active:cursor-grabbing ${
+                        onPointerUp={() => { if (connectFrom && connectFrom !== key) connectEdge(connectFrom, key); setConnectFrom(null); setConnectPos(null); }}
+                        className={`group relative w-52 cursor-grab rounded-xl border-2 bg-white px-3 py-2 shadow-sm transition active:cursor-grabbing ${
+                          connectFrom && connectFrom !== key ? 'ring-2 ring-brand-300' : ''
+                        } ${
                           canvasDrag === key
                             ? 'opacity-40'
                             : isSel
@@ -594,6 +654,13 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
                                 : 'border-slate-200 hover:border-brand-300'
                         }`}
                       >
+                        {/* connect handle — drag from here to another stage to add a dependency edge */}
+                        <div
+                          title="Drag to another stage to connect (make that stage depend on this one)"
+                          onPointerDown={(e) => { e.stopPropagation(); e.preventDefault(); setConnectFrom(key); setConnectPos(null); }}
+                          onClick={(e) => e.stopPropagation()}
+                          className="absolute -right-2 top-1/2 z-20 h-4 w-4 -translate-y-1/2 cursor-crosshair rounded-full border-2 border-white bg-brand-500 opacity-0 shadow transition group-hover:opacity-100"
+                        />
                         {/* drop zones — appear on other nodes while dragging one */}
                         {canvasDrag && canvasDrag !== key && (
                           <div className="absolute inset-0 z-10 flex overflow-hidden rounded-[10px]">
