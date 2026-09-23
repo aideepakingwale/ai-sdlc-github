@@ -425,6 +425,23 @@ class ChatService:
             self._settings.CLARIFY_MAX_QUESTIONS_REQUIREMENTS if is_requirements
             else self._settings.CLARIFY_MAX_QUESTIONS
         )
+        # Deterministic floor (model-independent): if there is genuinely nothing to
+        # work from — no request, no attached context and no upstream artifacts —
+        # the model must NOT invent scope. Return the persona's mandatory-input
+        # questions directly rather than trusting a weak model to notice the gap.
+        insufficient = (
+            not (user_input or "").strip()
+            and not (extra_context or "").strip()
+            and not context
+        )
+        if insufficient:
+            base = mandatory or [
+                "What business problem are we solving, and for whom?",
+                "What is explicitly in scope and out of scope?",
+                "What are the measurable success criteria?",
+                "Are there compliance, legal or data-privacy obligations (e.g. GDPR, PCI-DSS)?",
+            ]
+            return [f"Please provide: {b}" for b in base][:max_questions]
         digest = "\n".join(f"- [P{a.phase}] {a.type}: {a.title}" for a in context[-20:]) or "(no upstream artifacts yet)"
         if extra_context:
             digest = f"{digest}\n\nCurated context:\n{extra_context[:2000]}"

@@ -311,6 +311,47 @@ def _rework_text(verdict: ValidationVerdict) -> str:
     )
 
 
+def _deterministic_quality(state: AgentState, out: BaseModel, phase) -> tuple[list[ValidationIssue], int | None]:  # noqa: ANN001
+    """Model-independent quality guards that a weak judge model misses: content
+    generated with no grounding input, and mandated requirement sections that must
+    be present regardless of the model. Returns (extra issues, score cap)."""
+    issues: list[ValidationIssue] = []
+    cap: int | None = None
+
+    # No grounding at all → a perfect score is impossible; the scope was inferred.
+    no_input = (
+        not (state.user_input or "").strip()
+        and not (state.extra_context or "").strip()
+        and not state.context_window
+    )
+    if no_input:
+        issues.append(ValidationIssue(
+            severity="warning", area="grounding",
+            problem="Generated with no requirement input and no upstream context — the scope was inferred, not grounded.",
+            fix="Provide the actual requirements (or answer the clarifying questions) and regenerate."))
+        cap = 60
+
+    # Requirement stage must carry the mandated sections (compliance/legal,
+    # confidence, open items) — enforced deterministically so the deepening does
+    # not depend on the model choosing to include them.
+    if phase.id == 1:
+        text = getattr(out, "prdMarkdown", "") or ""
+        checks = {
+            "Compliance, legal & regulatory": r"complian|regulat|gdpr|pci|hipaa|sox|wcag|data.?privacy|\blegal\b",
+            "Requirements Confidence": r"confidence",
+            "Assumptions & Open Items": r"open item|open question|assumption",
+        }
+        missing = [name for name, pat in checks.items() if not re.search(pat, text, re.I)]
+        for name in missing:
+            issues.append(ValidationIssue(
+                severity="warning", area="completeness",
+                problem=f"The requirements are missing the mandated '{name}' section.",
+                fix=f"Add a '{name}' section to the PRD."))
+        if missing:
+            cap = min(cap if cap is not None else 100, 68)
+    return issues, cap
+
+
 async def _validate_output(
     deps: AgentDeps, state: AgentState, emit: Emit, out: BaseModel,
 ) -> ValidationVerdict:
@@ -367,6 +408,16 @@ async def _validate_output(
         # Trust the LLM's ok flag, but keep it consistent with its own issues.
         if any(i.severity == "error" for i in verdict.issues):
             verdict.ok = False
+
+    # Model-independent quality guards: no-grounding generation and missing
+    # mandated requirement sections. These run regardless of what the judge model
+    # said, so a weak judge cannot wave through invented or incomplete output.
+    det_issues, det_cap = _deterministic_quality(state, out, phase)
+    if det_issues:
+        existing = {(i.area, i.problem) for i in verdict.issues}
+        verdict.issues += [i for i in det_issues if (i.area, i.problem) not in existing]
+    if det_cap is not None:
+        verdict.score = min(verdict.score, det_cap)
 
     # Deterministic-mock output is placeholder content — cap its score and flag it.
     if state.last_provider == "mock" or "mock" in (state.last_model or "").lower():
