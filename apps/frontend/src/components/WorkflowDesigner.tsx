@@ -48,6 +48,27 @@ function computeColumns(stages: StageConfig[]): { columns: string[][]; cyclic: b
   return { columns: columns.filter((c) => c.length), cyclic };
 }
 
+/** Standard SDLC stage patterns for the palette — drag one onto the canvas to add
+ *  a pre-configured stage (persona, gate role, typical inputs/outputs). The PM can
+ *  then edit or reconnect it. Built-in templates 1–6 plus common custom patterns. */
+interface StagePreset {
+  id: string; label: string; group: string; template: number; role: string;
+  team: string[]; inputs: string[]; outputs: string[]; persona?: string;
+}
+const STAGE_PALETTE: StagePreset[] = [
+  { id: 'requirements', label: 'Requirements & Product', group: 'Discovery', template: 1, role: 'PO', team: ['PO'], inputs: ['requirements'], outputs: ['EPIC', 'FEATURE', 'USER_STORY', 'PRD'] },
+  { id: 'architecture', label: 'Solution Architecture', group: 'Design', template: 2, role: 'SA', team: ['SA'], inputs: ['PRD'], outputs: ['HLD', 'ADR', 'ARCH_DIAGRAM'] },
+  { id: 'design', label: 'Technical Design', group: 'Design', template: 3, role: 'TA', team: ['TA'], inputs: ['HLD'], outputs: ['LLD', 'OPENAPI', 'COMPONENT_DIAGRAM'] },
+  { id: 'security', label: 'Security Review', group: 'Design', template: 7, role: 'SA', team: ['SA', 'TA'], inputs: ['HLD'], outputs: ['THREAT_MODEL', 'SECURITY_REVIEW'], persona: 'Security Architect' },
+  { id: 'testing', label: 'Test Engineering', group: 'Quality', template: 4, role: 'QA', team: ['QA'], inputs: ['LLD'], outputs: ['TEST_STRATEGY', 'XRAY_TESTS', 'RTM'] },
+  { id: 'implementation', label: 'Implementation & Delivery', group: 'Build', template: 6, role: 'DEV', team: ['DEV'], inputs: ['LLD'], outputs: ['APP_CODE', 'UNIT_TESTS', 'PULL_REQUEST'] },
+  { id: 'cicd', label: 'CI/CD & Observability', group: 'Build', template: 5, role: 'DEVOPS', team: ['DEVOPS'], inputs: ['LLD'], outputs: ['GITHUB_ACTIONS', 'DOCKERFILE', 'GRAFANA_DASHBOARD'] },
+  { id: 'uat', label: 'UAT Sign-off', group: 'Release', template: 7, role: 'QA', team: ['QA', 'PO'], inputs: ['APP_CODE'], outputs: ['UAT_SIGNOFF'], persona: 'UAT Lead' },
+  { id: 'deployment', label: 'Deployment & Release', group: 'Release', template: 7, role: 'DEVOPS', team: ['DEVOPS'], inputs: ['APP_CODE'], outputs: ['DEPLOYMENT_PLAN', 'RELEASE_NOTES', 'ROLLBACK_PLAN'], persona: 'DevOps Engineer' },
+  { id: 'maintenance', label: 'Maintenance & Monitoring', group: 'Operate', template: 7, role: 'DEVOPS', team: ['DEVOPS'], inputs: ['DEPLOYMENT_PLAN'], outputs: ['RUNBOOK', 'MONITORING_PLAN', 'SLO_REPORT'], persona: 'SRE' },
+  { id: 'custom', label: 'Custom stage', group: 'Other', template: 7, role: 'DEV', team: ['DEV'], inputs: ['requirements'], outputs: ['ARTIFACT'], persona: 'Specialist' },
+];
+
 /**
  * Visual workflow workspace (, redesigned): a three-pane visual editor.
  *   • left rail — ordered stage list, click to select, drag ⠿ to reorder, add;
@@ -78,6 +99,8 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
   // Drag-to-connect state: the source stage key + the live pointer position.
   const [connectFrom, setConnectFrom] = useState<string | null>(null);
   const [connectPos, setConnectPos] = useState<{ x: number; y: number } | null>(null);
+  // Palette drag: the standard-SDLC preset being dragged onto the canvas.
+  const [paletteDrag, setPaletteDrag] = useState<StagePreset | null>(null);
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
 
   const wf = useQuery({
@@ -260,6 +283,24 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
         dependsOn: stages.length ? [stages[stages.length - 1]!.key] : [],
       },
     ]);
+    setSelectedKey(key);
+  };
+
+  /** Add a stage from a standard-SDLC palette preset (dropped on the canvas). */
+  const addPresetStage = (preset: StagePreset) => {
+    let n = stages.length + 1;
+    let key = preset.id;
+    while (stages.some((s) => s.key === key)) { key = `${preset.id}-${n}`; n += 1; }
+    const last = stages[stages.length - 1];
+    const stage: StageConfig = {
+      key, name: preset.label, template: preset.template,
+      persona: preset.persona || undefined, promptId: '', tools: [],
+      reviewerRole: preset.role, reviewerRoles: [preset.role], team: [...preset.team],
+      readRoles: [], writeRoles: [], reviewerUsers: [],
+      inputs: [...preset.inputs], outputs: [...preset.outputs],
+      dependsOn: last ? [last.key] : [],
+    };
+    setStages(autoFixInputs([...stages, stage]));
     setSelectedKey(key);
   };
 
@@ -502,8 +543,36 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
 
         {/* ---------------- three-pane body ---------------- */}
         <div className="flex min-h-0 flex-1">
-          {/* ===== left: stage rail ===== */}
-          <div className="flex w-60 shrink-0 flex-col border-r border-slate-200 bg-slate-50">
+          {/* ===== left: palette + stage rail ===== */}
+          <div className="flex w-64 shrink-0 flex-col border-r border-slate-200 bg-slate-50">
+            {/* Standard SDLC palette — drag a pattern onto the canvas (or click to add) */}
+            <div className="border-b border-slate-200">
+              <div className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                Standard stages · drag to canvas
+              </div>
+              <div className="max-h-56 space-y-1 overflow-y-auto px-2 pb-2">
+                {STAGE_PALETTE.map((p) => (
+                  <div
+                    key={p.id}
+                    draggable
+                    onDragStart={(e) => { setPaletteDrag(p); if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy'; }}
+                    onDragEnd={() => setPaletteDrag(null)}
+                    onClick={() => addPresetStage(p)}
+                    title={`${p.label} — ${p.persona || TEMPLATE_SHORT[p.template] || 'stage'} · gate ${p.role}\noutputs: ${p.outputs.join(', ')}\nDrag onto the canvas or click to add.`}
+                    className="flex cursor-grab items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-left shadow-sm transition hover:border-brand-300 active:cursor-grabbing"
+                  >
+                    <span className="rounded bg-slate-100 px-1 py-0.5 text-[9px] font-semibold uppercase text-slate-500">
+                      {TEMPLATE_SHORT[p.template] ?? `T${p.template}`}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs font-semibold text-slate-700">{p.label}</span>
+                      <span className="block truncate text-[10px] text-slate-400">{p.group} · gate {p.role}</span>
+                    </span>
+                    <span className="text-slate-300">⠿</span>
+                  </div>
+                ))}
+              </div>
+            </div>
             <div className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
               Stages · {stages.length}
             </div>
@@ -566,6 +635,8 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
               setConnectPos({ x: e.clientX - base.left + cv.scrollLeft, y: e.clientY - base.top + cv.scrollTop });
             }}
             onPointerUp={() => { setConnectFrom(null); setConnectPos(null); }}
+            onDragOver={(e) => { if (paletteDrag) e.preventDefault(); }}
+            onDrop={(e) => { if (paletteDrag) { e.preventDefault(); addPresetStage(paletteDrag); setPaletteDrag(null); } }}
           >
             {cyclic && (
               <div className="sticky top-0 z-10 m-3 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-[11px] text-red-700">
