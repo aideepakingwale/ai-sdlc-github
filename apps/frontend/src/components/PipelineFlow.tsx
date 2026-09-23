@@ -126,7 +126,7 @@ function StageCard({
       onKeyDown={(e) => e.key === 'Enter' && onFocus()}
       title={`in: ${s.inputs.join(', ')} → out: ${s.outputs.join(', ')}`}
       className={`w-40 shrink-0 cursor-pointer rounded-lg border-2 bg-white p-2 transition hover:shadow-md ${
-        focused ? 'border-brand-500 ring-2 ring-brand-200' : c.ring
+        focused ? 'border-brand-500 ring-2 ring-brand-200' : s.stale ? 'border-bared-500/50' : c.ring
       }`}
     >
       <div className="flex items-center justify-between">
@@ -135,6 +135,11 @@ function StageCard({
         </span>
         <span className={`h-2.5 w-2.5 rounded-full ${c.dot}`} title={s.status} />
       </div>
+      {s.stale && (
+        <div className="mt-1 rounded bg-bared-200 px-1.5 py-0.5 text-[9px] font-semibold text-bared-700" title={s.staleReason ?? 'An upstream input changed'}>
+          ⚠ outdated — re-run
+        </div>
+      )}
       <div className="mt-0.5 truncate text-[11px] text-slate-500" title={s.name}>
         {s.name}
       </div>

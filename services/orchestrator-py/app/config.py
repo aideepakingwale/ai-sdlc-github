@@ -109,6 +109,9 @@ class Settings(BaseSettings):
     # overlay for the reviewer to answer) instead of assuming and generating.
     CLARIFY_ENABLED: bool = True
     CLARIFY_MAX_QUESTIONS: int = 6
+    # Requirement analysis is the most crucial stage; allow a deeper holistic
+    # elicitation sweep (incl. compliance/legal/data-privacy gaps) to ask more.
+    CLARIFY_MAX_QUESTIONS_REQUIREMENTS: int = 10
     # AI quality validator: overall score (0-100) below this floor is flagged for
     # the human reviewer (and drives rework within the repair budget).
     QUALITY_MIN_SCORE: int = 70

@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { api, streamStageTrigger } from '../api/client';
@@ -118,14 +118,36 @@ export default function StageWorkspace({
   });
   const formworks = formworksQ.data?.formworks ?? [];
 
-  // Reset the curated selection when the user switches stages.
+  // Reset the compose box and curated selection when the user switches stages,
+  // so one stage's draft never leaks into another.
   useEffect(() => {
+    setPrompt('');
     setRefIds([]);
     setFormworkIds([]);
     setMention({ open: false, query: '', at: 0 });
     setPlan(null);
     setShowSystemPrompt(false);
   }, [selectedSeq]);
+
+  /** Clear the compose box, pinned references/templates and the rendered plan —
+   *  called after a stage runs so the fields don't retain the last submission. */
+  function resetComposer() {
+    setPrompt('');
+    setRefIds([]);
+    setFormworkIds([]);
+    setMention({ open: false, query: '', at: 0 });
+    setShowSystemPrompt(false);
+    setPlan(null);
+  }
+
+  // Re-run a stale (or completed) stage to refresh it against its changed upstream.
+  const retrigger = useMutation({
+    mutationFn: (seq: number) => api.post(`/api/projects/${projectId}/phase/${seq}/retrigger`),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['flow', projectId] });
+      void qc.invalidateQueries({ queryKey: ['project', projectId] });
+    },
+  });
 
   const stages = flow.stages;
   const byKey = useMemo(() => new Map(stages.map((s) => [s.key, s])), [stages]);
@@ -162,7 +184,7 @@ export default function StageWorkspace({
   // save the overlay and (re-)render the full plan — "Review / Update plan".
   async function reviewPlan(e?: FormEvent) {
     e?.preventDefault();
-    if (planBusy || streaming) return;
+    if (planBusy || streaming || promptError) return;
     setPlanBusy(true);
     setMention({ open: false, query: '', at: 0 });
     try {
@@ -185,7 +207,8 @@ export default function StageWorkspace({
       await streamStageTrigger(projectId, selectedSeq, pushEvent);
     } finally {
       endStream();
-      setPlan(null);
+      // Clear the composer so the just-submitted prompt/references don't linger.
+      resetComposer();
       void qc.invalidateQueries({ queryKey: ['project', projectId] });
       void qc.invalidateQueries({ queryKey: ['artefacts', projectId] });
       void qc.invalidateQueries({ queryKey: ['flow', projectId] });
@@ -262,6 +285,20 @@ export default function StageWorkspace({
     .map((id) => formworks.find((f) => f.id === id))
     .filter(Boolean) as Array<{ id: string; name: string; artefactType: string }>;
 
+  // ---- input validation for the compose box ----
+  // Stage 1 must be told what to build; any stage that DOES get a prompt needs a
+  // usable one (not a stray character). Later stages may run with no prompt at all.
+  const trimmedPrompt = prompt.trim();
+  const promptRequired = stage.phase === 1;
+  const promptMissing = promptRequired && trimmedPrompt.length === 0;
+  const promptTooShort = trimmedPrompt.length > 0 && trimmedPrompt.length < 12;
+  const promptError = promptMissing
+    ? 'Describe what to build before reviewing the plan.'
+    : promptTooShort
+      ? 'Add a bit more detail — at least 12 characters — so the agent has something to work with.'
+      : '';
+  const canReviewPlan = !planBusy && !streaming && !promptError;
+
   return (
     <div className="flex h-full flex-col bg-slate-50">
       {/* ---- stage header + prev/next ---- */}
@@ -293,6 +330,11 @@ export default function StageWorkspace({
             <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${meta.cls}`}>
               {meta.icon} {meta.label}
             </span>
+            {stage.stale && (
+              <span className="rounded-full bg-bared-200 px-2 py-0.5 text-[10px] font-semibold text-bared-700" title={stage.staleReason ?? 'An upstream input changed'}>
+                ⚠ Outdated
+              </span>
+            )}
           </div>
           <div className="truncate text-[11px] text-slate-500">
             {stage.persona} · gate: {stage.reviewerRole}
@@ -308,6 +350,50 @@ export default function StageWorkspace({
       </div>
 
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+        {/* ---- stale / impact-propagation banner ---- */}
+        {stage.stale && (
+          <section className="rounded-xl border border-bared-500/40 bg-bared-200/50 p-4">
+            <div className="flex items-start gap-3">
+              <span className="text-lg" aria-hidden>⚠</span>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-bared-700">This stage may be outdated</div>
+                <p className="mt-0.5 text-xs text-bared-700/90">
+                  {stage.staleReason ?? 'An upstream input was re-generated after this stage ran'}
+                  {stage.staleSource ? ` (stage ${stage.staleSource})` : ''}. Its outputs were produced from the
+                  previous version, so review or re-run this stage to bring it back in sync.
+                </p>
+                <div className="mt-2 flex items-center gap-2">
+                  {stage.canRetrigger && (
+                    <button
+                      type="button"
+                      onClick={() => retrigger.mutate(stage.phase)}
+                      disabled={retrigger.isPending}
+                      className="rounded-lg bg-bared-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-bared-700 disabled:opacity-50"
+                    >
+                      {retrigger.isPending ? 'Re-running…' : '↺ Re-run this stage'}
+                    </button>
+                  )}
+                  {stage.staleSource != null && (
+                    <button
+                      type="button"
+                      onClick={() => onSelectStage(stage.staleSource!)}
+                      className="rounded-lg border border-bared-500/40 px-3 py-1.5 text-xs font-semibold text-bared-700 hover:bg-bared-200"
+                    >
+                      View upstream change
+                    </button>
+                  )}
+                  <span className="text-[11px] text-bared-700/70">Approving this stage as-is also clears the flag.</span>
+                </div>
+                {retrigger.isError && (
+                  <div className="mt-1.5 text-[11px] text-bared-700">
+                    {retrigger.error instanceof Error ? retrigger.error.message : 'Re-run failed'}
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* ---- compose & run ---- */}
         {runnable ? (
           <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -406,10 +492,16 @@ export default function StageWorkspace({
                 </div>
               )}
 
+              {promptError && (
+                <div className="mt-2 flex items-center gap-1.5 text-[11px] font-medium text-bared-600">
+                  <span aria-hidden>⚠</span> {promptError}
+                </div>
+              )}
               <div className="mt-2 flex items-center gap-2">
                 <button
-                  disabled={planBusy || streaming || (stage.phase === 1 && prompt.trim().length === 0)}
-                  className="rounded-lg border border-brand-300 bg-brand-50 px-4 py-2 text-sm font-semibold text-brand-700 hover:bg-brand-100 disabled:opacity-40"
+                  disabled={!canReviewPlan}
+                  aria-disabled={!canReviewPlan}
+                  className="rounded-lg border border-brand-300 bg-brand-50 px-4 py-2 text-sm font-semibold text-brand-700 hover:bg-brand-100 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {planBusy ? 'Building plan…' : plan ? '↻ Update plan' : '🔍 Review plan'}
                 </button>

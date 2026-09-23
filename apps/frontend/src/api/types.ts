@@ -81,6 +81,9 @@ export interface PhaseStateView {
   reviewedBy: string | null;
   /** Server-computed: may the current viewer review this gate right now? */
   canReview: boolean;
+  /** Impact propagation: an upstream input was re-generated after this stage ran. */
+  stale?: boolean;
+  staleReason?: string | null;
 }
 
 export interface Artefact {

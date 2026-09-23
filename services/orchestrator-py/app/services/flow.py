@@ -38,6 +38,34 @@ Regenerate = Callable[[str, int, UserPublic], Awaitable[None]]
 
 log = logging.getLogger("flow")
 
+# Downstream stages carry this flag once an upstream input is re-generated; it is
+# advisory (status is untouched) and cleared when the stage is re-run.
+STALE_STATUSES = ("APPROVED", "PENDING_REVIEW", "AMEND_REQUESTED", "ESCALATED")
+
+
+def transitive_downstream_seqs(stages: list[dict[str, Any]], phase: int) -> list[int]:
+    """Seqs of every stage that depends on `phase` directly or transitively,
+    following the ``dependsOn`` DAG. Used to propagate staleness when an upstream
+    stage is re-generated."""
+    key_to_seq = {s["key"]: s["seq"] for s in stages}
+    seq_to_key = {s["seq"]: s["key"] for s in stages}
+    dependents: dict[str, list[str]] = {}
+    for s in stages:
+        for dep in (s.get("dependsOn") or []):
+            dependents.setdefault(dep, []).append(s["key"])
+    src_key = seq_to_key.get(phase)
+    if src_key is None:
+        return []
+    seen: set[str] = set()
+    queue = list(dependents.get(src_key, []))
+    while queue:
+        k = queue.pop()
+        if k in seen:
+            continue
+        seen.add(k)
+        queue.extend(dependents.get(k, []))
+    return sorted(key_to_seq[k] for k in seen if k in key_to_seq)
+
 
 class FlowService:
     def __init__(
@@ -114,6 +142,12 @@ class FlowService:
                 "artifactCount": counts.get(seq, 0),
                 "reviewedBy": st.get("reviewedBy") if st else None,
                 "updatedAt": st.get("updatedAt") if st else None,
+                # Impact propagation: set when an upstream input was re-generated
+                # after this stage had already consumed it (status is untouched).
+                "stale": bool(st.get("stale")) if st else False,
+                "staleReason": st.get("staleReason") if st else None,
+                "staleSource": st.get("staleSource") if st else None,
+                "staleSince": st.get("staleSince") if st else None,
                 "assignee": None if not assignee else {
                     "displayName": assignee["display_name"],
                     "email": assignee["email"],
@@ -135,6 +169,35 @@ class FlowService:
             "levels": wf["levels"],
             "stages": stages,
         }
+
+    async def mark_downstream_stale(self, project_id: str, phase: int, reason: str) -> list[int]:
+        """Flag every downstream stage that already consumed this stage's output as
+        stale (impact propagation). Non-destructive: statuses are preserved, only a
+        badge is added, so the reviewer decides whether to regenerate. Returns the
+        affected stage seqs."""
+        wf = await self._workflow.view(project_id)
+        stages = wf["stages"]
+        downstream = transitive_downstream_seqs(stages, phase)
+        if not downstream:
+            return []
+        states = {s["SK"]: s for s in await self._dynamo.list_phase_states(project_id)}
+        affected: list[int] = []
+        for seq in downstream:
+            st = states.get(f"PHASE#{seq}")
+            status = st["status"] if st else "NOT_STARTED"
+            if status in STALE_STATUSES:
+                await self._dynamo.mark_phase_stale(
+                    project_id=project_id, phase=seq, reason=reason, source_phase=phase,
+                )
+                affected.append(seq)
+        if affected:
+            self._audit.record(
+                project_id=project_id, phase=phase, agent_role="Orchestrator",
+                event="downstream.stale_flagged",
+                detail={"reason": reason, "affected": affected, "sourcePhase": phase},
+            )
+            log.info("flagged downstream stages %s stale (upstream %s changed)", affected, phase)
+        return affected
 
     async def retrigger(self, project_id: str, phase: int, user: UserPublic) -> dict[str, Any]:
         stage = await self._workflow.stage_by_seq(project_id, phase)
@@ -182,12 +245,19 @@ class FlowService:
             formwork_ids=(existing["formwork_ids"] if existing else []) or [],
             origin="retrigger", updated_by=user.id,
         )
+        # Impact propagation: re-running this stage will produce a new version of
+        # its outputs, so any downstream stage that already consumed the old ones is
+        # now potentially stale. Flag them immediately (advisory — statuses kept).
+        stale = await self.mark_downstream_stale(
+            project_id, phase, reason=f"Upstream stage '{stage['name']}' was re-run",
+        )
         self._audit.record(
             project_id=project_id, phase=phase, agent_role="Orchestrator",
             event="stage.retriggered", human_reviewer=user.email,
-            detail={"role": user.role, "purgedArtifacts": len(deleted), "planReview": True},
+            detail={"role": user.role, "planReview": True, "downstreamFlaggedStale": stale},
         )
-        return {"projectId": project_id, "phase": phase, "status": "NOT_STARTED", "retriggered": True, "planReview": True}
+        return {"projectId": project_id, "phase": phase, "status": "NOT_STARTED",
+                "retriggered": True, "planReview": True, "downstreamFlaggedStale": stale}
 
     async def delete_project(self, project_id: str, user: UserPublic) -> dict:
         """Permanently delete a project across EVERY store: the content-store

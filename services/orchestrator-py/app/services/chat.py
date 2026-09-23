@@ -22,6 +22,7 @@ from ..repos.aws import DynamoStore
 from ..repos.pg import Database
 from .audit import AuditService
 from .authz import AuthzService
+from .flow import STALE_STATUSES, transitive_downstream_seqs
 from .guardrails import enforce_input, sanitise_output
 from .telemetry import set_run_context
 
@@ -413,6 +414,14 @@ class ChatService:
                 persona = "Specialist"
         mandatory = resolve_mandatory_inputs(persona)
         mandatory_block = "\n".join(f"- {m}" for m in mandatory) or "- (no persona-specific mandatory inputs)"
+        # Requirement analysis warrants a deeper holistic sweep — allow more questions.
+        is_requirements = stage.get("template") == 1 or persona.strip().upper() in ("BA", "PO") or any(
+            k in persona.lower() for k in ("business analyst", "product owner", "requirements", "product manager")
+        )
+        max_questions = (
+            self._settings.CLARIFY_MAX_QUESTIONS_REQUIREMENTS if is_requirements
+            else self._settings.CLARIFY_MAX_QUESTIONS
+        )
         digest = "\n".join(f"- [P{a.phase}] {a.type}: {a.title}" for a in context[-20:]) or "(no upstream artifacts yet)"
         if extra_context:
             digest = f"{digest}\n\nCurated context:\n{extra_context[:2000]}"
@@ -424,7 +433,7 @@ class ChatService:
                 messages=[
                     {"role": "system", "content": render_prompt(
                         "clarify.system", persona=persona, stage_name=stage["name"],
-                        max_questions=self._settings.CLARIFY_MAX_QUESTIONS,
+                        max_questions=max_questions,
                         mandatory_inputs=mandatory_block)},
                     {"role": "user", "content": render_prompt(
                         "clarify.user", request=req, project_profile=self._project_profile(project),
@@ -433,7 +442,7 @@ class ChatService:
             )
         except Exception:
             return []
-        return list(out.questions)[: self._settings.CLARIFY_MAX_QUESTIONS] if out.needs_clarification else []
+        return list(out.questions)[:max_questions] if out.needs_clarification else []
 
     @staticmethod
     def _custom_fields(stage: dict) -> dict[str, Any]:
@@ -653,6 +662,13 @@ class ChatService:
                 self._audit.record(project_id=project_id, phase=phase, agent_role=stage["persona"],
                                    event="gate.pending_review", human_reviewer=user.email,
                                    detail={"reviewerRole": stage["reviewerRole"], "stage": stage["key"], "viaPlan": True})
+            # Impact propagation (#): a re-run (retrigger/amend) just produced a new
+            # version of this stage's outputs, so downstream stages that already
+            # consumed the old ones are now potentially stale. Flag them (advisory —
+            # statuses untouched) so the reviewer can decide whether to regenerate.
+            origin = (row["origin"] if row and "origin" in row else None)
+            if origin in ("retrigger", "amend"):
+                await self._flag_downstream_stale(project_id, phase, wf, states, stage["name"])
             await self._db.delete_stage_plan(project_id, phase)  # draft consumed
 
         safe_response, masked = sanitise_output(final_state.final_response)
@@ -662,6 +678,30 @@ class ChatService:
         turn_msg = f"▶ Plan triggered — {stage['name']}" + (f"\n\nInstructions: {prompt_overlay}" if prompt_overlay else "")
         await self._db.insert_chat_turn(session["id"], phase, turn_msg, safe_response)
         emit({"type": "done", "finalResponse": safe_response, "phase": phase, "gateStatus": last_gate})
+
+    async def _flag_downstream_stale(
+        self, project_id: str, phase: int, wf: dict, states: dict, stage_name: str,
+    ) -> list[int]:
+        """Mark every downstream stage that already consumed this stage's output as
+        stale after a re-run (impact propagation). Non-destructive — statuses are
+        preserved. Returns affected seqs."""
+        downstream = transitive_downstream_seqs(wf["stages"], phase)
+        affected: list[int] = []
+        reason = f"Upstream stage '{stage_name}' was re-generated"
+        for seq in downstream:
+            status = (states.get(f"PHASE#{seq}") or {}).get("status", "NOT_STARTED")
+            if status in STALE_STATUSES:
+                await self._dynamo.mark_phase_stale(
+                    project_id=project_id, phase=seq, reason=reason, source_phase=phase,
+                )
+                affected.append(seq)
+        if affected:
+            self._audit.record(
+                project_id=project_id, phase=phase, agent_role="Orchestrator",
+                event="downstream.stale_flagged",
+                detail={"reason": reason, "affected": affected, "sourcePhase": phase},
+            )
+        return affected
 
     async def _resolve_extra_context(
         self, project_id: str, referenced_artifact_ids: list[str],

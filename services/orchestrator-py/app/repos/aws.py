@@ -107,6 +107,45 @@ class DynamoStore:
         }
         await asyncio.to_thread(lambda: self.phase_table.put_item(Item=item))
 
+    async def mark_phase_stale(
+        self, *, project_id: str, phase: int, reason: str, source_phase: int,
+    ) -> None:
+        """Flag a stage as stale WITHOUT changing its status (impact propagation):
+        an upstream input was re-generated, so this stage's output may be outdated.
+        The badge is cleared when the stage is itself re-run (``put_phase_state``
+        rewrites the item) or explicitly dismissed (``clear_phase_stale``)."""
+        from datetime import UTC, datetime
+
+        def _update() -> None:
+            self.phase_table.update_item(
+                Key={"PK": f"PROJECT#{project_id}", "SK": f"PHASE#{phase}"},
+                UpdateExpression="SET #stale=:t, #sr=:r, #ss=:src, #sts=:ts",
+                ExpressionAttributeNames={
+                    "#stale": "stale", "#sr": "staleReason", "#ss": "staleSource", "#sts": "staleSince",
+                },
+                ExpressionAttributeValues={
+                    ":t": True, ":r": reason, ":src": source_phase, ":ts": datetime.now(UTC).isoformat(),
+                },
+            )
+
+        await asyncio.to_thread(_update)
+
+    async def clear_phase_stale(self, *, project_id: str, phase: int) -> None:
+        """Remove the stale flag from a stage (it was re-run or accepted as-is)."""
+        def _update() -> None:
+            self.phase_table.update_item(
+                Key={"PK": f"PROJECT#{project_id}", "SK": f"PHASE#{phase}"},
+                UpdateExpression="REMOVE #stale, #sr, #ss, #sts",
+                ExpressionAttributeNames={
+                    "#stale": "stale", "#sr": "staleReason", "#ss": "staleSource", "#sts": "staleSince",
+                },
+            )
+
+        try:
+            await asyncio.to_thread(_update)
+        except ClientError:
+            pass  # nothing to remove is fine
+
     async def transition_phase_state(
         self, *, project_id: str, phase: int, expected: str, next_status: str,
         reviewed_by: str | None = None, comments: str | None = None,

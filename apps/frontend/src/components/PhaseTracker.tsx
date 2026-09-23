@@ -68,7 +68,15 @@ export default function PhaseTracker({
                 {s.reviewedBy ? ` · by ${s.reviewedBy.split('@')[0]}` : ''}
               </div>
             </div>
-            {s.phase === currentPhase && !isSelected && (
+            {s.stale && (
+              <span
+                className="shrink-0 rounded bg-bared-500/30 px-1 text-[9px] font-semibold text-bared-200"
+                title={s.staleReason ?? 'An upstream input changed — this stage may be outdated'}
+              >
+                ⚠ outdated
+              </span>
+            )}
+            {s.phase === currentPhase && !isSelected && !s.stale && (
               <span className="shrink-0 rounded bg-white/10 px-1 text-[9px] font-semibold text-slate-300">now</span>
             )}
           </Wrapper>

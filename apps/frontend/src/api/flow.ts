@@ -21,6 +21,12 @@ export interface FlowStage {
   assignee: { displayName: string; email: string; role: string } | null;
   canReview: boolean;
   canRetrigger: boolean;
+  /** Impact propagation: an upstream input was re-generated after this stage
+   *  consumed it, so its output may be outdated (status is unchanged). */
+  stale?: boolean;
+  staleReason?: string | null;
+  staleSource?: number | null;
+  staleSince?: string | null;
 }
 
 export interface ProjectFlow {

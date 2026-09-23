@@ -269,6 +269,9 @@ class PhaseStateView(BaseModel):
     updatedAt: str
     reviewedBy: str | None
     canReview: bool = False
+    # Impact propagation: an upstream input was re-generated after this stage ran.
+    stale: bool = False
+    staleReason: str | None = None
 
 
 def estimate_tokens(text: str) -> int:

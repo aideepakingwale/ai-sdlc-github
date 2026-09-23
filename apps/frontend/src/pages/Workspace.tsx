@@ -1,9 +1,11 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import type { ProjectFlow } from '../api/flow';
-import { ROLE_LABELS, type Artefact, type Project, type ProjectDetail, type TechCatalog } from '../api/types';
+import { ROLE_LABELS, type Artefact, type Project, type ProjectDetail } from '../api/types';
+import Dashboard from '../components/Dashboard';
 import GovernancePanel from '../components/GovernancePanel';
+import NewProjectModal from '../components/NewProjectModal';
 import NotificationBell from '../components/NotificationBell';
 import ObservabilityPanel from '../components/ObservabilityPanel';
 import { useResizableWidth } from '../components/Panel';
@@ -19,17 +21,6 @@ export default function Workspace() {
   const qc = useQueryClient();
   const { user, setUser, activeProjectId, setActiveProject } = useApp();
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [newProjectName, setNewProjectName] = useState('');
-  // Structured, configurable stack (language → version → frameworks).
-  const [newLanguage, setNewLanguage] = useState<string>('');
-  const [customLanguage, setCustomLanguage] = useState(false);
-  const [newVersion, setNewVersion] = useState<string>('');
-  const [newFrameworks, setNewFrameworks] = useState<string[]>([]);
-  const [customFramework, setCustomFramework] = useState<string>('');
-  // Per-project GitHub/Atlassian targets asked at creation.
-  const [newIntegrations, setNewIntegrations] = useState({
-    githubRepo: '', atlassianSiteUrl: '', jiraProjectKey: '', confluenceSpaceKey: '',
-  });
   const [explorerOpen, setExplorerOpen] = useState(false);
   // Project whose Workflow Designer should auto-open after creation.
   const [autoDesignerId, setAutoDesignerId] = useState<string | null>(null);
@@ -43,55 +34,14 @@ export default function Workspace() {
   const rightPanel = useResizableWidth('right', 320);
   const canManage = user?.role === 'PROJECT_MANAGER' || user?.role === 'SUPER_ADMIN';
 
-  // Explicit creation via POST /api/projects: the PM names the project, then
-  // staffs the team — no chat message required to bring it into existence.
-  const createProject = useMutation({
-    mutationFn: (name: string) => {
-      // send only the targets the PM actually filled in
-      const integrations = Object.fromEntries(
-        Object.entries(newIntegrations).filter(([, v]) => v.trim()).map(([k, v]) => [k, v.trim()]),
-      );
-      return api.post<{ project: Project }>('/api/projects', {
-        name,
-        language: newLanguage.trim() || undefined,
-        languageVersion: newVersion.trim() || undefined,
-        frameworks: newFrameworks,
-        integrations,
-      });
-    },
-    onSuccess: (res) => {
-      setNewProjectOpen(false);
-      setNewProjectName('');
-      setNewFrameworks([]);
-      setCustomFramework('');
-      setNewIntegrations({ githubRepo: '', atlassianSiteUrl: '', jiraProjectKey: '', confluenceSpaceKey: '' });
-      void qc.invalidateQueries({ queryKey: ['projects'] });
-      setActiveProject(res.project.id);
-      // Open the Workflow Designer on the new project so the PM plans phases
-      // (built-in or custom) right after creation.
-      setAutoDesignerId(res.project.id);
-    },
-  });
-
-  // Configurable technology catalog (language → version → frameworks).
-  const techCatalog = useQuery({
-    queryKey: ['tech-catalog'],
-    queryFn: () => api.get<TechCatalog>('/api/meta/tech-catalog'),
-    staleTime: Infinity,
-  });
-  const languages = techCatalog.data?.languages ?? [];
-  const selectedLang = languages.find((l) => l.name === newLanguage);
-  function toggleFramework(fw: string) {
-    setNewFrameworks((s) => (s.includes(fw) ? s.filter((f) => f !== fw) : [...s, fw]));
+  // Creation happens in NewProjectModal; on success we focus the new project and
+  // auto-open its Workflow Designer so the PM plans phases right after creation.
+  function onProjectCreated(id: string) {
+    setNewProjectOpen(false);
+    void qc.invalidateQueries({ queryKey: ['projects'] });
+    setActiveProject(id);
+    setAutoDesignerId(id);
   }
-  // Default to the first catalog language once it loads (unless the PM chose custom).
-  useEffect(() => {
-    const first = languages[0];
-    if (!customLanguage && !newLanguage && first) {
-      setNewLanguage(first.name);
-      setNewVersion(first.versions[0] ?? '');
-    }
-  }, [languages, newLanguage, customLanguage]);
 
   const projects = useQuery({
     queryKey: ['projects'],
@@ -205,170 +155,13 @@ export default function Workspace() {
         </div>
 
         <div className="border-b border-white/10 p-3">
-          {user && (user.role === 'PROJECT_MANAGER' || user.role === 'SUPER_ADMIN') ? (
-            !newProjectOpen ? (
-              <button
-                onClick={() => setNewProjectOpen(true)}
-                className="w-full rounded-lg bg-brand-600 py-2 text-sm font-semibold text-white hover:bg-brand-700"
-              >
-                + New project
-              </button>
-            ) : (
-              <div className="space-y-1.5">
-                <input
-                  autoFocus
-                  className="w-full rounded-lg border border-white/20 bg-white/10 px-2.5 py-2 text-sm text-white placeholder:text-slate-400 focus:border-brand-400 focus:outline-none"
-                  placeholder="Project name…"
-                  value={newProjectName}
-                  onChange={(e) => setNewProjectName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && newProjectName.trim().length >= 3) createProject.mutate(newProjectName.trim());
-                    if (e.key === 'Escape') setNewProjectOpen(false);
-                  }}
-                />
-                {/* Structured, configurable stack: language → version → frameworks */}
-                <div className="rounded-lg border border-white/10 bg-white/5 p-2">
-                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-                    Technology stack
-                  </div>
-                  {/* Programming language */}
-                  <select
-                    className="mb-1 w-full rounded border border-white/20 bg-white/10 px-2 py-1.5 text-xs text-white focus:outline-none [&>option]:text-slate-900"
-                    value={customLanguage ? '__other__' : newLanguage}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      if (v === '__other__') {
-                        setCustomLanguage(true);
-                        setNewLanguage('');
-                        setNewVersion('');
-                        setNewFrameworks([]);
-                        return;
-                      }
-                      setCustomLanguage(false);
-                      setNewLanguage(v);
-                      const lang = languages.find((l) => l.name === v);
-                      setNewVersion(lang?.versions[0] ?? '');
-                      setNewFrameworks([]);
-                    }}
-                    title="Programming language — all designs and generated code will target it"
-                  >
-                    {languages.map((l) => (
-                      <option key={l.name} value={l.name}>
-                        {l.name}
-                      </option>
-                    ))}
-                    <option value="__other__">Other…</option>
-                  </select>
-                  {customLanguage && (
-                    <input
-                      autoFocus
-                      className="mb-1 w-full rounded border border-white/20 bg-white/10 px-2 py-1 text-xs text-white placeholder:text-slate-500 focus:border-brand-400 focus:outline-none"
-                      placeholder="Language name…"
-                      value={newLanguage}
-                      onChange={(e) => setNewLanguage(e.target.value)}
-                    />
-                  )}
-                  {/* Version (pick from the catalog or type your own) */}
-                  <input
-                    list="tech-versions"
-                    className="mb-1 w-full rounded border border-white/20 bg-white/10 px-2 py-1 text-xs text-white placeholder:text-slate-500 focus:border-brand-400 focus:outline-none"
-                    placeholder="Version — e.g. 3.12"
-                    value={newVersion}
-                    onChange={(e) => setNewVersion(e.target.value)}
-                  />
-                  <datalist id="tech-versions">
-                    {(selectedLang?.versions ?? []).map((v) => (
-                      <option key={v} value={v} />
-                    ))}
-                  </datalist>
-                  {/* Frameworks — toggle from the catalog, or add your own */}
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    {(selectedLang?.frameworks ?? []).map((fw) => (
-                      <button
-                        key={fw}
-                        type="button"
-                        onClick={() => toggleFramework(fw)}
-                        className={`rounded-full px-2 py-0.5 text-[11px] transition ${
-                          newFrameworks.includes(fw)
-                            ? 'bg-brand-500 text-white'
-                            : 'border border-white/20 bg-white/10 text-slate-200 hover:border-brand-400'
-                        }`}
-                      >
-                        {fw}
-                      </button>
-                    ))}
-                    {/* custom frameworks not present in the catalog list */}
-                    {newFrameworks
-                      .filter((fw) => !(selectedLang?.frameworks ?? []).includes(fw))
-                      .map((fw) => (
-                        <button
-                          key={fw}
-                          type="button"
-                          onClick={() => toggleFramework(fw)}
-                          className="rounded-full bg-brand-500 px-2 py-0.5 text-[11px] text-white"
-                          title="Remove"
-                        >
-                          {fw} ✕
-                        </button>
-                      ))}
-                  </div>
-                  <input
-                    className="mt-1 w-full rounded border border-white/20 bg-white/10 px-2 py-1 text-xs text-white placeholder:text-slate-500 focus:border-brand-400 focus:outline-none"
-                    placeholder="Add framework + Enter…"
-                    value={customFramework}
-                    onChange={(e) => setCustomFramework(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        const v = customFramework.trim();
-                        if (v && !newFrameworks.includes(v)) toggleFramework(v);
-                        setCustomFramework('');
-                      }
-                    }}
-                  />
-                </div>
-                {/* Per-project GitHub + Atlassian targets — all optional */}
-                <div className="rounded-lg border border-white/10 bg-white/5 p-2">
-                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-                    Integration targets (optional)
-                  </div>
-                  {([
-                    ['githubRepo', 'GitHub repo — owner/name'],
-                    ['atlassianSiteUrl', 'Atlassian site — https://acme.atlassian.net'],
-                    ['jiraProjectKey', 'Jira project key — e.g. PAY'],
-                    ['confluenceSpaceKey', 'Confluence space key — e.g. PAYDOCS'],
-                  ] as const).map(([key, ph]) => (
-                    <input
-                      key={key}
-                      className="mb-1 w-full rounded border border-white/15 bg-white/10 px-2 py-1 text-xs text-white placeholder:text-slate-500 focus:border-brand-400 focus:outline-none"
-                      placeholder={ph}
-                      value={newIntegrations[key]}
-                      onChange={(e) => setNewIntegrations((s) => ({ ...s, [key]: e.target.value }))}
-                    />
-                  ))}
-                </div>
-                <div className="flex gap-1.5">
-                  <button
-                    onClick={() => createProject.mutate(newProjectName.trim())}
-                    disabled={createProject.isPending || newProjectName.trim().length < 3}
-                    className="flex-1 rounded-lg bg-brand-600 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-40"
-                  >
-                    {createProject.isPending ? 'Creating…' : 'Create'}
-                  </button>
-                  <button
-                    onClick={() => setNewProjectOpen(false)}
-                    className="rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/10"
-                  >
-                    Cancel
-                  </button>
-                </div>
-                {createProject.isError && (
-                  <div className="rounded bg-red-500/20 px-2 py-1 text-[11px] text-red-200">
-                    {createProject.error instanceof Error ? createProject.error.message : 'Creation failed'}
-                  </div>
-                )}
-              </div>
-            )
+          {canManage ? (
+            <button
+              onClick={() => setNewProjectOpen(true)}
+              className="w-full rounded-lg bg-brand-600 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+            >
+              + New project
+            </button>
           ) : (
             <div className="rounded-lg bg-white/5 px-2.5 py-2 text-[11px] text-slate-400">
               Projects are created by a Project Manager, who assigns you to a team.
@@ -532,18 +325,20 @@ export default function Workspace() {
                 id: a.id, phase: a.phase, type: a.type, title: a.title, url: a.url,
               }))}
             />
-          ) : (
+          ) : activeProjectId ? (
             <div className="mx-auto mt-24 max-w-md px-6 text-center">
               <div className="text-4xl">🚀</div>
-              <div className="mt-3 text-lg font-semibold text-slate-700">
-                {activeProjectId ? 'Loading the pipeline…' : 'Select or create a project'}
-              </div>
-              <div className="mt-1 text-sm text-slate-500">
-                {activeProjectId
-                  ? 'Fetching stages and their status.'
-                  : 'Pick a project on the left, or a Project Manager can create one, to open its stage-by-stage SDLC workspace.'}
-              </div>
+              <div className="mt-3 text-lg font-semibold text-slate-700">Loading the pipeline…</div>
+              <div className="mt-1 text-sm text-slate-500">Fetching stages and their status.</div>
             </div>
+          ) : (
+            <Dashboard
+              projects={projects.data?.projects ?? []}
+              onOpen={setActiveProject}
+              onNewProject={() => setNewProjectOpen(true)}
+              canManage={canManage}
+              loading={projects.isLoading}
+            />
           )}
         </div>
       </main>
@@ -581,6 +376,9 @@ export default function Workspace() {
       {obsOpen && <ObservabilityPanel onClose={() => setObsOpen(false)} />}
       {contextOpen && activeProjectId && (
         <ProjectContextPanel projectId={activeProjectId} techStack={detail.data?.project.techStack} onClose={() => setContextOpen(false)} />
+      )}
+      {newProjectOpen && (
+        <NewProjectModal onClose={() => setNewProjectOpen(false)} onCreated={onProjectCreated} />
       )}
     </div>
   );

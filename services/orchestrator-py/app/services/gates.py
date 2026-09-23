@@ -57,6 +57,8 @@ class GateService:
                 updatedAt=st["updatedAt"] if st else "",
                 reviewedBy=st.get("reviewedBy") if st else None,
                 canReview=can_review,
+                stale=bool(st.get("stale")) if st else False,
+                staleReason=st.get("staleReason") if st else None,
             ))
         return views
 
@@ -95,6 +97,9 @@ class GateService:
                 project_id=project_id, phase=phase,
                 expected="PENDING_REVIEW", next_status="APPROVED", reviewed_by=user.email,
             )
+            # Approving clears any stale flag: the reviewer has accepted this output
+            # against the current upstream (whether re-generated or accepted as-is).
+            await self._dynamo.clear_phase_stale(project_id=project_id, phase=phase)
             next_phase = await self._advance_if_level_done(project_id, phase, wf)
             self._audit.record(
                 project_id=project_id, phase=phase, agent_role="GateController",
