@@ -25,6 +25,9 @@ export default function NewProjectModal({
   const [integrations, setIntegrations] = useState({
     githubRepo: '', atlassianSiteUrl: '', jiraProjectKey: '', confluenceSpaceKey: '',
   });
+  // Pipeline: the full SDLC template, or a custom pipeline the PM builds from a
+  // single starter stage in the Workflow Designer (fully dynamic).
+  const [pipeline, setPipeline] = useState<'default' | 'custom'>('default');
 
   const techCatalog = useQuery({
     queryKey: ['tech-catalog'],
@@ -51,12 +54,23 @@ export default function NewProjectModal({
       const cleanIntegrations = Object.fromEntries(
         Object.entries(integrations).filter(([, v]) => v.trim()).map(([k, v]) => [k, v.trim()]),
       );
+      // Custom pipeline → seed a single starter stage; the PM builds the rest in
+      // the Workflow Designer (which auto-opens after creation). Default → omit the
+      // workflow so the full SDLC template is used.
+      const workflow = pipeline === 'custom'
+        ? { stages: [{
+            key: 'stage1', name: 'Stage 1', template: 1,
+            reviewerRole: 'PO', reviewerRoles: ['PO'], team: ['PO'],
+            inputs: ['requirements'], outputs: ['PRD'], dependsOn: [],
+          }] }
+        : undefined;
       return api.post<{ project: Project }>('/api/projects', {
         name: name.trim(),
         language: language.trim() || undefined,
         languageVersion: version.trim() || undefined,
         frameworks,
         integrations: cleanIntegrations,
+        ...(workflow ? { workflow } : {}),
       });
     },
     onSuccess: (res) => {
@@ -98,6 +112,37 @@ export default function NewProjectModal({
               }}
             />
           </label>
+
+          {/* Pipeline — default full SDLC or a custom, build-your-own workflow */}
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Pipeline</div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {([
+                ['default', 'Full SDLC template', 'The standard end-to-end phases (requirements → delivery). You can still edit them later.'],
+                ['custom', 'Custom — build my own', 'Start from a single stage and define your own phases, order and reviewers in the Workflow Designer.'],
+              ] as const).map(([val, title, desc]) => (
+                <button
+                  key={val}
+                  type="button"
+                  onClick={() => setPipeline(val)}
+                  className={`rounded-lg border p-2.5 text-left transition ${
+                    pipeline === val ? 'border-brand-500 bg-brand-50 ring-1 ring-brand-200' : 'border-slate-300 bg-white hover:border-brand-300'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 text-sm font-semibold text-navy">
+                    <span className={`h-3 w-3 rounded-full border ${pipeline === val ? 'border-brand-500 bg-brand-500' : 'border-slate-400'}`} />
+                    {title}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-slate-500">{desc}</div>
+                </button>
+              ))}
+            </div>
+            {pipeline === 'custom' && (
+              <div className="mt-2 text-[11px] text-brand-700">
+                The Workflow Designer opens right after creation so you can add stages, set outputs and assign reviewers.
+              </div>
+            )}
+          </div>
 
           {/* Technology stack — language → version → frameworks */}
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
