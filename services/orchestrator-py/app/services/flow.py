@@ -150,8 +150,8 @@ class FlowService:
                 "staleSince": st.get("staleSince") if st else None,
                 # Multi-reviewer sign-off progress (detail via the signoffs endpoint).
                 "requiredReviewers": reviewers,
-                # Optional stage — does not block level completion (skip / start mid-pipeline).
-                "optional": bool(s.get("optional", False)),
+                # Entry stage (no dependencies) — a dynamic workflow can start here.
+                "isEntry": not (s.get("dependsOn") or []),
                 "assignee": None if not assignee else {
                     "displayName": assignee["display_name"],
                     "email": assignee["email"],

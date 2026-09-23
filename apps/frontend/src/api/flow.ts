@@ -30,8 +30,8 @@ export interface FlowStage {
   /** Multi-reviewer sign-off progress. */
   requiredReviewers?: string[];
   signedOff?: string[];
-  /** Optional stage: does not block level completion (start-mid-pipeline / skip). */
-  optional?: boolean;
+  /** Entry stage (no dependencies) — a dynamic workflow can start here. */
+  isEntry?: boolean;
 }
 
 export interface ProjectFlow {
@@ -70,8 +70,6 @@ export interface StageConfig {
   persona?: string;
   promptId?: string;
   tools?: string[];
-  /** Optional stage — included but not required to complete the workflow. */
-  optional?: boolean;
 }
 
 export interface WorkflowView {

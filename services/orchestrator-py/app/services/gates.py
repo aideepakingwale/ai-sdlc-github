@@ -285,12 +285,8 @@ class GateService:
         if level_idx is None:
             return None
         states = {s["SK"]: s for s in await self._dynamo.list_phase_states(project_id)}
-        # Optional stages don't block the level (start-mid-pipeline / skip a phase):
-        # a level is done when every REQUIRED (non-optional) gate in it is approved.
-        optional_by_seq = {s["seq"]: s.get("optional", False) for s in wf["stages"]}
         level_done = all(
-            optional_by_seq.get(seq, False)
-            or (states.get(f"PHASE#{seq}") or {}).get("status") == "APPROVED"
+            (states.get(f"PHASE#{seq}") or {}).get("status") == "APPROVED"
             for seq in levels[level_idx]
         )
         if not level_done:

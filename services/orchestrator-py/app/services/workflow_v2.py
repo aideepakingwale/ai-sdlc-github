@@ -75,10 +75,6 @@ class StageConfig(BaseModel):
     inputs: list[str] = Field(min_length=1)
     outputs: list[str] = Field(min_length=1)
     dependsOn: list[str] = Field(default_factory=list)
-    # Optional stages are not required to complete the workflow: a level advances
-    # once every NON-optional gate in it is approved, so a PM can include a phase
-    # without forcing it, or start mid-pipeline by marking earlier phases optional.
-    optional: bool = False
 
     def reviewers(self) -> list[str]:
         """Roles allowed to approve/amend this stage's gate."""
@@ -187,24 +183,25 @@ def validate_workflow(config: WorkflowConfig) -> list[str]:
     if levels is None:
         return ["Dependency cycle detected — stage order cannot be resolved"]
 
-    # Data-flow soundness: inputs must come from ancestor outputs or 'requirements'.
+    # Data-flow soundness (fully dynamic): a stage that DEPENDS on others must have
+    # its inputs produced by an ancestor (or the 'requirements' entry input). A
+    # stage with NO dependencies is an ENTRY stage — the workflow can start at any
+    # phase, and its inputs are supplied externally (uploads / pasted context), so
+    # they are not restricted to 'requirements'. This is what makes the pipeline
+    # composable from any subset of stages, in any order.
     ancestors = _ancestors(config)
     for s in config.stages:
+        if not s.dependsOn:
+            continue  # entry stage — inputs provided externally at run time
         producible = {ENTRY_INPUT}
         for anc in ancestors[s.key]:
             producible.update(by_key[anc].outputs)
         missing = [i for i in s.inputs if i not in producible]
         if missing:
-            if s.dependsOn:
-                errors.append(
-                    f"Stage '{s.key}': inputs {missing} are not produced by any upstream stage "
-                    f"(ancestors: {sorted(ancestors[s.key]) or 'none'}) — fix dependsOn order or outputs"
-                )
-            else:
-                errors.append(
-                    f"Entry stage '{s.key}': inputs {missing} unavailable — entry stages may only "
-                    f"consume '{ENTRY_INPUT}'"
-                )
+            errors.append(
+                f"Stage '{s.key}': inputs {missing} are not produced by any upstream stage "
+                f"(ancestors: {sorted(ancestors[s.key]) or 'none'}) — fix dependsOn order or outputs"
+            )
     return errors
 
 

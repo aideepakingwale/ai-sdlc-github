@@ -717,20 +717,6 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
                     </select>
                   </div>
 
-                  <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
-                    <input
-                      type="checkbox"
-                      className="mt-0.5"
-                      checked={selected.optional ?? false}
-                      onChange={(e) => update(selectedIdx, { optional: e.target.checked })}
-                    />
-                    <span className="text-[11px] text-slate-600">
-                      <span className="font-semibold text-slate-700">Optional stage</span> — included but not required.
-                      The workflow can complete without it, and stages depending on it aren't blocked. Use this to skip a
-                      phase or start mid-pipeline.
-                    </span>
-                  </label>
-
                   <div>
                     <label className="text-[10px] font-semibold uppercase text-slate-400">
                       Reviewer users (emails, optional)
