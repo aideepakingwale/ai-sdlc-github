@@ -717,6 +717,38 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
                     </select>
                   </div>
 
+                  <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={selected.optional ?? false}
+                      onChange={(e) => update(selectedIdx, { optional: e.target.checked })}
+                    />
+                    <span className="text-[11px] text-slate-600">
+                      <span className="font-semibold text-slate-700">Optional stage</span> — included but not required.
+                      The workflow can complete without it, and stages depending on it aren't blocked. Use this to skip a
+                      phase or start mid-pipeline.
+                    </span>
+                  </label>
+
+                  <div>
+                    <label className="text-[10px] font-semibold uppercase text-slate-400">
+                      Reviewer users (emails, optional)
+                    </label>
+                    <input
+                      className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-xs focus:border-brand-400 focus:outline-none"
+                      value={(selected.reviewerUsers ?? []).join(', ')}
+                      onChange={(e) => update(selectedIdx, {
+                        reviewerUsers: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
+                      })}
+                      placeholder="e.g. po@acme.com, sa@acme.com — blank = all members with the reviewer role(s)"
+                    />
+                    <div className="mt-0.5 text-[10px] text-slate-400">
+                      Every listed user must sign off every artifact before the stage completes. Leave blank to default to
+                      the project members holding the reviewer role(s).
+                    </div>
+                  </div>
+
                   {selected.template === 7 && (
                     <div className="space-y-2 rounded-lg border border-indigo-200 bg-indigo-50/50 p-2">
                       <div className="text-[10px] font-semibold uppercase tracking-wide text-indigo-500">

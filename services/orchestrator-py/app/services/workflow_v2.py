@@ -63,6 +63,10 @@ class StageConfig(BaseModel):
     reviewerRole: PhaseRole
     # Multiple roles may sign a stage's gate. Empty = [reviewerRole].
     reviewerRoles: list[PhaseRole] = Field(default_factory=list)
+    # Specific reviewer USERS (emails) required to sign off this stage's artifacts.
+    # Empty = default to the project members whose role is in reviewerRoles. Every
+    # listed user must sign every artifact before the stage completes.
+    reviewerUsers: list[str] = Field(default_factory=list)
     team: list[PhaseRole] = Field(min_length=1)
     # Separate read vs write authority within the stage. Empty lists mean
     # "fall back to the team", preserving pre- behaviour for saved configs.
@@ -71,6 +75,10 @@ class StageConfig(BaseModel):
     inputs: list[str] = Field(min_length=1)
     outputs: list[str] = Field(min_length=1)
     dependsOn: list[str] = Field(default_factory=list)
+    # Optional stages are not required to complete the workflow: a level advances
+    # once every NON-optional gate in it is approved, so a PM can include a phase
+    # without forcing it, or start mid-pipeline by marking earlier phases optional.
+    optional: bool = False
 
     def reviewers(self) -> list[str]:
         """Roles allowed to approve/amend this stage's gate."""

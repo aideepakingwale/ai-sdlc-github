@@ -272,6 +272,10 @@ class PhaseStateView(BaseModel):
     # Impact propagation: an upstream input was re-generated after this stage ran.
     stale: bool = False
     staleReason: str | None = None
+    # Multi-reviewer sign-off: which reviewer roles have signed, and the full set
+    # required. The stage completes only when signedOff covers requiredReviewers.
+    requiredReviewers: list[PhaseRole] = Field(default_factory=list)
+    signedOff: list[str] = Field(default_factory=list)
 
 
 def estimate_tokens(text: str) -> int:

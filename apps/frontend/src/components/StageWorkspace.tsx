@@ -48,7 +48,11 @@ interface StagePlan {
  *  of a run box. */
 function isRunnable(stage: ProjectFlow['stages'][number], byKey: Map<string, ProjectFlow['stages'][number]>): boolean {
   if (!['NOT_STARTED', 'AMEND_REQUESTED'].includes(stage.status)) return false;
-  return stage.dependsOn.every((dep) => byKey.get(dep)?.status === 'APPROVED');
+  // Optional dependencies don't block (they may be skipped when starting mid-pipeline).
+  return stage.dependsOn.every((dep) => {
+    const d = byKey.get(dep);
+    return !d || d.optional || d.status === 'APPROVED';
+  });
 }
 
 /**
@@ -170,7 +174,7 @@ export default function StageWorkspace({
 
   const blockedReason = !runnable && stage.status !== 'APPROVED' && stage.status !== 'PENDING_REVIEW' && stage.status !== 'IN_PROGRESS'
     ? stage.dependsOn
-        .filter((dep) => byKey.get(dep)?.status !== 'APPROVED')
+        .filter((dep) => { const d = byKey.get(dep); return d && !d.optional && d.status !== 'APPROVED'; })
         .map((dep) => byKey.get(dep)?.name ?? dep)
     : [];
 

@@ -562,6 +562,33 @@ class Database:
             project_id, list(self._QUALITY_EVENTS),
         )
 
+    # ------------------------------------------------------------ artifact sign-offs
+    async def record_artifact_signoff(
+        self, *, id: str, project_id: str, phase: int, artefact_id: str, user_id: str, user_email: str,
+    ) -> None:
+        """Record one user's sign-off of one artifact. Idempotent per (artefact, user)."""
+        assert self.pool
+        await self.pool.execute(
+            "INSERT INTO artifact_signoffs (id, project_id, phase, artefact_id, user_id, user_email) "
+            "VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (artefact_id, user_id) DO NOTHING",
+            id, project_id, phase, artefact_id, user_id, user_email,
+        )
+
+    async def list_phase_signoffs(self, project_id: str, phase: int) -> list[asyncpg.Record]:
+        assert self.pool
+        return await self.pool.fetch(
+            "SELECT artefact_id, user_id, user_email, created_at FROM artifact_signoffs "
+            "WHERE project_id=$1 AND phase=$2", project_id, phase,
+        )
+
+    async def clear_phase_signoffs(self, project_id: str, phase: int) -> None:
+        """Drop a phase's sign-offs — the content changed (amend/retrigger), so prior
+        reviews no longer apply."""
+        assert self.pool
+        await self.pool.execute(
+            "DELETE FROM artifact_signoffs WHERE project_id=$1 AND phase=$2", project_id, phase,
+        )
+
     # ------------------------------------------------------------ chat transcript
     async def insert_chat_turn(self, session_id: str, phase: int, user_msg: str, assistant_msg: str) -> None:
         assert self.pool

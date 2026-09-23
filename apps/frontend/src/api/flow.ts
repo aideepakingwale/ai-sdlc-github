@@ -27,6 +27,11 @@ export interface FlowStage {
   staleReason?: string | null;
   staleSource?: number | null;
   staleSince?: string | null;
+  /** Multi-reviewer sign-off progress. */
+  requiredReviewers?: string[];
+  signedOff?: string[];
+  /** Optional stage: does not block level completion (start-mid-pipeline / skip). */
+  optional?: boolean;
 }
 
 export interface ProjectFlow {
@@ -56,6 +61,8 @@ export interface StageConfig {
   readRoles?: string[];
   /** Roles that may run/retrigger the stage. Empty = the whole team. */
   writeRoles?: string[];
+  /** Specific reviewer user emails required to sign off. Empty = default from roles. */
+  reviewerUsers?: string[];
   inputs: string[];
   outputs: string[];
   dependsOn: string[];
@@ -63,6 +70,8 @@ export interface StageConfig {
   persona?: string;
   promptId?: string;
   tools?: string[];
+  /** Optional stage — included but not required to complete the workflow. */
+  optional?: boolean;
 }
 
 export interface WorkflowView {

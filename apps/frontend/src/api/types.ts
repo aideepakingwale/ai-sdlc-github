@@ -84,6 +84,10 @@ export interface PhaseStateView {
   /** Impact propagation: an upstream input was re-generated after this stage ran. */
   stale?: boolean;
   staleReason?: string | null;
+  /** Multi-reviewer sign-off: every required reviewer must sign before the stage
+   *  completes. `signedOff` is the roles that have signed so far. */
+  requiredReviewers?: string[];
+  signedOff?: string[];
 }
 
 export interface Artefact {

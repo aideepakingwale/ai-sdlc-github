@@ -428,6 +428,30 @@ async def review_gate(
     )
 
 
+@router.get("/api/projects/{project_id}/phase/{phase_id}/signoffs")
+async def phase_signoffs(
+    project_id: str, phase_id: int, user: UserPublic = Depends(current_user),
+    container: Container = Depends(get_container),
+) -> dict:
+    """Per-artifact, per-user sign-off progress for a stage's gate."""
+    await container.authz.assert_project_access(project_id, user)
+    return await container.gates.signoff_status(project_id, phase_id)
+
+
+@router.post("/api/projects/{project_id}/phase/{phase_id}/artefacts/{artefact_id}/signoff")
+async def sign_off_artifact(
+    project_id: str, phase_id: int, artefact_id: str,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Sign off one artifact (artifact-level review). The stage completes only when
+    every artifact is signed by every required reviewer user."""
+    if not 1 <= phase_id <= 12:
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+    return await container.gates.sign_off_artifact(
+        project_id=project_id, phase=phase_id, artefact_id=artefact_id, user=user,
+    )
+
+
 # ------------------------------------------------------------------ notifications
 @router.get("/api/projects/{project_id}/notifications")
 async def list_notifications(

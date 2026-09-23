@@ -130,6 +130,45 @@ class DynamoStore:
 
         await asyncio.to_thread(_update)
 
+    async def record_signoff(
+        self, *, project_id: str, phase: int, role: str, by: str,
+    ) -> list[dict[str, Any]]:
+        """Append one reviewer's sign-off to a stage (multi-reviewer gate). Idempotent
+        per role — a role that already signed is not duplicated. Returns the full
+        sign-off list after the write. Status is untouched here; the caller decides
+        whether all required reviewers have now signed."""
+        from datetime import UTC, datetime
+
+        current = await self.get_phase_state(project_id, phase)
+        existing = list((current or {}).get("signoffs") or [])
+        if any(s.get("role") == role for s in existing):
+            return existing  # already signed — no double count
+        existing.append({"role": role, "by": by, "at": datetime.now(UTC).isoformat()})
+
+        def _update() -> None:
+            self.phase_table.update_item(
+                Key={"PK": f"PROJECT#{project_id}", "SK": f"PHASE#{phase}"},
+                UpdateExpression="SET signoffs=:s, updatedAt=:ts",
+                ExpressionAttributeValues={":s": existing, ":ts": datetime.now(UTC).isoformat()},
+            )
+
+        await asyncio.to_thread(_update)
+        return existing
+
+    async def clear_signoffs(self, *, project_id: str, phase: int) -> None:
+        """Drop all sign-offs (the content is changing — a re-generation invalidates
+        prior reviews). Called on amend/retrigger."""
+        def _update() -> None:
+            self.phase_table.update_item(
+                Key={"PK": f"PROJECT#{project_id}", "SK": f"PHASE#{phase}"},
+                UpdateExpression="REMOVE signoffs",
+            )
+
+        try:
+            await asyncio.to_thread(_update)
+        except ClientError:
+            pass
+
     async def clear_phase_stale(self, *, project_id: str, phase: int) -> None:
         """Remove the stale flag from a stage (it was re-run or accepted as-is)."""
         def _update() -> None:

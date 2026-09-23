@@ -148,6 +148,10 @@ class FlowService:
                 "staleReason": st.get("staleReason") if st else None,
                 "staleSource": st.get("staleSource") if st else None,
                 "staleSince": st.get("staleSince") if st else None,
+                # Multi-reviewer sign-off progress (detail via the signoffs endpoint).
+                "requiredReviewers": reviewers,
+                # Optional stage — does not block level completion (skip / start mid-pipeline).
+                "optional": bool(s.get("optional", False)),
                 "assignee": None if not assignee else {
                     "displayName": assignee["display_name"],
                     "email": assignee["email"],

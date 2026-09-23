@@ -604,8 +604,11 @@ class ChatService:
         if status in ("APPROVED", "PENDING_REVIEW"):
             raise SdlcError("GATE_CONFLICT", f"Stage '{stage['name']}' is {status}; review the current generation before re-triggering")
         by_key = {s["key"]: s for s in wf["stages"]}
+        # Optional dependencies don't block (they may be skipped when starting
+        # mid-pipeline); only required upstream gates must be APPROVED first.
         unmet = [by_key[d]["name"] for d in (stage.get("dependsOn") or [])
-                 if d in by_key and (states.get(f"PHASE#{by_key[d]['seq']}") or {}).get("status") != "APPROVED"]
+                 if d in by_key and not by_key[d].get("optional")
+                 and (states.get(f"PHASE#{by_key[d]['seq']}") or {}).get("status") != "APPROVED"]
         if unmet:
             raise SdlcError("GATE_CONFLICT", f"Stage '{stage['name']}' is blocked until approved: {', '.join(unmet)}")
 
