@@ -101,6 +101,22 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
   const [connectPos, setConnectPos] = useState<{ x: number; y: number } | null>(null);
   // Palette drag: the standard-SDLC preset being dragged onto the canvas.
   const [paletteDrag, setPaletteDrag] = useState<StagePreset | null>(null);
+  // Grab-to-pan: drag empty canvas background to scroll around large graphs.
+  const panRef = useRef<{ x: number; y: number; sl: number; st: number } | null>(null);
+  const [isPanning, setIsPanning] = useState(false);
+  // Zoom the canvas so large workflows fit on screen (short drags, no autoscroll).
+  const [zoom, setZoom] = useState(1);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const fitToView = useCallback(() => {
+    const cv = canvasRef.current; const wrap = wrapperRef.current;
+    if (!cv || !wrap) return;
+    const naturalW = wrap.offsetWidth / (zoom || 1);
+    const naturalH = wrap.offsetHeight / (zoom || 1);
+    if (naturalW < 1 || naturalH < 1) return;
+    const z = Math.min(1, (cv.clientWidth - 24) / naturalW, (cv.clientHeight - 24) / naturalH);
+    setZoom(Math.max(0.3, Math.round(z * 20) / 20));
+    cv.scrollTo({ left: 0, top: 0 });
+  }, [zoom]);
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
 
   const wf = useQuery({
@@ -250,9 +266,10 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
   }, [stages, selectedKey]);
 
   useLayoutEffect(() => {
+    void zoom;  // re-measure edge positions after a zoom change
     const id = requestAnimationFrame(measure);
     return () => cancelAnimationFrame(id);
-  }, [measure, columns]);
+  }, [measure, columns, zoom]);
 
   useEffect(() => {
     const cv = canvasRef.current;
@@ -627,17 +644,44 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
           {/* ===== center: node canvas ===== */}
           <div
             ref={canvasRef}
-            className="relative min-w-0 flex-1 overflow-auto bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:18px_18px]"
-            onPointerMove={(e) => {
-              if (!connectFrom) return;
+            className={`relative min-w-0 flex-1 overflow-auto bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:18px_18px] ${
+              isPanning ? 'cursor-grabbing select-none' : 'cursor-grab'
+            }`}
+            onPointerDown={(e) => {
               const cv = canvasRef.current; if (!cv) return;
+              const el = e.target as HTMLElement;
+              // Pan only from empty background — not a node, connect handle or edge.
+              if (connectFrom || el.closest('[data-node]') || el.tagName.toLowerCase() === 'path') return;
+              panRef.current = { x: e.clientX, y: e.clientY, sl: cv.scrollLeft, st: cv.scrollTop };
+              setIsPanning(true);
+              cv.setPointerCapture?.(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+              const cv = canvasRef.current; if (!cv) return;
+              if (panRef.current) {
+                cv.scrollLeft = panRef.current.sl - (e.clientX - panRef.current.x);
+                cv.scrollTop = panRef.current.st - (e.clientY - panRef.current.y);
+                return;
+              }
+              if (!connectFrom) return;
               const base = cv.getBoundingClientRect();
               setConnectPos({ x: e.clientX - base.left + cv.scrollLeft, y: e.clientY - base.top + cv.scrollTop });
             }}
-            onPointerUp={() => { setConnectFrom(null); setConnectPos(null); }}
+            onPointerUp={() => { panRef.current = null; setIsPanning(false); setConnectFrom(null); setConnectPos(null); }}
+            onPointerLeave={() => { panRef.current = null; setIsPanning(false); }}
             onDragOver={(e) => { if (paletteDrag) e.preventDefault(); }}
             onDrop={(e) => { if (paletteDrag) { e.preventDefault(); addPresetStage(paletteDrag); setPaletteDrag(null); } }}
           >
+            {/* zoom / fit controls */}
+            <div className="sticky top-2 z-20 ml-auto mr-2 flex w-fit items-center gap-1 rounded-lg border border-slate-200 bg-white/95 px-1.5 py-1 shadow-sm">
+              <button type="button" onClick={() => setZoom((z) => Math.max(0.3, Math.round((z - 0.1) * 10) / 10))}
+                className="h-6 w-6 rounded text-sm font-bold text-slate-600 hover:bg-slate-100" title="Zoom out">−</button>
+              <span className="w-10 text-center text-[11px] font-semibold text-slate-500">{Math.round(zoom * 100)}%</span>
+              <button type="button" onClick={() => setZoom((z) => Math.min(1.5, Math.round((z + 0.1) * 10) / 10))}
+                className="h-6 w-6 rounded text-sm font-bold text-slate-600 hover:bg-slate-100" title="Zoom in">+</button>
+              <button type="button" onClick={fitToView}
+                className="ml-1 rounded px-2 py-0.5 text-[11px] font-semibold text-brand-700 hover:bg-brand-50" title="Fit the whole workflow in view">Fit</button>
+            </div>
             {cyclic && (
               <div className="sticky top-0 z-10 m-3 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-[11px] text-red-700">
                 ⚠ Dependency cycle detected — the layout is approximate until you break the loop.
@@ -692,7 +736,7 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
               })()}
             </svg>
 
-            <div className="relative inline-flex items-start gap-16 p-8">
+            <div ref={wrapperRef} className="relative inline-flex items-start gap-16 p-8" style={{ zoom }}>
               {columns.map((col, ci) => (
                 <div key={ci} className="flex flex-col gap-4">
                   <div className="text-center text-[10px] font-semibold uppercase tracking-wide text-slate-400">
@@ -707,6 +751,7 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
                     return (
                       <div
                         key={key}
+                        data-node={key}
                         ref={(el) => { if (el) nodeRefs.current.set(key, el); else nodeRefs.current.delete(key); }}
                         onClick={() => setSelectedKey(key)}
                         draggable
