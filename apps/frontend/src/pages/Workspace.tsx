@@ -42,6 +42,9 @@ export default function Workspace() {
     setNewProjectOpen(false);
     void qc.invalidateQueries({ queryKey: ['projects'] });
     setActiveProject(id);
+    // Open the pipeline map so the Workflow Designer auto-opens on first creation
+    // (the designer lives inside the map view and only auto-opens once it mounts).
+    setMapOpen(true);
     setAutoDesignerId(id);
   }
 
