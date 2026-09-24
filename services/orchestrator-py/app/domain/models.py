@@ -261,6 +261,11 @@ class AddMemberRequest(BaseModel):
     role: PhaseRole
 
 
+class StageReviewersRequest(BaseModel):
+    """Set the authorised reviewer users (emails) for a stage's sign-off matrix."""
+    users: list[str] = Field(default_factory=list)
+
+
 class PhaseStateView(BaseModel):
     phase: int
     name: str

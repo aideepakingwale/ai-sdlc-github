@@ -32,9 +32,11 @@ export default function GatePanel({ projectId, pending, artefacts, user }: Props
   const [amendOpen, setAmendOpen] = useState(false);
   const [comments, setComments] = useState('');
   const [viewArtefactId, setViewArtefactId] = useState<string | null>(null);
+  const [newReviewer, setNewReviewer] = useState('');
 
   const email = (user.email || '').toLowerCase();
   const isAdmin = user.role === 'SUPER_ADMIN';
+  const canManageReviewers = isAdmin || user.role === 'PROJECT_MANAGER';
 
   const signoffs = useQuery({
     queryKey: ['signoffs', projectId, pending.phase],
@@ -62,13 +64,29 @@ export default function GatePanel({ projectId, pending, artefacts, user }: Props
       api.post(`/api/gates/${projectId}/phase/${pending.phase}/review`, body),
     onSuccess: () => { invalidate(); setAmendOpen(false); setComments(''); },
   });
+  const setReviewers = useMutation({
+    mutationFn: (users: string[]) =>
+      api.put(`/api/projects/${projectId}/phase/${pending.phase}/reviewers`, { users }),
+    onSuccess: invalidate,
+  });
 
   const phaseArtefacts = artefacts.filter((a) => a.phase === pending.phase);
   const titleFor = (id: string) =>
     id.startsWith('stage:') ? 'Stage sign-off' : (phaseArtefacts.find((a) => a.id === id)?.title ?? id);
   const typeFor = (id: string) => phaseArtefacts.find((a) => a.id === id)?.type ?? 'STAGE';
   const rows = so?.artefacts ?? [];
-  const busy = signArtifact.isPending || review.isPending;
+  const busy = signArtifact.isPending || review.isPending || setReviewers.isPending;
+  // Matrix columns = authorised reviewers, plus the current user if they can sign
+  // (e.g. an admin acting via override) so they always have a column to click.
+  const columns = [...reviewers];
+  if (canSign && email && !columns.includes(email)) columns.push(email);
+  const short = (e: string) => e.split('@')[0];
+  const addReviewer = () => {
+    const e = newReviewer.trim().toLowerCase();
+    if (!e || reviewers.includes(e)) { setNewReviewer(''); return; }
+    setReviewers.mutate([...reviewers, e]);
+    setNewReviewer('');
+  };
 
   return (
     <div className="rounded-xl border-2 border-amber-300 bg-amber-50 p-4">
@@ -84,70 +102,121 @@ export default function GatePanel({ projectId, pending, artefacts, user }: Props
         </div>
       </div>
 
-      {/* Document sign-off progress + authorised reviewers */}
+      {/* Sign-off matrix: documents (rows) × reviewers (columns) */}
       <div className="mt-3 rounded-lg bg-white p-3">
-        <div className="mb-1.5 flex items-center justify-between">
+        <div className="mb-2 flex items-center justify-between">
           <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-            Documents signed off ({so?.signedCount ?? 0}/{so?.totalCount ?? 0})
+            Sign-off matrix — documents signed off ({so?.signedCount ?? 0}/{so?.totalCount ?? 0})
           </div>
           {so?.complete
-            ? <span className="text-[11px] font-semibold text-emerald-600">All documents signed</span>
+            ? <span className="text-[11px] font-semibold text-emerald-600">✓ All documents signed</span>
             : (so && so.totalCount - so.signedCount > 0)
-              ? <span className="text-[11px] text-amber-700">{so.totalCount - so.signedCount} document(s) awaiting sign-off</span>
+              ? <span className="text-[11px] text-amber-700">{so.totalCount - so.signedCount} awaiting sign-off</span>
               : null}
         </div>
-        <div className="text-[11px] text-slate-500">
-          Authorised reviewers:{' '}
-          {reviewers.length === 0
-            ? <span className="text-slate-400">none assigned — add project members with the stage's reviewer role, or assign users in the Workflow Designer.</span>
-            : reviewers.map((u, i) => (
-                <span key={u} className={u === email ? 'font-semibold text-brand-700' : ''}>
-                  {i > 0 ? ', ' : ''}{u}{u === email ? ' (you)' : ''}
-                </span>
-              ))}
-          . Any of them can sign any document; one reviewer may sign several.
-        </div>
-      </div>
 
-      {/* Per-artifact sign-off */}
-      <div className="mt-3 rounded-lg bg-white p-3">
-        <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
-          Artifacts — sign off each one
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr>
+                <th className="sticky left-0 z-10 bg-white px-2 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                  Document
+                </th>
+                {columns.map((u) => (
+                  <th key={u} className="px-2 py-1.5 text-center align-bottom">
+                    <div className="flex flex-col items-center gap-0.5">
+                      <span className={`max-w-[90px] truncate text-[11px] font-semibold ${u === email ? 'text-brand-700' : 'text-slate-600'}`} title={u}>
+                        {short(u)}{u === email ? ' (you)' : ''}
+                      </span>
+                      {canManageReviewers && u !== email && (
+                        <button
+                          onClick={() => setReviewers.mutate(reviewers.filter((r) => r !== u))}
+                          disabled={busy}
+                          className="text-[9px] text-slate-300 hover:text-bared-600"
+                          title="Remove reviewer"
+                        >✕ remove</button>
+                      )}
+                    </div>
+                  </th>
+                ))}
+                {columns.length === 0 && (
+                  <th className="px-2 py-1.5 text-[11px] font-normal text-slate-400">No reviewers yet — add one below.</th>
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const isStageRow = r.artefactId.startsWith('stage:');
+                const covered = r.signedBy.length > 0;
+                return (
+                  <tr key={r.artefactId} className="border-t border-slate-100">
+                    <td className="sticky left-0 z-10 bg-white px-2 py-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className={covered ? 'text-emerald-500' : 'text-slate-300'}>{covered ? '✓' : '○'}</span>
+                        <span className="rounded bg-brand-50 px-1 py-0.5 text-[9px] font-semibold text-brand-700">{typeFor(r.artefactId)}</span>
+                        {isStageRow ? (
+                          <span className="max-w-[220px] truncate text-xs text-slate-600">{titleFor(r.artefactId)}</span>
+                        ) : (
+                          <button onClick={() => setViewArtefactId(r.artefactId)} className="max-w-[220px] truncate text-left text-xs text-brand-700 hover:underline" title={titleFor(r.artefactId)}>
+                            {titleFor(r.artefactId)}
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                    {columns.map((u) => {
+                      const signed = r.signedBy.includes(u);
+                      const mine = u === email;
+                      const clickable = mine && canSign && !signed;
+                      return (
+                        <td key={u} className="px-2 py-1.5 text-center">
+                          {signed ? (
+                            <span className="text-emerald-600" title={`Signed by ${u}`}>✓</span>
+                          ) : clickable ? (
+                            <button
+                              onClick={() => signArtifact.mutate(r.artefactId)}
+                              disabled={busy}
+                              className="mx-auto block h-4 w-4 rounded border border-slate-300 hover:border-emerald-500 hover:bg-emerald-50 disabled:opacity-50"
+                              title="Click to sign off this document"
+                            />
+                          ) : (
+                            <span className="text-slate-200">·</span>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
-        <ul className="space-y-1.5">
-          {rows.map((r) => {
-            const signedByMe = r.signedBy.includes(email);
-            const isStageRow = r.artefactId.startsWith('stage:');
-            return (
-              <li key={r.artefactId} className="flex items-center gap-2 text-sm">
-                <span className="rounded bg-brand-50 px-1.5 py-0.5 text-[10px] font-semibold text-brand-700">{typeFor(r.artefactId)}</span>
-                {isStageRow ? (
-                  <span className="min-w-0 flex-1 truncate text-slate-600">{titleFor(r.artefactId)}</span>
-                ) : (
-                  <button onClick={() => setViewArtefactId(r.artefactId)} className="min-w-0 flex-1 truncate text-left text-brand-700 hover:underline">
-                    {titleFor(r.artefactId)}
-                  </button>
-                )}
-                <span className="shrink-0 text-[10px] text-slate-400">
-                  {r.signedBy.length ? `signed: ${r.signedBy.map((e) => e.split('@')[0]).join(', ')}` : 'unsigned'}
-                </span>
-                {canSign && (
-                  signedByMe ? (
-                    <span className="shrink-0 rounded bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">✓ you signed</span>
-                  ) : (
-                    <button
-                      onClick={() => signArtifact.mutate(r.artefactId)}
-                      disabled={busy}
-                      className="shrink-0 rounded bg-emerald-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
-                    >
-                      Sign off
-                    </button>
-                  )
-                )}
-              </li>
-            );
-          })}
-        </ul>
+
+        {canManageReviewers && (
+          <div className="mt-2 flex items-center gap-2">
+            <input
+              className="w-64 rounded border border-slate-300 px-2 py-1 text-xs focus:border-brand-500 focus:outline-none"
+              placeholder="Add reviewer email…"
+              value={newReviewer}
+              onChange={(e) => setNewReviewer(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') addReviewer(); }}
+            />
+            <button
+              onClick={addReviewer}
+              disabled={busy || !newReviewer.trim()}
+              className="rounded bg-brand-600 px-3 py-1 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-40"
+            >
+              + Add reviewer
+            </button>
+            {setReviewers.isError && (
+              <span className="text-[11px] text-bared-600">
+                {setReviewers.error instanceof Error ? setReviewers.error.message : 'Failed to update reviewers'}
+              </span>
+            )}
+          </div>
+        )}
+        <div className="mt-1.5 text-[10px] text-slate-400">
+          Any authorised reviewer can sign any document, and one reviewer can sign several. The stage completes once every document has a ✓.
+        </div>
       </div>
 
       {viewArtefactId && (

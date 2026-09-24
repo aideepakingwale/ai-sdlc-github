@@ -21,6 +21,7 @@ from ..domain.models import (
     GateReviewRequest,
     ProjectIntegrations,
     StagePlanUpdate,
+    StageReviewersRequest,
     UserPublic,
     can_manage_projects,
 )
@@ -435,6 +436,20 @@ async def phase_signoffs(
 ) -> dict:
     """Per-artifact, per-user sign-off progress for a stage's gate."""
     await container.authz.assert_project_access(project_id, user)
+    return await container.gates.signoff_status(project_id, phase_id)
+
+
+@router.put("/api/projects/{project_id}/phase/{phase_id}/reviewers")
+async def set_phase_reviewers(
+    project_id: str, phase_id: int, body: StageReviewersRequest,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Set the authorised reviewer users for a stage's sign-off matrix (add/remove
+    users). Managing PM or SUPER_ADMIN only."""
+    if not 1 <= phase_id <= 12:
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+    await container.authz.assert_project_access(project_id, user)
+    await container.workflow.set_stage_reviewers(project_id, phase_id, body.users, user)
     return await container.gates.signoff_status(project_id, phase_id)
 
 

@@ -295,6 +295,22 @@ class WorkflowService:
             config, version = default_workflow(), 0
         return {"config": config.model_dump(), "version": version, **derive(config)}
 
+    async def set_stage_reviewers(self, project_id: str, seq: int, users: list[str], user: Any) -> dict[str, Any]:
+        """Set the authorised reviewer users (emails) for one stage — used by the
+        sign-off matrix to add/remove reviewers. Only reviewerUsers changes; stage
+        count/keys are untouched so the save guards on running work still hold."""
+        view = await self.view(project_id)
+        target = next((s for s in view["stages"] if s["seq"] == seq), None)
+        if not target:
+            raise SdlcError("NOT_FOUND", f"No stage at position {seq} in this workflow")
+        cfg = view["config"]
+        clean = [u.strip().lower() for u in users if u and u.strip()]
+        for s in cfg["stages"]:
+            if s["key"] == target["key"]:
+                s["reviewerUsers"] = clean
+                break
+        return await self.save(project_id, cfg, user)
+
     async def stage_by_seq(self, project_id: str, seq: int) -> dict[str, Any]:
         view = await self.view(project_id)
         stage = next((s for s in view["stages"] if s["seq"] == seq), None)
