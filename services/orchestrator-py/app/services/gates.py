@@ -73,20 +73,9 @@ class GateService:
         stage = next((s for s in wf["stages"] if s["seq"] == phase), None)
         if not stage:
             raise SdlcError("NOT_FOUND", f"No stage at position {phase} in this workflow")
-        # Resolve the required reviewer USERS (default = project members whose role is
-        # a stage reviewer role; the PM can override with an explicit reviewerUsers
-        # list). Every required user must sign off every artifact before completion.
-        required_users = await self._required_reviewer_users(project_id, stage)
         project = await self._db.get_project(project_id)
-        override = user.role == "SUPER_ADMIN" or (
-            user.role == "PROJECT_MANAGER" and project and project["created_by"] == user.id
-        )
-        if not override and user.email.lower() not in required_users:
-            who = ", ".join(sorted(required_users)) or "an assigned reviewer"
-            raise SdlcError(
-                "FORBIDDEN",
-                f"Signing off '{stage['name']}' requires one of its assigned reviewers ({who}).",
-            )
+        override = self._is_override(project, user)
+        reviewers = await self._required_reviewer_users(project_id, stage)
 
         current = await self._dynamo.get_phase_state(project_id, phase)
         if not current or current["status"] != "PENDING_REVIEW":
@@ -96,31 +85,22 @@ class GateService:
             )
 
         if decision == "APPROVE":
-            # Record THIS user's sign-off of every artifact in the stage (one click
-            # covers the artifacts in their remit). The gate completes only when every
-            # artifact is signed by every required reviewer — a SUPER_ADMIN / managing
-            # PM override still force-completes as the escape hatch.
-            signable = await self._stage_signable_ids(project_id, phase)
+            # Normal completion happens automatically once every assigned review is
+            # signed off in the matrix. This endpoint's APPROVE is the managing-PM /
+            # admin OVERRIDE that force-completes the gate as the escape hatch.
             if not override:
-                for aid in signable:
-                    await self._db.record_artifact_signoff(
-                        id=str(uuid.uuid4()), project_id=project_id, phase=phase,
-                        artefact_id=aid, user_id=user.id, user_email=user.email.lower(),
-                    )
-            state = await self._signoff_state(project_id, phase, required_users, signable)
-            complete = override or state["complete"]
-            if not complete:
-                self._audit.record(
-                    project_id=project_id, phase=phase, agent_role="GateController",
-                    event="gate.signoff", human_reviewer=user.email,
-                    detail={"stage": stage["key"], "signedUsers": state["signedUsers"],
-                            "unsignedArtefacts": state["unsignedArtefacts"]},
+                raise SdlcError(
+                    "FORBIDDEN",
+                    "Sign off your assigned items in the review matrix — the stage completes automatically "
+                    "when every document is reviewed. Only a managing PM or admin can force-complete here.",
                 )
-                return {"projectId": project_id, "phase": phase, "status": "PENDING_REVIEW",
-                        "complete": False, **state}
-            return await self._finalize_gate(project_id, phase, stage, wf, user, override, state)
+            matrix = await self._review_matrix(project_id, phase, stage)
+            return await self._finalize_gate(project_id, phase, stage, wf, user, True, matrix)
 
-        # AMEND
+        # AMEND — any authorised reviewer (or override) can request changes.
+        if not override and user.email.lower() not in reviewers:
+            who = ", ".join(reviewers) or "an assigned reviewer"
+            raise SdlcError("FORBIDDEN", f"Requesting changes on '{stage['name']}' needs a reviewer ({who}).")
         if not comments or not comments.strip():
             raise SdlcError("VALIDATION_FAILED", "AMEND requires comments describing the required changes")
         # Guardrail: amend comments are injected into the regeneration
@@ -157,94 +137,148 @@ class GateService:
             log.error("amend plan-draft seed failed: %s", err)
         return {"projectId": project_id, "phase": phase, "status": "AMEND_REQUESTED", "nextPhase": None, "planReview": True}
 
-    async def sign_off_artifact(
-        self, *, project_id: str, phase: int, artefact_id: str, user: UserPublic,
-    ) -> dict[str, Any]:
-        """Record one reviewer's sign-off of ONE artifact (artifact-level review).
-        Completes the stage when every artifact is signed by every required user."""
-        wf = await self._workflow.view(project_id)
-        stage = next((s for s in wf["stages"] if s["seq"] == phase), None)
-        if not stage:
-            raise SdlcError("NOT_FOUND", f"No stage at position {phase}")
-        required_users = await self._required_reviewer_users(project_id, stage)
-        project = await self._db.get_project(project_id)
-        override = user.role == "SUPER_ADMIN" or (
-            user.role == "PROJECT_MANAGER" and project and project["created_by"] == user.id
-        )
-        if not override and user.email.lower() not in required_users:
-            who = ", ".join(sorted(required_users)) or "an assigned reviewer"
-            raise SdlcError("FORBIDDEN", f"Only an assigned reviewer ({who}) can sign off this artifact.")
-        current = await self._dynamo.get_phase_state(project_id, phase)
-        if not current or current["status"] != "PENDING_REVIEW":
-            raise SdlcError("GATE_CONFLICT", f"Stage {phase} is not awaiting review")
-        signable = await self._stage_signable_ids(project_id, phase)
-        if artefact_id not in signable:
-            raise SdlcError("NOT_FOUND", "That artifact is not part of this stage's current outputs")
-        await self._db.record_artifact_signoff(
-            id=str(uuid.uuid4()), project_id=project_id, phase=phase,
-            artefact_id=artefact_id, user_id=user.id, user_email=user.email.lower(),
-        )
-        state = await self._signoff_state(project_id, phase, required_users, signable)
-        if state["complete"]:
-            return await self._finalize_gate(project_id, phase, stage, wf, user, False, state)
-        self._audit.record(
-            project_id=project_id, phase=phase, agent_role="GateController",
-            event="gate.signoff", human_reviewer=user.email,
-            detail={"stage": stage["key"], "artefactId": artefact_id, "signedUsers": state["signedUsers"]},
-        )
-        return {"projectId": project_id, "phase": phase, "status": "PENDING_REVIEW", "complete": False, **state}
-
-    async def _required_reviewer_users(self, project_id: str, stage: dict) -> set[str]:
-        """The reviewer USER emails AUTHORISED to sign off this stage's documents
-        (lower-cased). One reviewer may sign several documents; the stage completes
-        once every document has a sign-off (not once every user has signed). PM's
-        explicit reviewerUsers wins; otherwise default to project members whose role
-        is one of the stage's reviewer roles."""
+    async def _required_reviewer_users(self, project_id: str, stage: dict) -> list[str]:
+        """The reviewer USER emails available for this stage (the matrix columns),
+        lower-cased. PM's explicit reviewerUsers wins; otherwise default to project
+        members whose role is one of the stage's reviewer roles."""
         explicit = [u.lower() for u in (stage.get("reviewerUsers") or []) if u]
         if explicit:
-            return set(explicit)
+            return sorted(dict.fromkeys(explicit))
         roles = set(stage.get("reviewerRoles") or [stage["reviewerRole"]])
         members = await self._db.list_members(project_id)
-        return {m["email"].lower() for m in members if m["role"] in roles}
+        return sorted({m["email"].lower() for m in members if m["role"] in roles})
 
-    async def _stage_signable_ids(self, project_id: str, phase: int) -> list[str]:
-        """The artifact ids in the stage that must be signed. Falls back to a single
-        synthetic stage id when the stage produced no artifacts."""
-        arts = [a for a in await self._db.list_artefacts(project_id) if a["phase"] == phase]
-        return [a["id"] for a in arts] or [f"stage:{phase}"]
+    async def _stage_artifacts(self, project_id: str, phase: int) -> list[dict[str, str]]:
+        return [{"id": a["id"], "type": a["type"]}
+                for a in await self._db.list_artefacts(project_id) if a["phase"] == phase]
 
-    async def _signoff_state(
-        self, project_id: str, phase: int, required_users: set[str], signable: list[str],
-    ) -> dict[str, Any]:
-        """Document-coverage sign-off progress: the stage completes once EVERY
-        document has at least one sign-off from an authorised reviewer. One reviewer
-        can sign several documents; not every reviewer needs to sign every document."""
-        rows = await self._db.list_phase_signoffs(project_id, phase)
-        by_art: dict[str, set[str]] = {}
-        for r in rows:
-            by_art.setdefault(r["artefact_id"], set()).add((r["user_email"] or "").lower())
-        signed_users = sorted({u for s in by_art.values() for u in s})
-        unsigned = [aid for aid in signable if not by_art.get(aid)]
-        complete = len(unsigned) == 0 and len(signable) > 0
+    def _is_override(self, project: dict | None, user: UserPublic) -> bool:
+        return user.role == "SUPER_ADMIN" or (
+            user.role == "PROJECT_MANAGER" and bool(project) and project["created_by"] == user.id
+        )
+
+    async def _review_matrix(self, project_id: str, phase: int, stage: dict) -> dict[str, Any]:
+        """Assignment + sign-off matrix. Reviewers (columns) are marked against rows:
+        the ENTIRE STAGE, each OUTPUT TYPE, or each generated ARTIFACT. A reviewer
+        signs the scope assigned to them. The stage completes when every artifact is
+        covered by an assignment and every assignment has been signed off."""
+        reviewers = await self._required_reviewer_users(project_id, stage)
+        artifacts = await self._stage_artifacts(project_id, phase)
+        output_types = list(dict.fromkeys(stage.get("outputs") or []))
+
+        assigns = await self._db.list_phase_assignments(project_id, phase)
+        assigned_by_target: dict[str, set[str]] = {}
+        for r in assigns:
+            assigned_by_target.setdefault(r["target"], set()).add((r["user_email"] or "").lower())
+        signs = await self._db.list_phase_signoffs(project_id, phase)
+        signed_by_target: dict[str, set[str]] = {}
+        for r in signs:
+            signed_by_target.setdefault(r["artefact_id"], set()).add((r["user_email"] or "").lower())
+
+        def cell(target: str) -> dict[str, list[str]]:
+            return {"assigned": sorted(assigned_by_target.get(target, set())),
+                    "signed": sorted(signed_by_target.get(target, set()))}
+
+        rows: list[dict[str, Any]] = [{"kind": "stage", "target": "stage", "label": "Entire stage"}]
+        rows += [{"kind": "type", "target": f"type:{t}", "label": t, "type": t} for t in output_types]
+        rows += [{"kind": "artifact", "target": a["id"], "artefactId": a["id"], "type": a["type"]} for a in artifacts]
+        cells = {row["target"]: cell(row["target"]) for row in rows}
+
+        def artifact_targets(a: dict[str, str]) -> list[str]:
+            return ["stage", f"type:{a['type']}", a["id"]]
+
+        def reviewed(a: dict[str, str]) -> bool:
+            # signed by someone who was assigned to any scope covering this artifact
+            for t in artifact_targets(a):
+                if assigned_by_target.get(t, set()) & signed_by_target.get(t, set()):
+                    return True
+            return False
+
+        def covered(a: dict[str, str]) -> bool:
+            return any(assigned_by_target.get(t) for t in artifact_targets(a))
+
+        reviewed_ids = [a["id"] for a in artifacts if reviewed(a)]
+        all_covered = all(covered(a) for a in artifacts)
+        # Every assignment must be individually signed by its assigned reviewer.
+        all_assignments_signed = all(
+            u in signed_by_target.get(target, set())
+            for target, users in assigned_by_target.items() for u in users
+        )
+        has_assignment = bool(assigns)
+        complete = (
+            has_assignment and all_assignments_signed
+            and (all_covered if artifacts else True)
+            and (len(reviewed_ids) == len(artifacts) if artifacts else True)
+        )
         return {
-            "reviewers": sorted(required_users),          # authorised to sign
-            "signedUsers": signed_users,                  # who has signed so far
-            "signedCount": len(signable) - len(unsigned),
-            "totalCount": len(signable),
-            "unsignedArtefacts": unsigned,
-            "artefacts": [{"artefactId": aid, "signedBy": sorted(by_art.get(aid, set()))} for aid in signable],
+            "phase": phase, "reviewers": reviewers, "outputTypes": output_types,
+            "rows": rows, "cells": cells,
+            "reviewedArtefacts": reviewed_ids,
+            "signedCount": len(reviewed_ids), "totalCount": len(artifacts),
             "complete": complete,
         }
 
     async def signoff_status(self, project_id: str, phase: int) -> dict[str, Any]:
-        """Sign-off progress for a stage — used by the gate UI."""
+        """Review matrix + progress for a stage — used by the gate UI."""
         wf = await self._workflow.view(project_id)
         stage = next((s for s in wf["stages"] if s["seq"] == phase), None)
         if not stage:
             raise SdlcError("NOT_FOUND", f"No stage at position {phase}")
-        required_users = await self._required_reviewer_users(project_id, stage)
-        signable = await self._stage_signable_ids(project_id, phase)
-        return {"phase": phase, **await self._signoff_state(project_id, phase, required_users, signable)}
+        return await self._review_matrix(project_id, phase, stage)
+
+    async def assign_review(
+        self, *, project_id: str, phase: int, target: str, user_email: str, assigned: bool, actor: UserPublic,
+    ) -> dict[str, Any]:
+        """Mark (or unmark) that `user_email` reviews `target` (stage / type:<T> /
+        artifact id). Managing PM or SUPER_ADMIN only."""
+        wf = await self._workflow.view(project_id)
+        stage = next((s for s in wf["stages"] if s["seq"] == phase), None)
+        if not stage:
+            raise SdlcError("NOT_FOUND", f"No stage at position {phase}")
+        project = await self._db.get_project(project_id)
+        if not self._is_override(project, actor):
+            raise SdlcError("FORBIDDEN", "Only the managing Project Manager or an admin can assign reviewers.")
+        email = user_email.strip().lower()
+        if assigned:
+            await self._db.add_review_assignment(
+                id=str(uuid.uuid4()), project_id=project_id, phase=phase, target=target, user_email=email)
+        else:
+            await self._db.remove_review_assignment(
+                project_id=project_id, phase=phase, target=target, user_email=email)
+        self._audit.record(project_id=project_id, phase=phase, agent_role="GateController",
+                           event="review.assigned" if assigned else "review.unassigned", human_reviewer=actor.email,
+                           detail={"stage": stage["key"], "target": target, "user": email})
+        return await self._review_matrix(project_id, phase, stage)
+
+    async def sign_off_target(
+        self, *, project_id: str, phase: int, target: str, user: UserPublic,
+    ) -> dict[str, Any]:
+        """A reviewer signs off a target they are assigned to (stage / type / artifact).
+        Completes the stage when every artifact is covered and every assignment signed."""
+        wf = await self._workflow.view(project_id)
+        stage = next((s for s in wf["stages"] if s["seq"] == phase), None)
+        if not stage:
+            raise SdlcError("NOT_FOUND", f"No stage at position {phase}")
+        current = await self._dynamo.get_phase_state(project_id, phase)
+        if not current or current["status"] != "PENDING_REVIEW":
+            raise SdlcError("GATE_CONFLICT", f"Stage {phase} is not awaiting review")
+        project = await self._db.get_project(project_id)
+        override = self._is_override(project, user)
+        email = user.email.lower()
+        assigns = await self._db.list_phase_assignments(project_id, phase)
+        assigned_here = any(a["target"] == target and (a["user_email"] or "").lower() == email for a in assigns)
+        if not assigned_here and not override:
+            raise SdlcError("FORBIDDEN", "You are not assigned to review this item.")
+        await self._db.record_artifact_signoff(
+            id=str(uuid.uuid4()), project_id=project_id, phase=phase,
+            artefact_id=target, user_id=user.id, user_email=email)
+        matrix = await self._review_matrix(project_id, phase, stage)
+        if matrix["complete"]:
+            return await self._finalize_gate(project_id, phase, stage, wf, user, False, matrix)
+        self._audit.record(project_id=project_id, phase=phase, agent_role="GateController",
+                           event="gate.signoff", human_reviewer=user.email,
+                           detail={"stage": stage["key"], "target": target})
+        return {"projectId": project_id, "phase": phase, "status": "PENDING_REVIEW", **matrix}
 
     async def _finalize_gate(
         self, project_id: str, phase: int, stage: dict, wf: dict, user: UserPublic,
@@ -270,12 +304,10 @@ class GateService:
             human_reviewer=user.email,
             detail={"role": user.role, "stage": stage["key"], "nextPhase": next_phase,
                     "superAdminOverride": override, "published": published.get("published", 0),
-                    "signedBy": state.get("signedUsers")},
+                    "reviewed": state.get("reviewedArtefacts")},
         )
         return {"projectId": project_id, "phase": phase, "status": "APPROVED", "complete": True,
-                "nextPhase": next_phase, "published": published.get("published", 0),
-                "reviewers": state.get("reviewers"), "signedUsers": state.get("signedUsers"),
-                "artefacts": state.get("artefacts")}
+                "nextPhase": next_phase, "published": published.get("published", 0), **state}
 
     async def _advance_if_level_done(self, project_id: str, phase: int, wf: dict) -> int | None:
         """Parallel-group semantics: advance only when every stage gate

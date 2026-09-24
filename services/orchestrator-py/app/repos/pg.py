@@ -589,6 +589,35 @@ class Database:
             "DELETE FROM artifact_signoffs WHERE project_id=$1 AND phase=$2", project_id, phase,
         )
 
+    # ---- review assignments (who reviews what: stage / type:<T> / artifact id) ----
+    async def add_review_assignment(self, *, id: str, project_id: str, phase: int, target: str, user_email: str) -> None:
+        assert self.pool
+        await self.pool.execute(
+            "INSERT INTO review_assignments (id, project_id, phase, target, user_email) "
+            "VALUES ($1,$2,$3,$4,$5) ON CONFLICT (project_id, phase, target, user_email) DO NOTHING",
+            id, project_id, phase, target, user_email,
+        )
+
+    async def remove_review_assignment(self, *, project_id: str, phase: int, target: str, user_email: str) -> None:
+        assert self.pool
+        await self.pool.execute(
+            "DELETE FROM review_assignments WHERE project_id=$1 AND phase=$2 AND target=$3 AND user_email=$4",
+            project_id, phase, target, user_email,
+        )
+
+    async def list_phase_assignments(self, project_id: str, phase: int) -> list[asyncpg.Record]:
+        assert self.pool
+        return await self.pool.fetch(
+            "SELECT target, user_email FROM review_assignments WHERE project_id=$1 AND phase=$2",
+            project_id, phase,
+        )
+
+    async def clear_phase_assignments(self, project_id: str, phase: int) -> None:
+        assert self.pool
+        await self.pool.execute(
+            "DELETE FROM review_assignments WHERE project_id=$1 AND phase=$2", project_id, phase,
+        )
+
     # ------------------------------------------------------------ chat transcript
     async def insert_chat_turn(self, session_id: str, phase: int, user_msg: str, assistant_msg: str) -> None:
         assert self.pool

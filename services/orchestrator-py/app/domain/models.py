@@ -266,6 +266,18 @@ class StageReviewersRequest(BaseModel):
     users: list[str] = Field(default_factory=list)
 
 
+class ReviewAssignRequest(BaseModel):
+    """Assign/unassign a reviewer to a review target (stage / type:<T> / artifact id)."""
+    target: str
+    user: str
+    assigned: bool = True
+
+
+class SignOffRequest(BaseModel):
+    """Sign off a review target (stage / type:<T> / artifact id)."""
+    target: str
+
+
 class PhaseStateView(BaseModel):
     phase: int
     name: str

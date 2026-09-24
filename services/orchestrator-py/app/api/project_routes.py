@@ -20,6 +20,8 @@ from ..domain.models import (
     FeedbackRequest,
     GateReviewRequest,
     ProjectIntegrations,
+    ReviewAssignRequest,
+    SignOffRequest,
     StagePlanUpdate,
     StageReviewersRequest,
     UserPublic,
@@ -453,17 +455,33 @@ async def set_phase_reviewers(
     return await container.gates.signoff_status(project_id, phase_id)
 
 
-@router.post("/api/projects/{project_id}/phase/{phase_id}/artefacts/{artefact_id}/signoff")
-async def sign_off_artifact(
-    project_id: str, phase_id: int, artefact_id: str,
+@router.put("/api/projects/{project_id}/phase/{phase_id}/assign")
+async def assign_review(
+    project_id: str, phase_id: int, body: ReviewAssignRequest,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
-    """Sign off one artifact (artifact-level review). The stage completes only when
-    every artifact is signed by every required reviewer user."""
+    """Mark/unmark a reviewer against a review target (stage / type:<T> / artifact id)
+    in the review matrix. Managing PM or SUPER_ADMIN only."""
     if not 1 <= phase_id <= 12:
         raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
-    return await container.gates.sign_off_artifact(
-        project_id=project_id, phase=phase_id, artefact_id=artefact_id, user=user,
+    await container.authz.assert_project_access(project_id, user)
+    return await container.gates.assign_review(
+        project_id=project_id, phase=phase_id, target=body.target,
+        user_email=body.user, assigned=body.assigned, actor=user,
+    )
+
+
+@router.post("/api/projects/{project_id}/phase/{phase_id}/signoff")
+async def sign_off_target(
+    project_id: str, phase_id: int, body: SignOffRequest,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Sign off a review target you're assigned to (stage / type:<T> / artifact id).
+    The stage completes once every document is covered and every assignment signed."""
+    if not 1 <= phase_id <= 12:
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+    return await container.gates.sign_off_target(
+        project_id=project_id, phase=phase_id, target=body.target, user=user,
     )
 
 
