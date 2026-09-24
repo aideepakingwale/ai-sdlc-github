@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import {
   PHASE_ROLE_OPTIONS,
@@ -7,6 +7,7 @@ import {
   type StageConfig,
   type WorkflowView,
 } from '../api/flow';
+import WorkflowCanvas, { STAGE_PALETTE, type StagePreset } from './WorkflowCanvas';
 
 interface ValidateResult {
   valid: boolean;
@@ -19,55 +20,6 @@ interface ValidateResult {
 const TEMPLATE_SHORT: Record<number, string> = {
   1: 'PO', 2: 'SA', 3: 'TA', 4: 'QA', 5: 'DevOps', 6: 'Dev', 7: 'Custom',
 };
-
-/**
- * Client-side layout: assign each stage to a column = longest dependency depth.
- * Runs independent of server validation so the canvas always renders something
- * meaningful (server validation additionally checks input-satisfaction and gates
- * Save). Reports `cyclic` when the dependsOn graph has a cycle.
- */
-function computeColumns(stages: StageConfig[]): { columns: string[][]; cyclic: boolean } {
-  const byKey = new Map(stages.map((s) => [s.key, s]));
-  const depthOf = new Map<string, number>();
-  const onStack = new Set<string>();
-  let cyclic = false;
-  const depth = (k: string): number => {
-    if (depthOf.has(k)) return depthOf.get(k)!;
-    if (onStack.has(k)) { cyclic = true; return 0; }
-    onStack.add(k);
-    const deps = byKey.get(k)?.dependsOn ?? [];
-    const d = deps.length ? Math.max(...deps.map(depth)) + 1 : 0;
-    onStack.delete(k);
-    depthOf.set(k, d);
-    return d;
-  };
-  stages.forEach((s) => depth(s.key));
-  const maxL = stages.length ? Math.max(...stages.map((s) => depthOf.get(s.key) ?? 0)) : 0;
-  const columns: string[][] = Array.from({ length: maxL + 1 }, () => []);
-  stages.forEach((s) => columns[depthOf.get(s.key) ?? 0]!.push(s.key));
-  return { columns: columns.filter((c) => c.length), cyclic };
-}
-
-/** Standard SDLC stage patterns for the palette — drag one onto the canvas to add
- *  a pre-configured stage (persona, gate role, typical inputs/outputs). The PM can
- *  then edit or reconnect it. Built-in templates 1–6 plus common custom patterns. */
-interface StagePreset {
-  id: string; label: string; group: string; template: number; role: string;
-  team: string[]; inputs: string[]; outputs: string[]; persona?: string;
-}
-const STAGE_PALETTE: StagePreset[] = [
-  { id: 'requirements', label: 'Requirements & Product', group: 'Discovery', template: 1, role: 'PO', team: ['PO'], inputs: ['requirements'], outputs: ['EPIC', 'FEATURE', 'USER_STORY', 'PRD'] },
-  { id: 'architecture', label: 'Solution Architecture', group: 'Design', template: 2, role: 'SA', team: ['SA'], inputs: ['PRD'], outputs: ['HLD', 'ADR', 'ARCH_DIAGRAM'] },
-  { id: 'design', label: 'Technical Design', group: 'Design', template: 3, role: 'TA', team: ['TA'], inputs: ['HLD'], outputs: ['LLD', 'OPENAPI', 'COMPONENT_DIAGRAM'] },
-  { id: 'security', label: 'Security Review', group: 'Design', template: 7, role: 'SA', team: ['SA', 'TA'], inputs: ['HLD'], outputs: ['THREAT_MODEL', 'SECURITY_REVIEW'], persona: 'Security Architect' },
-  { id: 'testing', label: 'Test Engineering', group: 'Quality', template: 4, role: 'QA', team: ['QA'], inputs: ['LLD'], outputs: ['TEST_STRATEGY', 'XRAY_TESTS', 'RTM'] },
-  { id: 'implementation', label: 'Implementation & Delivery', group: 'Build', template: 6, role: 'DEV', team: ['DEV'], inputs: ['LLD'], outputs: ['APP_CODE', 'UNIT_TESTS', 'PULL_REQUEST'] },
-  { id: 'cicd', label: 'CI/CD & Observability', group: 'Build', template: 5, role: 'DEVOPS', team: ['DEVOPS'], inputs: ['LLD'], outputs: ['GITHUB_ACTIONS', 'DOCKERFILE', 'GRAFANA_DASHBOARD'] },
-  { id: 'uat', label: 'UAT Sign-off', group: 'Release', template: 7, role: 'QA', team: ['QA', 'PO'], inputs: ['APP_CODE'], outputs: ['UAT_SIGNOFF'], persona: 'UAT Lead' },
-  { id: 'deployment', label: 'Deployment & Release', group: 'Release', template: 7, role: 'DEVOPS', team: ['DEVOPS'], inputs: ['APP_CODE'], outputs: ['DEPLOYMENT_PLAN', 'RELEASE_NOTES', 'ROLLBACK_PLAN'], persona: 'DevOps Engineer' },
-  { id: 'maintenance', label: 'Maintenance & Monitoring', group: 'Operate', template: 7, role: 'DEVOPS', team: ['DEVOPS'], inputs: ['DEPLOYMENT_PLAN'], outputs: ['RUNBOOK', 'MONITORING_PLAN', 'SLO_REPORT'], persona: 'SRE' },
-  { id: 'custom', label: 'Custom stage', group: 'Other', template: 7, role: 'DEV', team: ['DEV'], inputs: ['requirements'], outputs: ['ARTIFACT'], persona: 'Specialist' },
-];
 
 /**
  * Visual workflow workspace (, redesigned): a three-pane visual editor.
@@ -88,36 +40,6 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
   const [showErrors, setShowErrors] = useState(false);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
-  // Canvas node-to-node wiring: drag a node onto another to run it AFTER
-  // (sequential) or IN PARALLEL WITH it.
-  const [canvasDrag, setCanvasDrag] = useState<string | null>(null);
-  const [dropZone, setDropZone] = useState<{ key: string; mode: 'after' | 'parallel' } | null>(null);
-
-  const canvasRef = useRef<HTMLDivElement>(null);
-  const nodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const [edges, setEdges] = useState<Array<{ id: string; d: string; active: boolean; from: string; to: string }>>([]);
-  // Drag-to-connect state: the source stage key + the live pointer position.
-  const [connectFrom, setConnectFrom] = useState<string | null>(null);
-  const [connectPos, setConnectPos] = useState<{ x: number; y: number } | null>(null);
-  // Palette drag: the standard-SDLC preset being dragged onto the canvas.
-  const [paletteDrag, setPaletteDrag] = useState<StagePreset | null>(null);
-  // Grab-to-pan: drag empty canvas background to scroll around large graphs.
-  const panRef = useRef<{ x: number; y: number; sl: number; st: number } | null>(null);
-  const [isPanning, setIsPanning] = useState(false);
-  // Zoom the canvas so large workflows fit on screen (short drags, no autoscroll).
-  const [zoom, setZoom] = useState(1);
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const fitToView = useCallback(() => {
-    const cv = canvasRef.current; const wrap = wrapperRef.current;
-    if (!cv || !wrap) return;
-    const naturalW = wrap.offsetWidth / (zoom || 1);
-    const naturalH = wrap.offsetHeight / (zoom || 1);
-    if (naturalW < 1 || naturalH < 1) return;
-    const z = Math.min(1, (cv.clientWidth - 24) / naturalW, (cv.clientHeight - 24) / naturalH);
-    setZoom(Math.max(0.3, Math.round(z * 20) / 20));
-    cv.scrollTo({ left: 0, top: 0 });
-  }, [zoom]);
-  const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
 
   const wf = useQuery({
     queryKey: ['workflow', projectId],
@@ -171,11 +93,6 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
     (stages ?? []).forEach((s) => s.outputs.forEach((o) => set.add(o)));
     return [...set];
   }, [stages]);
-
-  const { columns, cyclic } = useMemo(
-    () => (stages ? computeColumns(stages) : { columns: [], cyclic: false }),
-    [stages],
-  );
 
   /** Transitive ancestors of a stage across the dependsOn graph. */
   const ancestorsOf = useCallback((list: StageConfig[], key: string): Set<string> => {
@@ -234,51 +151,9 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
     [ancestorsOf],
   );
 
-  // ---- measure dependency arrows between node boxes ----
-  const measure = useCallback(() => {
-    const cv = canvasRef.current;
-    if (!cv || !stages) return;
-    const base = cv.getBoundingClientRect();
-    const es: Array<{ id: string; d: string; active: boolean; from: string; to: string }> = [];
-    for (const s of stages) {
-      const tgt = nodeRefs.current.get(s.key);
-      if (!tgt) continue;
-      const tb = tgt.getBoundingClientRect();
-      for (const dep of s.dependsOn) {
-        const src = nodeRefs.current.get(dep);
-        if (!src) continue;
-        const sb = src.getBoundingClientRect();
-        const x1 = sb.right - base.left + cv.scrollLeft;
-        const y1 = sb.top + sb.height / 2 - base.top + cv.scrollTop;
-        const x2 = tb.left - base.left + cv.scrollLeft;
-        const y2 = tb.top + tb.height / 2 - base.top + cv.scrollTop;
-        const mx = (x1 + x2) / 2;
-        es.push({
-          id: `${dep}->${s.key}`,
-          d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`,
-          active: selectedKey === s.key || selectedKey === dep,
-          from: dep, to: s.key,
-        });
-      }
-    }
-    setEdges(es);
-    setCanvasSize({ w: cv.scrollWidth, h: cv.scrollHeight });
-  }, [stages, selectedKey]);
-
-  useLayoutEffect(() => {
-    void zoom;  // re-measure edge positions after a zoom change
-    const id = requestAnimationFrame(measure);
-    return () => cancelAnimationFrame(id);
-  }, [measure, columns, zoom]);
-
-  useEffect(() => {
-    const cv = canvasRef.current;
-    if (!cv) return;
-    const ro = new ResizeObserver(() => measure());
-    ro.observe(cv);
-    window.addEventListener('resize', measure);
-    return () => { ro.disconnect(); window.removeEventListener('resize', measure); };
-  }, [measure]);
+  // Stable callbacks for the canvas (avoid re-render loops in its reconcile effect).
+  const templateShortCb = useCallback((t: number) => TEMPLATE_SHORT[t] ?? `T${t}`, []);
+  const getIssuesCb = useCallback((s: StageConfig) => (stages ? issuesFor(stages, s) : []), [issuesFor, stages]);
 
   if (!stages) return null;
 
@@ -437,52 +312,6 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
     });
   };
 
-  /** Drop `movedKey` off the graph, re-linking its former dependents to its
-   *  former dependencies so nothing is orphaned. */
-  const detach = (list: StageConfig[], movedKey: string) => {
-    const moved = list.find((s) => s.key === movedKey)!;
-    const oldDeps = [...moved.dependsOn];
-    for (const s of list) {
-      if (s.key !== movedKey && s.dependsOn.includes(movedKey)) {
-        s.dependsOn = [...new Set([...s.dependsOn.filter((d) => d !== movedKey), ...oldDeps])];
-      }
-    }
-  };
-
-  /** Canvas drag → run `movedKey` sequentially AFTER `targetKey`: it depends on
-   *  the target, and the target's former dependents now depend on it. */
-  const linkAfter = (movedKey: string, targetKey: string) => {
-    if (movedKey === targetKey) return;
-    const next = stages.map((s) => ({ ...s, dependsOn: [...s.dependsOn], inputs: [...s.inputs] }));
-    detach(next, movedKey);
-    for (const s of next) {
-      if (s.key !== movedKey && s.key !== targetKey && s.dependsOn.includes(targetKey)) {
-        s.dependsOn = [...new Set([...s.dependsOn.filter((d) => d !== targetKey), movedKey])];
-      }
-    }
-    next.find((s) => s.key === movedKey)!.dependsOn = [targetKey];
-    setStages(autoFixInputs(next));
-    setSelectedKey(movedKey);
-  };
-
-  /** Canvas drag → run `movedKey` IN PARALLEL WITH `targetKey`: it inherits the
-   *  target's dependencies (same level) and the target's dependents also wait
-   *  on it, so the branches converge. */
-  const linkParallel = (movedKey: string, targetKey: string) => {
-    if (movedKey === targetKey) return;
-    const next = stages.map((s) => ({ ...s, dependsOn: [...s.dependsOn], inputs: [...s.inputs] }));
-    detach(next, movedKey);
-    const target = next.find((s) => s.key === targetKey)!;
-    next.find((s) => s.key === movedKey)!.dependsOn = target.dependsOn.filter((d) => d !== movedKey);
-    for (const s of next) {
-      if (s.key !== movedKey && s.key !== targetKey && s.dependsOn.includes(targetKey)) {
-        s.dependsOn = [...new Set([...s.dependsOn, movedKey])];
-      }
-    }
-    setStages(autoFixInputs(next));
-    setSelectedKey(movedKey);
-  };
-
   const removeStage = (idx: number) => {
     const gone = stages[idx]!.key;
     const next = stages
@@ -572,8 +401,7 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
                   <div
                     key={p.id}
                     draggable
-                    onDragStart={(e) => { setPaletteDrag(p); if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy'; }}
-                    onDragEnd={() => setPaletteDrag(null)}
+                    onDragStart={(e) => { e.dataTransfer.setData('application/wf-preset', p.id); e.dataTransfer.effectAllowed = 'copy'; }}
                     onClick={() => addPresetStage(p)}
                     title={`${p.label} — ${p.persona || TEMPLATE_SHORT[p.template] || 'stage'} · gate ${p.role}\noutputs: ${p.outputs.join(', ')}\nDrag onto the canvas or click to add.`}
                     className="flex cursor-grab items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-left shadow-sm transition hover:border-brand-300 active:cursor-grabbing"
@@ -641,195 +469,20 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
             </button>
           </div>
 
-          {/* ===== center: node canvas ===== */}
-          <div
-            ref={canvasRef}
-            className={`relative min-w-0 flex-1 overflow-auto bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:18px_18px] ${
-              isPanning ? 'cursor-grabbing select-none' : 'cursor-grab'
-            }`}
-            onPointerDown={(e) => {
-              const cv = canvasRef.current; if (!cv) return;
-              const el = e.target as HTMLElement;
-              // Pan only from empty background — not a node, connect handle or edge.
-              if (connectFrom || el.closest('[data-node]') || el.tagName.toLowerCase() === 'path') return;
-              panRef.current = { x: e.clientX, y: e.clientY, sl: cv.scrollLeft, st: cv.scrollTop };
-              setIsPanning(true);
-              cv.setPointerCapture?.(e.pointerId);
-            }}
-            onPointerMove={(e) => {
-              const cv = canvasRef.current; if (!cv) return;
-              if (panRef.current) {
-                cv.scrollLeft = panRef.current.sl - (e.clientX - panRef.current.x);
-                cv.scrollTop = panRef.current.st - (e.clientY - panRef.current.y);
-                return;
-              }
-              if (!connectFrom) return;
-              const base = cv.getBoundingClientRect();
-              setConnectPos({ x: e.clientX - base.left + cv.scrollLeft, y: e.clientY - base.top + cv.scrollTop });
-            }}
-            onPointerUp={() => { panRef.current = null; setIsPanning(false); setConnectFrom(null); setConnectPos(null); }}
-            onPointerLeave={() => { panRef.current = null; setIsPanning(false); }}
-            onDragOver={(e) => { if (paletteDrag) e.preventDefault(); }}
-            onDrop={(e) => { if (paletteDrag) { e.preventDefault(); addPresetStage(paletteDrag); setPaletteDrag(null); } }}
-          >
-            {/* zoom / fit controls */}
-            <div className="sticky top-2 z-20 ml-auto mr-2 flex w-fit items-center gap-1 rounded-lg border border-slate-200 bg-white/95 px-1.5 py-1 shadow-sm">
-              <button type="button" onClick={() => setZoom((z) => Math.max(0.3, Math.round((z - 0.1) * 10) / 10))}
-                className="h-6 w-6 rounded text-sm font-bold text-slate-600 hover:bg-slate-100" title="Zoom out">−</button>
-              <span className="w-10 text-center text-[11px] font-semibold text-slate-500">{Math.round(zoom * 100)}%</span>
-              <button type="button" onClick={() => setZoom((z) => Math.min(1.5, Math.round((z + 0.1) * 10) / 10))}
-                className="h-6 w-6 rounded text-sm font-bold text-slate-600 hover:bg-slate-100" title="Zoom in">+</button>
-              <button type="button" onClick={fitToView}
-                className="ml-1 rounded px-2 py-0.5 text-[11px] font-semibold text-brand-700 hover:bg-brand-50" title="Fit the whole workflow in view">Fit</button>
-            </div>
-            {cyclic && (
-              <div className="sticky top-0 z-10 m-3 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-[11px] text-red-700">
-                ⚠ Dependency cycle detected — the layout is approximate until you break the loop.
-              </div>
-            )}
-            {/* arrows */}
-            <svg
-              className="pointer-events-none absolute left-0 top-0"
-              width={canvasSize.w} height={canvasSize.h}
-            >
-              <defs>
-                <marker id="wf-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-                  <path d="M0,0 L8,4 L0,8 Z" className="fill-slate-400" />
-                </marker>
-                <marker id="wf-arrow-active" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-                  <path d="M0,0 L8,4 L0,8 Z" className="fill-brand-500" />
-                </marker>
-              </defs>
-              {edges.map((e) => (
-                <g key={e.id}>
-                  <path
-                    d={e.d}
-                    fill="none"
-                    className={e.active ? 'stroke-brand-500' : 'stroke-slate-300'}
-                    strokeWidth={e.active ? 2 : 1.5}
-                    markerEnd={`url(#${e.active ? 'wf-arrow-active' : 'wf-arrow'})`}
-                  />
-                  {/* wide, transparent hit target — click an edge to disconnect */}
-                  <path
-                    d={e.d}
-                    fill="none"
-                    stroke="transparent"
-                    strokeWidth={14}
-                    style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
-                    onClick={() => disconnectEdge(e.from, e.to)}
-                  >
-                    <title>Click to remove this dependency ({e.from} → {e.to})</title>
-                  </path>
-                </g>
-              ))}
-              {/* live drag-to-connect line */}
-              {connectFrom && connectPos && (() => {
-                const src = nodeRefs.current.get(connectFrom);
-                const cv = canvasRef.current;
-                if (!src || !cv) return null;
-                const base = cv.getBoundingClientRect();
-                const sb = src.getBoundingClientRect();
-                const x1 = sb.right - base.left + cv.scrollLeft;
-                const y1 = sb.top + sb.height / 2 - base.top + cv.scrollTop;
-                return <path d={`M ${x1} ${y1} L ${connectPos.x} ${connectPos.y}`} fill="none"
-                  className="stroke-brand-500" strokeWidth={2} strokeDasharray="5 4" markerEnd="url(#wf-arrow-active)" />;
-              })()}
-            </svg>
-
-            <div ref={wrapperRef} className="relative inline-flex items-start gap-16 p-8" style={{ zoom }}>
-              {columns.map((col, ci) => (
-                <div key={ci} className="flex flex-col gap-4">
-                  <div className="text-center text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-                    {ci === 0 ? 'Start' : `Level ${ci + 1}`}
-                    {col.length > 1 && <span className="ml-1 text-indigo-400">∥</span>}
-                  </div>
-                  {col.map((key) => {
-                    const idx = stages.findIndex((s) => s.key === key);
-                    const s = stages[idx]!;
-                    const issues = issuesFor(stages, s);
-                    const isSel = key === selectedKey;
-                    return (
-                      <div
-                        key={key}
-                        data-node={key}
-                        ref={(el) => { if (el) nodeRefs.current.set(key, el); else nodeRefs.current.delete(key); }}
-                        onClick={() => setSelectedKey(key)}
-                        draggable
-                        onDragStart={(e) => { setCanvasDrag(key); if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'; }}
-                        onDragEnd={() => { setCanvasDrag(null); setDropZone(null); }}
-                        onPointerUp={() => { if (connectFrom && connectFrom !== key) connectEdge(connectFrom, key); setConnectFrom(null); setConnectPos(null); }}
-                        className={`group relative w-52 cursor-grab rounded-xl border-2 bg-white px-3 py-2 shadow-sm transition active:cursor-grabbing ${
-                          connectFrom && connectFrom !== key ? 'ring-2 ring-brand-300' : ''
-                        } ${
-                          canvasDrag === key
-                            ? 'opacity-40'
-                            : isSel
-                              ? 'border-brand-500 ring-2 ring-brand-200'
-                              : issues.length
-                                ? 'border-red-300 hover:border-red-400'
-                                : 'border-slate-200 hover:border-brand-300'
-                        }`}
-                      >
-                        {/* connect handle — drag from here to another stage to add a dependency edge */}
-                        <div
-                          title="Drag to another stage to connect (make that stage depend on this one)"
-                          onPointerDown={(e) => { e.stopPropagation(); e.preventDefault(); setConnectFrom(key); setConnectPos(null); }}
-                          onClick={(e) => e.stopPropagation()}
-                          className="absolute -right-2 top-1/2 z-20 h-4 w-4 -translate-y-1/2 cursor-crosshair rounded-full border-2 border-white bg-brand-500 opacity-0 shadow transition group-hover:opacity-100"
-                        />
-                        {/* drop zones — appear on other nodes while dragging one */}
-                        {canvasDrag && canvasDrag !== key && (
-                          <div className="absolute inset-0 z-10 flex overflow-hidden rounded-[10px]">
-                            <div
-                              onDragOver={(e) => { e.preventDefault(); setDropZone({ key, mode: 'parallel' }); }}
-                              onDrop={(e) => { e.preventDefault(); linkParallel(canvasDrag, key); setCanvasDrag(null); setDropZone(null); }}
-                              className={`flex flex-1 items-center justify-center text-[10px] font-bold ${
-                                dropZone?.key === key && dropZone.mode === 'parallel'
-                                  ? 'bg-indigo-500/90 text-white' : 'bg-indigo-100/85 text-indigo-700'
-                              }`}
-                            >∥ parallel</div>
-                            <div
-                              onDragOver={(e) => { e.preventDefault(); setDropZone({ key, mode: 'after' }); }}
-                              onDrop={(e) => { e.preventDefault(); linkAfter(canvasDrag, key); setCanvasDrag(null); setDropZone(null); }}
-                              className={`flex flex-1 items-center justify-center text-[10px] font-bold ${
-                                dropZone?.key === key && dropZone.mode === 'after'
-                                  ? 'bg-brand-500/90 text-white' : 'bg-brand-100/85 text-brand-700'
-                              }`}
-                            >→ after</div>
-                          </div>
-                        )}
-                        <div className="flex items-center justify-between">
-                          <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-slate-100 px-1 text-[10px] font-bold text-slate-500">
-                            {idx + 1}
-                          </span>
-                          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-slate-500">
-                            {TEMPLATE_SHORT[s.template] ?? `T${s.template}`}
-                          </span>
-                        </div>
-                        <div className="mt-1 truncate text-sm font-semibold text-slate-800" title={s.name}>
-                          {s.name || 'Untitled'}
-                        </div>
-                        <div className="mt-1 flex items-center gap-1 text-[10px] text-slate-400">
-                          <span
-                            className="rounded-full bg-brand-50 px-1.5 py-0.5 font-semibold text-brand-600"
-                            title={`Gate reviewers: ${(s.reviewerRoles?.length ? s.reviewerRoles : [s.reviewerRole]).join(', ')}`}
-                          >
-                            ⭑ {(s.reviewerRoles?.length ? s.reviewerRoles : [s.reviewerRole]).join('/')}
-                          </span>
-                          {issues.length > 0 && <span className="text-red-500" title={issues.join('; ')}>⚠ {issues.length}</span>}
-                        </div>
-                        <div className="mt-1.5 truncate text-[10px] text-slate-400" title={s.inputs.join(', ')}>
-                          in: {s.inputs.join(', ') || '—'}
-                        </div>
-                        <div className="truncate text-[10px] text-amber-600" title={s.outputs.join(', ')}>
-                          out: {s.outputs.join(', ') || '—'}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ))}
-            </div>
+          {/* ===== center: node canvas (React Flow) ===== */}
+          <div className="relative min-w-0 flex-1">
+            <WorkflowCanvas
+              projectId={projectId}
+              stages={stages}
+              selectedKey={selectedKey}
+              onSelect={setSelectedKey}
+              onConnectDep={connectEdge}
+              onDisconnectDep={disconnectEdge}
+              onAddPreset={addPresetStage}
+              onDeleteStage={(key) => { const i = stages.findIndex((s) => s.key === key); if (i >= 0) removeStage(i); }}
+              getIssues={getIssuesCb}
+              templateShort={templateShortCb}
+            />
           </div>
 
           {/* ===== right: inspector ===== */}
