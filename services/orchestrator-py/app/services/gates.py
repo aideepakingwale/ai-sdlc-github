@@ -114,7 +114,7 @@ class GateService:
                     project_id=project_id, phase=phase, agent_role="GateController",
                     event="gate.signoff", human_reviewer=user.email,
                     detail={"stage": stage["key"], "signedUsers": state["signedUsers"],
-                            "remainingUsers": state["remainingUsers"]},
+                            "unsignedArtefacts": state["unsignedArtefacts"]},
                 )
                 return {"projectId": project_id, "phase": phase, "status": "PENDING_REVIEW",
                         "complete": False, **state}
@@ -195,7 +195,9 @@ class GateService:
         return {"projectId": project_id, "phase": phase, "status": "PENDING_REVIEW", "complete": False, **state}
 
     async def _required_reviewer_users(self, project_id: str, stage: dict) -> set[str]:
-        """The reviewer USER emails that must sign this stage (lower-cased). PM's
+        """The reviewer USER emails AUTHORISED to sign off this stage's documents
+        (lower-cased). One reviewer may sign several documents; the stage completes
+        once every document has a sign-off (not once every user has signed). PM's
         explicit reviewerUsers wins; otherwise default to project members whose role
         is one of the stage's reviewer roles."""
         explicit = [u.lower() for u in (stage.get("reviewerUsers") or []) if u]
@@ -214,23 +216,22 @@ class GateService:
     async def _signoff_state(
         self, project_id: str, phase: int, required_users: set[str], signable: list[str],
     ) -> dict[str, Any]:
-        """Per-artifact sign-off progress and whether the stage is complete (every
-        artifact signed by every required user)."""
+        """Document-coverage sign-off progress: the stage completes once EVERY
+        document has at least one sign-off from an authorised reviewer. One reviewer
+        can sign several documents; not every reviewer needs to sign every document."""
         rows = await self._db.list_phase_signoffs(project_id, phase)
         by_art: dict[str, set[str]] = {}
         for r in rows:
             by_art.setdefault(r["artefact_id"], set()).add((r["user_email"] or "").lower())
         signed_users = sorted({u for s in by_art.values() for u in s})
-        if required_users:
-            complete = all(required_users <= by_art.get(aid, set()) for aid in signable)
-            remaining = sorted({u for aid in signable for u in (required_users - by_art.get(aid, set()))})
-        else:
-            complete = bool(signed_users)  # no explicit reviewers → a single sign-off completes
-            remaining = []
+        unsigned = [aid for aid in signable if not by_art.get(aid)]
+        complete = len(unsigned) == 0 and len(signable) > 0
         return {
-            "requiredUsers": sorted(required_users),
-            "signedUsers": signed_users,
-            "remainingUsers": remaining,
+            "reviewers": sorted(required_users),          # authorised to sign
+            "signedUsers": signed_users,                  # who has signed so far
+            "signedCount": len(signable) - len(unsigned),
+            "totalCount": len(signable),
+            "unsignedArtefacts": unsigned,
             "artefacts": [{"artefactId": aid, "signedBy": sorted(by_art.get(aid, set()))} for aid in signable],
             "complete": complete,
         }
@@ -273,7 +274,7 @@ class GateService:
         )
         return {"projectId": project_id, "phase": phase, "status": "APPROVED", "complete": True,
                 "nextPhase": next_phase, "published": published.get("published", 0),
-                "requiredUsers": state.get("requiredUsers"), "signedUsers": state.get("signedUsers"),
+                "reviewers": state.get("reviewers"), "signedUsers": state.get("signedUsers"),
                 "artefacts": state.get("artefacts")}
 
     async def _advance_if_level_done(self, project_id: str, phase: int, wf: dict) -> int | None:

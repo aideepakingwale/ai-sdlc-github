@@ -13,17 +13,19 @@ interface Props {
 
 interface SignoffStatus {
   phase: number;
-  requiredUsers: string[];
-  signedUsers: string[];
-  remainingUsers: string[];
+  reviewers: string[];        // users authorised to sign off
+  signedUsers: string[];      // who has signed so far
+  signedCount: number;
+  totalCount: number;
+  unsignedArtefacts: string[];
   artefacts: Array<{ artefactId: string; signedBy: string[] }>;
   complete: boolean;
 }
 
 /**
- * HITL Gate Review — artifact-level, per-user sign-off. Every required reviewer
- * must sign off every artifact before the stage completes and the pipeline
- * advances. One reviewer can sign several artifacts; AMEND sends it back.
+ * HITL Gate Review — document-coverage sign-off. Every document must be signed off
+ * by an authorised reviewer; one reviewer can sign several documents. The stage
+ * completes once ALL documents are signed. AMEND sends it back and clears sign-offs.
  */
 export default function GatePanel({ projectId, pending, artefacts, user }: Props) {
   const qc = useQueryClient();
@@ -40,8 +42,8 @@ export default function GatePanel({ projectId, pending, artefacts, user }: Props
     refetchInterval: 8000,
   });
   const so = signoffs.data;
-  const requiredUsers = so?.requiredUsers ?? [];
-  const canSign = isAdmin || requiredUsers.includes(email);
+  const reviewers = so?.reviewers ?? [];
+  const canSign = isAdmin || reviewers.includes(email);
 
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: ['signoffs', projectId, pending.phase] });
@@ -77,37 +79,33 @@ export default function GatePanel({ projectId, pending, artefacts, user }: Props
             Gate review — Phase {pending.phase}: {pending.name}
           </div>
           <div className="text-xs text-amber-700">
-            Every required reviewer must sign off every artifact before the pipeline continues.
+            Every document must be signed off before the pipeline continues. One reviewer can sign several documents.
           </div>
         </div>
       </div>
 
-      {/* Reviewer roster + overall progress */}
+      {/* Document sign-off progress + authorised reviewers */}
       <div className="mt-3 rounded-lg bg-white p-3">
         <div className="mb-1.5 flex items-center justify-between">
           <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-            Required reviewers ({(so?.signedUsers.length ?? 0)}/{requiredUsers.length} fully signed)
+            Documents signed off ({so?.signedCount ?? 0}/{so?.totalCount ?? 0})
           </div>
           {so?.complete
-            ? <span className="text-[11px] font-semibold text-emerald-600">All sign-offs complete</span>
-            : so?.remainingUsers.length
-              ? <span className="text-[11px] text-amber-700">Waiting on {so.remainingUsers.join(', ')}</span>
+            ? <span className="text-[11px] font-semibold text-emerald-600">All documents signed</span>
+            : (so && so.totalCount - so.signedCount > 0)
+              ? <span className="text-[11px] text-amber-700">{so.totalCount - so.signedCount} document(s) awaiting sign-off</span>
               : null}
         </div>
-        <div className="flex flex-wrap gap-1.5">
-          {requiredUsers.length === 0 && (
-            <span className="text-[11px] text-slate-400">No reviewers assigned — add project members with the stage's reviewer role, or assign users in the Workflow Designer.</span>
-          )}
-          {requiredUsers.map((u) => {
-            const fully = (so?.signedUsers ?? []).includes(u);
-            return (
-              <span key={u}
-                className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                  fully ? 'bg-emerald-50 text-emerald-700' : 'border border-amber-300 bg-amber-50 text-amber-700'}`}>
-                {fully ? '✓' : '○'} {u}{u === email ? ' (you)' : ''}
-              </span>
-            );
-          })}
+        <div className="text-[11px] text-slate-500">
+          Authorised reviewers:{' '}
+          {reviewers.length === 0
+            ? <span className="text-slate-400">none assigned — add project members with the stage's reviewer role, or assign users in the Workflow Designer.</span>
+            : reviewers.map((u, i) => (
+                <span key={u} className={u === email ? 'font-semibold text-brand-700' : ''}>
+                  {i > 0 ? ', ' : ''}{u}{u === email ? ' (you)' : ''}
+                </span>
+              ))}
+          . Any of them can sign any document; one reviewer may sign several.
         </div>
       </div>
 

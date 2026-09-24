@@ -555,7 +555,7 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
 
                   <div>
                     <label className="text-[10px] font-semibold uppercase text-slate-400">
-                      Reviewer users (emails, optional)
+                      Authorised reviewers (emails, optional)
                     </label>
                     <input
                       className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-xs focus:border-brand-400 focus:outline-none"
@@ -566,8 +566,9 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
                       placeholder="e.g. po@acme.com, sa@acme.com — blank = all members with the reviewer role(s)"
                     />
                     <div className="mt-0.5 text-[10px] text-slate-400">
-                      Every listed user must sign off every artifact before the stage completes. Leave blank to default to
-                      the project members holding the reviewer role(s).
+                      Users allowed to sign off this stage's documents. Any of them can review any document and one reviewer
+                      can sign several — the stage completes once <span className="font-semibold">every document</span> has
+                      been signed off. Leave blank to default to the project members holding the reviewer role(s).
                     </div>
                   </div>
 
