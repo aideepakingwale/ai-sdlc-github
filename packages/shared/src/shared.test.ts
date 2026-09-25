@@ -12,7 +12,7 @@ describe('phases', () => {
     expect(PHASES.map((p) => p.id)).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
-  it('enforces reviewer role per phase; SUPER_ADMIN overrides; PM never reviews', => {
+  it('enforces reviewer role per phase; SUPER_ADMIN overrides; PM never reviews', () => {
     expect(canReviewPhase('PO', 1)).toBe(true);
     expect(canReviewPhase('PO', 2)).toBe(false);
     expect(canReviewPhase('SUPER_ADMIN', 5)).toBe(true);

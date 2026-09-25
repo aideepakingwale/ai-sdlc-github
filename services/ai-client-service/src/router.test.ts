@@ -57,13 +57,13 @@ const req: GenerateRequest = {
 };
 
 describe('chainFor', () => {
-  it('bedrock leads every frontier chain; key-based providers follow', => {
+  it('bedrock leads every frontier chain; key-based providers follow', () => {
     expect(chainFor('architecture')).toEqual(['bedrock', 'groq', 'grok', 'gemini']);
     expect(chainFor('generation')).toEqual(['bedrock', 'groq', 'gemini', 'grok']);
   });
 });
 
-describe('bedrock routing', => {
+describe('bedrock routing', () => {
   it('serves from bedrock first when configured', async () => {
     const breaker = new CircuitBreaker(fakeStore(), 0);
     const bedrock: LlmProvider = {
@@ -129,7 +129,7 @@ describe('bedrock routing', => {
   });
 });
 
-describe('local model as real fallback', => {
+describe('local model as real fallback', () => {
   it('serves the frontier chain from the local model when no cloud provider is configured', async () => {
     const breaker = new CircuitBreaker(fakeStore(), 0);
     const local: LlmProvider = {
@@ -271,7 +271,7 @@ describe('LlmRouter failover', () => {
   });
 });
 
-describe('vision routing', => {
+describe('vision routing', () => {
   const visionProvider = (id: 'bedrock' | 'gemini', content: string): LlmProvider => ({
     id,
     configured: true,
@@ -333,7 +333,7 @@ describe('vision routing', => {
   });
 });
 
-describe('model override', => {
+describe('model override', () => {
   const capturing = (id: 'bedrock' | 'gemini', model: string) => {
     let last: GenerateRequest | null = null;
     const p: LlmProvider = {
@@ -382,7 +382,7 @@ describe('model override', => {
   });
 });
 
-describe('mock corpus diagrams are valid mermaid', => {
+describe('mock corpus diagrams are valid mermaid', () => {
   const render = async (kind: string, field: string): Promise<string> => {
     const mock = createMockProvider();
     const res = await mock.generate(

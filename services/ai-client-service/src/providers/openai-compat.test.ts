@@ -28,7 +28,7 @@ function bodyOf(spy: ReturnType<typeof stubFetch>): { messages: Array<{ role: st
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe('openai-compat json_object mode', => {
+describe('openai-compat json_object mode', () => {
   it('injects a "json" mention when the prompt lacks one (Groq 400 guard)', async () => {
     const spy = stubFetch();
     const p = createOpenAiCompatProvider({ id: 'groq', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
@@ -57,7 +57,7 @@ describe('openai-compat json_object mode', => {
   });
 });
 
-describe('request token budget', => {
+describe('request token budget', () => {
   it('caps max_tokens so a large prompt fits the budget', async () => {
     const spy = stubFetch();
     const p = createOpenAiCompatProvider({
@@ -98,7 +98,7 @@ describe('fitMaxTokens', () => {
   });
 });
 
-describe('classifyStatus oversize', => {
+describe('classifyStatus oversize', () => {
   it('treats 413 as a rate limit', () => {
     expect(classifyStatus('groq', 413, 'Request too large').kind).toBe('rate_limit');
   });

@@ -10,7 +10,7 @@ const SAMPLE = `<mxfile host="ai-sdlc"><diagram name="Arch"><mxGraphModel><root>
 <mxCell id="e0" value="http" style="edgeStyle=orthogonalEdgeStyle;endArrow=block;" edge="1" parent="1" source="n_alb" target="n_app"><mxGeometry relative="1" as="geometry"/></mxCell>
 </root></mxGraphModel></diagram></mxfile>`;
 
-describe('renderDrawioSvg', => {
+describe('renderDrawioSvg', () => {
   it('renders a valid mxGraph document to an SVG preview', () => {
     const { svg, error } = renderDrawioSvg(SAMPLE);
     expect(error).toBeUndefined();

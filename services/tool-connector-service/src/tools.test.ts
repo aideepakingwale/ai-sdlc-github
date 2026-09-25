@@ -147,7 +147,7 @@ describe('tool runtime', () => {
   });
 });
 
-describe('SDLC toolchain tools', => {
+describe('SDLC toolchain tools', () => {
   const run = (name: string, args: unknown) => createToolRuntime(env, fakeRedis(), log).execute(name, args);
 
   it('generates REST Assured tests, a JMeter plan and a locustfile from OpenAPI', async () => {
