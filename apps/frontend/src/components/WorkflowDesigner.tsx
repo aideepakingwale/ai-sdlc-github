@@ -138,7 +138,11 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
         if (!s.team.includes(r)) out.push(`Gate reviewer ${r} is not in the team`);
       }
       if (reviewers.length === 0) out.push('No gate reviewer selected');
-      if (s.writeRoles?.length === 0) out.push('No role has write permission');
+      // Empty writeRoles is valid: the server defaults write permission to the
+      // whole team (writers() = writeRoles || team). Only flag it when the team
+      // is ALSO empty (already reported above) so the default pipeline is clean.
+      if ((s.writeRoles?.length ?? 0) === 0 && s.team.length === 0)
+        out.push('No role has write permission');
       if (s.outputs.length === 0) out.push('Produces no outputs');
       const producible = new Set(['requirements']);
       for (const anc of ancestorsOf(list, s.key)) {
