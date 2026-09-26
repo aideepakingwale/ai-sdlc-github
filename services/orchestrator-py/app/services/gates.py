@@ -1,4 +1,4 @@
-"""Gate Controller: RBAC-checked human sign-off over
+"""Gate Controller (D-01/D-03/D-15/D-17/D-30): RBAC-checked human sign-off over
 the project's DYNAMIC workflow. Stages in the same derived level form a
 parallel group — their gates are independent, and the project advances to the
 next level only when every gate in the current level is APPROVED."""
@@ -33,7 +33,7 @@ class GateService:
         self._authz = authz
         self._workflow = workflow
         self._regenerate = regenerate
-        self._publisher = publisher # PublishService; None disables deferred publish
+        self._publisher = publisher  # PublishService (D-67); None disables deferred publish
 
     async def list_states(self, project_id: str, viewer: UserPublic | None = None) -> list[PhaseStateView]:
         wf = await self._workflow.view(project_id)
@@ -45,7 +45,7 @@ class GateService:
         for stage in wf["stages"]:
             st = states.get(f"PHASE#{stage['seq']}")
             status = st["status"] if st else "NOT_STARTED"
-            # A stage may name several gate reviewers; any of them can sign.
+            # A stage may name several gate reviewers (D-42); any of them can sign.
             reviewers = stage.get("reviewerRoles") or [stage["reviewerRole"]]
             can_review = (
                 status == "PENDING_REVIEW"
@@ -103,7 +103,7 @@ class GateService:
             raise SdlcError("FORBIDDEN", f"Requesting changes on '{stage['name']}' needs a reviewer ({who}).")
         if not comments or not comments.strip():
             raise SdlcError("VALIDATION_FAILED", "AMEND requires comments describing the required changes")
-        # Guardrail: amend comments are injected into the regeneration
+        # Guardrail (D-34): amend comments are injected into the regeneration
         # prompt, so they are screened like any other model input.
         enforce_input(comments, channel="gate_review")
         await self._dynamo.transition_phase_state(
@@ -119,7 +119,7 @@ class GateService:
             event="gate.amend_requested", human_reviewer=user.email, artefact_body=comments,
             detail={"role": user.role, "stage": stage["key"], "superAdminOverride": override},
         )
-        # no silent regeneration. Seed a Plan Review draft pre-filled with the
+        # D-56: no silent regeneration. Seed a Plan Review draft pre-filled with the
         # reviewer's requested changes; a writer reviews the plan and explicitly
         # triggers the re-generation. The stage stays AMEND_REQUESTED until then.
         try:
@@ -157,6 +157,24 @@ class GateService:
             user.role == "PROJECT_MANAGER" and bool(project) and project["created_by"] == user.id
         )
 
+    def _design_assignments(self, stage: dict) -> dict[str, set[str]]:
+        """Reviewer assignments declared at DESIGN time in the stage config (D-90):
+        stage-level reviewers -> 'stage' scope; each output's reviewers -> its
+        'type:<name>' scope. Merged with runtime assignments so the designer's
+        choices need no re-assignment in the gate UI."""
+        out: dict[str, set[str]] = {}
+        for e in (stage.get("reviewerUsers") or []):
+            e = (e or "").strip().lower()
+            if e:
+                out.setdefault("stage", set()).add(e)
+        for o in (stage.get("outputSpecs") or []):
+            name = o.get("name")
+            for e in (o.get("reviewers") or []):
+                e = (e or "").strip().lower()
+                if e and name:
+                    out.setdefault(f"type:{name}", set()).add(e)
+        return out
+
     async def _review_matrix(self, project_id: str, phase: int, stage: dict) -> dict[str, Any]:
         """Assignment + sign-off matrix. Reviewers (columns) are marked against rows:
         the ENTIRE STAGE, each OUTPUT TYPE, or each generated ARTIFACT. A reviewer
@@ -170,6 +188,13 @@ class GateService:
         assigned_by_target: dict[str, set[str]] = {}
         for r in assigns:
             assigned_by_target.setdefault(r["target"], set()).add((r["user_email"] or "").lower())
+        # D-90: merge design-time reviewer assignments from the stage config.
+        for target, emails in self._design_assignments(stage).items():
+            assigned_by_target.setdefault(target, set()).update(emails)
+        # Reviewer columns include everyone actually assigned (design or runtime).
+        reviewers = sorted(dict.fromkeys(
+            [*reviewers, *(e for s in assigned_by_target.values() for e in s)]
+        ))
         signs = await self._db.list_phase_signoffs(project_id, phase)
         signed_by_target: dict[str, set[str]] = {}
         for r in signs:
@@ -199,17 +224,12 @@ class GateService:
 
         reviewed_ids = [a["id"] for a in artifacts if reviewed(a)]
         all_covered = all(covered(a) for a in artifacts)
-        # Every assignment must be individually signed by its assigned reviewer.
-        all_assignments_signed = all(
-            u in signed_by_target.get(target, set())
-            for target, users in assigned_by_target.items() for u in users
-        )
-        has_assignment = bool(assigns)
-        complete = (
-            has_assignment and all_assignments_signed
-            and (all_covered if artifacts else True)
-            and (len(reviewed_ids) == len(artifacts) if artifacts else True)
-        )
+        # D-90 completion (OR rule): a stage completes when EITHER any stage-level
+        # reviewer has signed the whole stage, OR every artifact has been reviewed
+        # by its assigned reviewer(s). Artifact reviewers are otherwise advisory.
+        stage_signed = bool(assigned_by_target.get("stage", set()) & signed_by_target.get("stage", set()))
+        artifacts_complete = bool(artifacts) and all_covered and len(reviewed_ids) == len(artifacts)
+        complete = stage_signed or artifacts_complete
         return {
             "phase": phase, "reviewers": reviewers, "outputTypes": output_types,
             "rows": rows, "cells": cells,
@@ -266,7 +286,10 @@ class GateService:
         override = self._is_override(project, user)
         email = user.email.lower()
         assigns = await self._db.list_phase_assignments(project_id, phase)
-        assigned_here = any(a["target"] == target and (a["user_email"] or "").lower() == email for a in assigns)
+        assigned_here = (
+            any(a["target"] == target and (a["user_email"] or "").lower() == email for a in assigns)
+            or email in self._design_assignments(stage).get(target, set())  # D-90 design-time
+        )
         if not assigned_here and not override:
             raise SdlcError("FORBIDDEN", "You are not assigned to review this item.")
         await self._db.record_artifact_signoff(
@@ -310,7 +333,7 @@ class GateService:
                 "nextPhase": next_phase, "published": published.get("published", 0), **state}
 
     async def _advance_if_level_done(self, project_id: str, phase: int, wf: dict) -> int | None:
-        """Parallel-group semantics: advance only when every stage gate
+        """Parallel-group semantics (D-30): advance only when every stage gate
         in the current level is APPROVED; then move to the next level's first
         seq, or complete the project after the last level."""
         levels: list[list[int]] = wf["levels"]
@@ -327,7 +350,7 @@ class GateService:
         if level_idx + 1 < len(levels):
             next_seq = levels[level_idx + 1][0]
             await self._db.set_project_phase(project_id, next_seq, "ACTIVE")
-            # gate approval is pull-based (nothing runs until a human
+            # D-53: gate approval is pull-based (nothing runs until a human
             # triggers it), so give the next stages' teams push-based awareness —
             # one durable notification per newly-ready stage, targeted at its team.
             await self._notify_stages_ready(

@@ -1,4 +1,4 @@
-"""Dynamic SDLC workflow engine — V2: adds the data-driven CUSTOM phase type.
+"""Dynamic SDLC workflow engine — V2 (D-73): adds the data-driven CUSTOM phase type.
 
 A project's flow is a PM-authored config: stages with a driving agent template,
 team composition, typed inputs/outputs and a dependsOn DAG. Execution order and
@@ -26,7 +26,7 @@ from ..domain.models import PHASE_ROLES, PHASES, PhaseRole, UserPublic
 MAX_STAGES = 24  # V2 raises the cap so a PM can plan longer, custom SDLC flows
 _KEY_RE = re.compile(r"^[a-z][a-z0-9_-]{0,29}$")
 
-# The data-driven CUSTOM phase type: a stage the PM defines entirely by
+# The data-driven CUSTOM phase type (D-73): a stage the PM defines entirely by
 # config — its own persona, generation prompt (from the library) and MCP tool
 # sequence — so ANY SDLC phase type can be added without code. The six built-in
 # engines (1..6) stay for the structured Jira/OpenAPI/code/CI phases that carry
@@ -45,11 +45,38 @@ TEMPLATES[CUSTOM_TEMPLATE] = {
 
 ENTRY_INPUT = "requirements"
 
+# Project context sources a stage's agent can be fed (D-90). These are toggles in
+# the designer; the runtime uses them to decide what to inject into the prompt.
+CONTEXT_SOURCES = ("brief", "techStack", "uploads", "upstream")
+
+
+class UserPerm(BaseModel):
+    """Per-user access on a stage (D-90). Authoritative when a stage has any
+    userPerms; otherwise the role lists (team/readRoles/writeRoles) are the
+    fallback so previously-saved role-based workflows keep working. Roles are not
+    a reliable ACL key because a user's role varies per project — hence per-user."""
+
+    email: str = Field(min_length=3, max_length=200)
+    read: bool = True
+    write: bool = False
+    gate: bool = False
+
+
+class OutputSpec(BaseModel):
+    """Rich metadata for one stage output artifact (D-90): its human description,
+    an optional specification, and the reviewer USERS assigned to that specific
+    artifact type. `name` mirrors an entry in StageConfig.outputs."""
+
+    name: str = Field(min_length=1, max_length=80)
+    description: str = Field(default="", max_length=2000)
+    spec: str = Field(default="", max_length=8000)
+    reviewers: list[str] = Field(default_factory=list)  # emails
+
 
 class StageConfig(BaseModel):
     key: str
     name: str = Field(min_length=3, max_length=80)
-    template: int = Field(ge=1, le=7) # 1..6 built-in engines; 7 = custom
+    template: int = Field(ge=1, le=7)  # 1..6 built-in engines; 7 = custom (D-73)
     # Custom-phase config (template 7). Ignored for the built-in engines, which
     # derive these from the template. `persona` labels the agent; `promptId` is a
     # prompt-library template id used to generate the stage's artifacts; `tools`
@@ -61,20 +88,26 @@ class StageConfig(BaseModel):
     # gate state, audit records and the runtime keep working unchanged; the
     # multi-reviewer set below is the authoritative list for authorisation.
     reviewerRole: PhaseRole
-    # Multiple roles may sign a stage's gate. Empty = [reviewerRole].
+    # Multiple roles may sign a stage's gate (D-42). Empty = [reviewerRole].
     reviewerRoles: list[PhaseRole] = Field(default_factory=list)
     # Specific reviewer USERS (emails) required to sign off this stage's artifacts.
     # Empty = default to the project members whose role is in reviewerRoles. Every
     # listed user must sign every artifact before the stage completes.
     reviewerUsers: list[str] = Field(default_factory=list)
     team: list[PhaseRole] = Field(min_length=1)
-    # Separate read vs write authority within the stage. Empty lists mean
-    # "fall back to the team", preserving pre- behaviour for saved configs.
+    # Separate read vs write authority within the stage (D-42). Empty lists mean
+    # "fall back to the team", preserving pre-D-42 behaviour for saved configs.
     readRoles: list[PhaseRole] = Field(default_factory=list)
     writeRoles: list[PhaseRole] = Field(default_factory=list)
     inputs: list[str] = Field(min_length=1)
     outputs: list[str] = Field(min_length=1)
     dependsOn: list[str] = Field(default_factory=list)
+    # --- D-90: user-based ACL, per-artifact reviewers and agent context. All
+    # optional & additive; when userPerms is set it is authoritative for access.
+    userPerms: list[UserPerm] = Field(default_factory=list)
+    outputSpecs: list[OutputSpec] = Field(default_factory=list)
+    contextSources: list[str] = Field(default_factory=list)
+    agentNotes: str = Field(default="", max_length=8000)
 
     def reviewers(self) -> list[str]:
         """Roles allowed to approve/amend this stage's gate."""
@@ -88,6 +121,23 @@ class StageConfig(BaseModel):
     def writers(self) -> list[str]:
         """Roles allowed to run/retrigger the stage and act on its outputs."""
         return list(dict.fromkeys(self.writeRoles or list(self.team)))
+
+    # ---- D-90 per-user helpers (authoritative when userPerms is non-empty) ----
+    def perm_users(self, kind: str) -> list[str]:
+        """Emails granted `kind` in {'read','write','gate'}. Write implies read."""
+        out: list[str] = []
+        for p in self.userPerms:
+            granted = getattr(p, kind, False) or (kind == "read" and p.write)
+            if granted and p.email:
+                out.append(p.email.strip().lower())
+        return list(dict.fromkeys(out))
+
+    def output_reviewers(self, name: str) -> list[str]:
+        """Reviewer emails assigned to a specific output artifact type."""
+        for o in self.outputSpecs:
+            if o.name == name:
+                return list(dict.fromkeys(e.strip().lower() for e in o.reviewers if e))
+        return []
 
 
 class WorkflowConfig(BaseModel):
@@ -149,7 +199,7 @@ def validate_workflow(config: WorkflowConfig) -> list[str]:
         for role in s.team:
             if role not in PHASE_ROLES:
                 errors.append(f"Stage '{s.key}': unknown team role {role}")
-        # Multi-reviewer + read/write permissions: every role granted
+        # Multi-reviewer + read/write permissions (D-42): every role granted
         # authority on a stage must actually be on that stage's team, and the
         # primary reviewer must be one of the reviewers.
         for role in s.reviewers():
@@ -175,6 +225,16 @@ def validate_workflow(config: WorkflowConfig) -> list[str]:
                 errors.append(f"Stage '{s.key}' cannot depend on itself")
         if not s.outputs:
             errors.append(f"Stage '{s.key}': at least one output required")
+        # D-90: structural checks for the user-based ACL / per-artifact reviewers.
+        # Member existence is enforced by the designer's user picker (it only lists
+        # project members), so the pure validator checks shape/consistency only.
+        for o in s.outputSpecs:
+            if o.name not in s.outputs:
+                errors.append(
+                    f"Stage '{s.key}': output spec '{o.name}' is not one of the stage outputs {s.outputs}"
+                )
+        if s.userPerms and not s.perm_users("write") and not s.writers():
+            errors.append(f"Stage '{s.key}': at least one user needs write permission")
     if errors:
         return errors
 
@@ -268,7 +328,7 @@ def derive(config: WorkflowConfig) -> dict[str, Any]:
                 # Custom stages carry their own persona; built-ins use the template's.
                 "persona": s.persona or TEMPLATES[s.template]["persona"],
                 "custom": s.template == CUSTOM_TEMPLATE,
-                # Resolved authority: consumers read these rather than the
+                # Resolved authority (D-42): consumers read these rather than the
                 # raw optional lists, so the "empty = fall back to team" rule
                 # lives in exactly one place.
                 "reviewerRoles": s.reviewers(),

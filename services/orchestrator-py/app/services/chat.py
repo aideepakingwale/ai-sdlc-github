@@ -45,14 +45,14 @@ class ChatService:
         self._workflow = workflow
         self._deps = agent_deps
         self._settings = settings
-        self._publisher = publisher # PublishService: stores deferred publish plans
+        self._publisher = publisher  # PublishService (D-67): stores deferred publish plans
         self._pipeline = build_pipeline()
 
     async def _run_stage_pipeline(
         self, state: AgentState, *, project_id: str, seq: int, reviewer_role: str,
         prev_status: str, emit: Emit, summary: str,
     ):
-        """Run one stage through the pipeline with failure recovery: if
+        """Run one stage through the pipeline with failure recovery (D-67): if
         generation or a tool raises, restore the phase from IN_PROGRESS to its
         prior status (so it is re-triggerable, not stuck) and re-raise so the SSE
         stream surfaces the error instead of the UI hanging."""
@@ -79,7 +79,7 @@ class ChatService:
 
     async def _persist_publish_plan(self, project_id: str, seq: int, phase_result: Any) -> None:
         """Store the phase's deferred external-write plan so it can be replayed on
-        gate approval. Replaces any prior plan for the phase."""
+        gate approval (D-67). Replaces any prior plan for the phase."""
         if self._publisher is None:
             return
         try:
@@ -108,7 +108,7 @@ class ChatService:
         phase_id = int(session["current_phase"])
         emit({"type": "session", "projectId": project["id"], "sessionId": session["id"], "phase": phase_id})
 
-        # Dynamic workflow: find the level (parallel group) holding the
+        # Dynamic workflow (D-30): find the level (parallel group) holding the
         # current stage slot; a single run generates EVERY ready stage in it.
         wf = await self._workflow.view(project["id"])
         stages_by_seq = {s["seq"]: s for s in wf["stages"]}
@@ -138,7 +138,7 @@ class ChatService:
 
         context = [ContextArtifact.model_validate(a) for a in (session["context_window"] or [])]
         has_codebase = (await self._db.count_codebase_files(project["id"])) > 0
-        # Rich compose: resolve the user's curated @references + attachments
+        # Rich compose (D-54): resolve the user's curated @references + attachments
         # into one labelled block, injected into every stage run of this turn.
         extra_context = await self._resolve_extra_context(
             project["id"], referenced_artifact_ids or [], attachment_ids or [], formwork_ids or [], emit
@@ -147,7 +147,7 @@ class ChatService:
         last_gate = "IN_PROGRESS"
         # The reviewer feedback that drove this run (if it's an amend
         # regeneration), so the chat history records what was actually requested
-        # instead of the generic internal trigger message (transparency).
+        # instead of the generic internal trigger message (transparency, D-47).
         amend_feedback: str | None = None
 
         if len(ready) > 1:
@@ -156,7 +156,7 @@ class ChatService:
 
         for stage in ready:
             seq = stage["seq"]
-            set_run_context(project["id"], seq) # attribute LLM/tool spans
+            set_run_context(project["id"], seq)  # attribute LLM/tool spans (D-35)
             st = states.get(f"PHASE#{seq}")
             amend = st.get("comments") if st and st.get("status") == "AMEND_REQUESTED" else None
             if amend:
@@ -171,8 +171,8 @@ class ChatService:
                 tech_stack=project.get("tech_stack") or "Node.js + TypeScript",
                 project_profile=self._project_profile(project),
                 has_codebase=has_codebase, extra_context=extra_context,
-                model_overrides=self._model_overrides_from(self._step_overrides(sp_row)), # per-step model
-                **self._custom_fields(stage), # custom phase config
+                model_overrides=self._model_overrides_from(self._step_overrides(sp_row)),  # per-step model (D-68)
+                **self._custom_fields(stage),  # custom phase config (D-74)
             )
             prev_status = (st or {}).get("status", "NOT_STARTED") if st else "NOT_STARTED"
             await self._dynamo.put_phase_state(
@@ -186,7 +186,7 @@ class ChatService:
             )
             if phase_result:
                 context = final_state.context_window
-                # Persist the deferred external-write plan for this stage.
+                # Persist the deferred external-write plan for this stage (D-67).
                 await self._persist_publish_plan(project["id"], seq, phase_result)
                 if final_state.gate_status == "PENDING_REVIEW":
                     await self._dynamo.put_phase_state(
@@ -218,7 +218,7 @@ class ChatService:
 
         # Record the reviewer's actual feedback in the transcript on an amend
         # regeneration, not the internal trigger, so the history shows what was
-        # requested.
+        # requested (D-47).
         turn_message = (
             f"🔁 Gate review — changes requested:\n\n{amend_feedback}" if amend_feedback else message
         )
@@ -231,7 +231,7 @@ class ChatService:
         emit({"type": "done", "finalResponse": safe_response, "phase": phase_id, "gateStatus": last_gate})
 
     async def plan_preview(self, *, project_id: str, user: UserPublic, message: str = "") -> dict[str, Any]:
-        """Viz: what WOULD run on the next chat turn — the ready stages of
+        """Viz (D-31): what WOULD run on the next chat turn — the ready stages of
         the current level with their plan steps, model tier, expected MCP tools
         and stage-scoped skills — without executing anything."""
         await self._authz.assert_project_access(project_id, user)
@@ -289,7 +289,7 @@ class ChatService:
             ],
         }
 
-    # ------------------------------------------------------------ Plan Review & Edit gate
+    # ------------------------------------------------------------ Plan Review & Edit gate (D-56)
     async def _stage_for(self, project_id: str, phase: int) -> tuple[dict, dict]:
         wf = await self._workflow.view(project_id)
         stage = next((s for s in wf["stages"] if s["seq"] == phase), None)
@@ -301,7 +301,7 @@ class ChatService:
         return stage.get("writeRoles") or stage.get("team") or [stage["reviewerRole"]]
 
     async def can_write_stage(self, project_id: str, phase: int, user: UserPublic) -> bool:
-        """Public wrapper that resolves the stage by position."""
+        """Public wrapper that resolves the stage by position (D-57)."""
         _, stage = await self._stage_for(project_id, phase)
         return await self._can_write_stage(project_id, stage, user)
 
@@ -311,6 +311,15 @@ class ChatService:
         project = await self._db.get_project(project_id)
         if user.role == "PROJECT_MANAGER" and project and project["created_by"] == user.id:
             return True
+        # D-90: per-user ACL is authoritative when the stage defines it (a user's
+        # role varies per project, so role is not a reliable key). Falls back to
+        # the role-based writers for legacy/role-defined stages.
+        perms = stage.get("userPerms") or []
+        if perms:
+            email = (getattr(user, "email", "") or "").strip().lower()
+            writers = {(p.get("email") or "").strip().lower()
+                       for p in perms if p.get("write")}
+            return email in writers
         membership = await self._authz.get_membership_role(project_id, user.id)
         return membership in self._stage_writers(stage)
 
@@ -318,7 +327,7 @@ class ChatService:
         """Assemble the exact system+user prompt the stage would run with, given the
         editable overlay — WITHOUT calling the LLM. The proprietary craft/quality-bar
         core is included read-only; only the overlay (instructions + curated context)
-        is user-editable."""
+        is user-editable (D-56)."""
         context = [ContextArtifact.model_validate(a) for a in (session.get("context_window") or [])]
         context_block = "\n\n".join(
             f"### [Phase {a.phase}] {a.type}: {a.title}\n{(a.content or a.summary)[:1200]}" for a in context
@@ -334,7 +343,7 @@ class ChatService:
         )
         user_input = overlay.get("promptOverlay") or f"Generate {', '.join(produces)} for '{stage['name']}'."
         if stage["template"] == 7:
-            # Custom phase: preview the generic prompt the runner will use —
+            # Custom phase (D-74): preview the generic prompt the runner will use —
             # build_phase_prompt is for the six built-in engines only.
             from .prompt_library import render as render_prompt
             from .steering import resolve_steering
@@ -369,7 +378,7 @@ class ChatService:
 
     @staticmethod
     def _step_overrides(row: Any) -> dict[str, Any]:
-        """Read persisted per-step model overrides, tolerating a JSONB value
+        """Read persisted per-step model overrides (D-68), tolerating a JSONB value
         that decodes as either a dict or a JSON string."""
         if not row:
             return {}
@@ -383,7 +392,7 @@ class ChatService:
 
     @staticmethod
     def _project_profile(project: dict) -> str:
-        """Compact project profile threaded into every stage: name, tech
+        """Compact project profile threaded into every stage (#4): name, tech
         stack and integration targets, so the whole run stays configuration-aware."""
         parts = [f"- Project: {project.get('name') or '(unnamed)'}"]
         if project.get("tech_stack"):
@@ -402,7 +411,7 @@ class ChatService:
         self, *, project: dict, stage: dict, user_input: str,
         context: list[ContextArtifact], extra_context: str,
     ) -> list[str]:
-        """Ambiguity pre-check: return clarifying questions when the inputs are
+        """Ambiguity pre-check (#1): return clarifying questions when the inputs are
         too ambiguous to generate without assuming; [] to proceed. Never raises —
         a failed check must not block generation."""
         from ..agents.schemas import ClarificationOutput
@@ -466,7 +475,7 @@ class ChatService:
 
     @staticmethod
     def _custom_fields(stage: dict) -> dict[str, Any]:
-        """Custom-phase config → AgentState fields. Only for template 7; the
+        """Custom-phase config → AgentState fields (D-74). Only for template 7; the
         built-in engines ignore these."""
         if stage.get("template") != 7:
             return {}
@@ -480,7 +489,7 @@ class ChatService:
     @staticmethod
     def _model_overrides_from(step_overrides: dict[str, Any]) -> dict[str, str]:
         """Flatten persisted step overrides to { stepId: 'provider/model' } for the
-        run, keeping only entries that actually pin a model."""
+        run, keeping only entries that actually pin a model (D-68)."""
         out: dict[str, str] = {}
         for step_id, entry in (step_overrides or {}).items():
             model = entry.get("model") if isinstance(entry, dict) else None
@@ -492,7 +501,7 @@ class ChatService:
         """The full, editable execution plan for a stage BEFORE generation: the
         typed multi-model steps (each with its resolved model + rationale), the
         selectable model catalog, skills, tools, context inventory and the actual
-        system-generated prompt. Deterministic — nothing runs, no tokens."""
+        system-generated prompt (D-56/D-68). Deterministic — nothing runs, no tokens."""
         await self._authz.assert_project_access(project_id, user)
         wf, stage = await self._stage_for(project_id, phase)
         project = await self._db.get_project(project_id)
@@ -512,7 +521,7 @@ class ChatService:
         system, user_prompt, extra_context, context, snippets = await self._assemble_prompt_preview(
             project, session or {}, stage, overlay, lambda e: None
         )
-        # Structured multi-model plan: deterministic, zero-token. Resolve each
+        # Structured multi-model plan (D-68): deterministic, zero-token. Resolve each
         # step's model (auto by tier, or the writer's saved override) from the live roster.
         roster = await self._deps.llm.providers()
         skills = [{"id": s.id, "name": s.name, "tier": s.tier} for s in SKILLS if s.phase in (None, stage["template"])]
@@ -549,7 +558,7 @@ class ChatService:
             },
             "skills": skills,
             "expectedTools": TEMPLATE_TOOLS.get(stage["template"], []),
-            # Multi-model plan: the typed step list + selectable catalog.
+            # Multi-model plan (D-68): the typed step list + selectable catalog.
             "steps": steps,
             "catalog": build_model_catalog(roster),
             "context": {
@@ -569,7 +578,7 @@ class ChatService:
 
     async def save_plan(self, *, project_id: str, phase: int, user: UserPublic, overlay: dict) -> dict[str, Any]:
         """Persist the writer's overlay edits ('Update the plan') and return the
-        re-rendered plan preview. Write-permission required."""
+        re-rendered plan preview (D-56). Write-permission required."""
         _, stage = await self._stage_for(project_id, phase)
         if not await self._can_write_stage(project_id, stage, user):
             raise SdlcError("FORBIDDEN", f"Editing the '{stage['name']}' plan requires write permission ({' or '.join(self._stage_writers(stage))})")
@@ -579,7 +588,7 @@ class ChatService:
             referenced_artifact_ids=overlay.get("referencedArtifactIds") or [],
             attachment_ids=overlay.get("attachmentIds") or [],
             formwork_ids=overlay.get("formworkIds") or [],
-            step_overrides=overlay.get("stepOverrides") or {}, # per-step model overrides
+            step_overrides=overlay.get("stepOverrides") or {},  # per-step model overrides (D-68)
             origin=(row["origin"] if row else "new"), updated_by=user.id,
         )
         self._audit.record(project_id=project_id, phase=phase, agent_role="Orchestrator",
@@ -587,7 +596,7 @@ class ChatService:
         return await self.build_plan(project_id=project_id, phase=phase, user=user)
 
     async def trigger_stage(self, *, project_id: str, phase: int, user: UserPublic, emit: Emit) -> None:
-        """Run ONE stage using its reviewed plan overlay. Nothing generates
+        """Run ONE stage using its reviewed plan overlay (D-56). Nothing generates
         until this is invoked by a writer; the result goes straight to gate review."""
         emit({"type": "node", "node": "guardrail", "label": "Input guardrail"})
         await self._authz.assert_project_access(project_id, user)
@@ -628,7 +637,7 @@ class ChatService:
         )
         context = [ContextArtifact.model_validate(a) for a in (session.get("context_window") or [])]
 
-        # Ambiguity pre-check: on a fresh, un-curated trigger, ask clarifying
+        # Ambiguity pre-check (#1): on a fresh, un-curated trigger, ask clarifying
         # questions instead of assuming. Questions are written into the plan overlay
         # so the reviewer answers them in Plan Review, then re-runs; once the overlay
         # is non-empty the check is skipped and generation proceeds.
@@ -665,8 +674,8 @@ class ChatService:
             tech_stack=project.get("tech_stack") or "Node.js + TypeScript",
             project_profile=self._project_profile(project),
             has_codebase=(await self._db.count_codebase_files(project_id)) > 0, extra_context=extra_context,
-            model_overrides=self._model_overrides_from(self._step_overrides(row)), # per-step model
-            **self._custom_fields(stage), # custom phase config
+            model_overrides=self._model_overrides_from(self._step_overrides(row)),  # per-step model (D-68)
+            **self._custom_fields(stage),  # custom phase config (D-74)
         )
         await self._dynamo.put_phase_state(project_id=project_id, phase=phase, status="IN_PROGRESS", reviewer_role=stage["reviewerRole"])
         summary = await self._status_summary(project_id, project["name"], wf, phase)
@@ -678,7 +687,7 @@ class ChatService:
         last_gate = final_state.gate_status
         if phase_result:
             await self._db.update_context_window(session["id"], final_state.context_window)
-            # Persist the deferred external-write plan for this stage.
+            # Persist the deferred external-write plan for this stage (D-67).
             await self._persist_publish_plan(project_id, phase, phase_result)
             if final_state.gate_status == "PENDING_REVIEW":
                 await self._dynamo.put_phase_state(project_id=project_id, phase=phase, status="PENDING_REVIEW", reviewer_role=stage["reviewerRole"])
@@ -732,7 +741,7 @@ class ChatService:
         attachment_ids: list[str], formwork_ids: list[str], emit: Emit,
     ) -> str:
         """Render the user's curated @references + attachments into one labelled
-        block. Each item is capped and the whole block bounded so a large
+        block (D-54). Each item is capped and the whole block bounded so a large
         attachment can't blow the free-tier token budget; the verbatim originals
         remain in the content store."""
         per_item, total_cap = 8_000, 24_000

@@ -1,4 +1,4 @@
-"""Project pipeline flow + stage retrigger.
+"""Project pipeline flow + stage retrigger (D-24).
 
 `flow()` returns a per-stage view for the visual pipeline: colour-coded state,
 the reviewer role, the assigned team member (who is working the stage),
@@ -81,7 +81,7 @@ class FlowService:
         self._regenerate = regenerate
 
     async def flow(self, project_id: str, viewer: UserPublic) -> dict[str, Any]:
-        """Rendered straight from the persisted workflow config: dynamic
+        """Rendered straight from the persisted workflow config (D-30): dynamic
         stages, derived order, parallel levels, team composition and I/O."""
         project = await self._db.get_project(project_id)
         if not project:
@@ -112,14 +112,25 @@ class FlowService:
                 {"displayName": members_by_role[r]["display_name"], "email": members_by_role[r]["email"], "role": r}
                 for r in s["team"] if r in members_by_role
             ]
-            # Multi-reviewer gates + separate read/write authority.
+            # Multi-reviewer gates + separate read/write authority (D-42).
             reviewers = s.get("reviewerRoles") or [s["reviewerRole"]]
             writers = s.get("writeRoles") or s["team"]
-            can_review = status == "PENDING_REVIEW" and (
-                viewer.role == "SUPER_ADMIN" or viewer_membership in reviewers
-            )
+            # D-90: per-user ACL is authoritative when the stage defines it; the
+            # role checks remain the fallback for legacy/role-defined stages.
+            perms = s.get("userPerms") or []
+            viewer_email = (getattr(viewer, "email", "") or "").strip().lower()
+            stage_reviewer_users = {(e or "").strip().lower() for e in (s.get("reviewerUsers") or [])}
+            if perms:
+                write_emails = {(p.get("email") or "").strip().lower() for p in perms if p.get("write")}
+                gate_emails = {(p.get("email") or "").strip().lower() for p in perms if p.get("gate")}
+                may_review = viewer_email in (gate_emails | stage_reviewer_users)
+                may_write = viewer_email in write_emails
+            else:
+                may_review = viewer_membership in reviewers or viewer_email in stage_reviewer_users
+                may_write = viewer_membership in writers
+            can_review = status == "PENDING_REVIEW" and (viewer.role == "SUPER_ADMIN" or may_review)
             can_retrigger = status in ("APPROVED", "PENDING_REVIEW", "AMEND_REQUESTED", "ESCALATED") and (
-                is_manager or viewer_membership in writers
+                is_manager or may_write
             )
             stages.append({
                 "phase": seq,
@@ -214,16 +225,28 @@ class FlowService:
             if not project or project["created_by"] != user.id:
                 raise SdlcError("FORBIDDEN", "Only the managing PROJECT_MANAGER can retrigger this project's stages")
         else:
-            # Retriggering mutates the stage — it needs WRITE authority,
-            # which defaults to the whole team when no explicit list is set.
-            writers = stage.get("writeRoles") or stage["team"]
-            membership = await self._authz.get_membership_role(project_id, user.id)
-            if membership not in writers:
-                raise SdlcError(
-                    "FORBIDDEN",
-                    f"Retriggering the '{stage['name']}' stage requires write permission "
-                    f"({' or '.join(writers)}) — you are {membership or 'not a member'}",
-                )
+            # Retriggering mutates the stage — it needs WRITE authority. D-90:
+            # prefer the per-user ACL when the stage defines one; otherwise fall
+            # back to the role-based writers (defaults to the whole team).
+            perms = stage.get("userPerms") or []
+            if perms:
+                email = (getattr(user, "email", "") or "").strip().lower()
+                write_emails = {(p.get("email") or "").strip().lower() for p in perms if p.get("write")}
+                if email not in write_emails:
+                    raise SdlcError(
+                        "FORBIDDEN",
+                        f"Retriggering the '{stage['name']}' stage requires write permission — "
+                        f"your account is not granted write on this stage",
+                    )
+            else:
+                writers = stage.get("writeRoles") or stage["team"]
+                membership = await self._authz.get_membership_role(project_id, user.id)
+                if membership not in writers:
+                    raise SdlcError(
+                        "FORBIDDEN",
+                        f"Retriggering the '{stage['name']}' stage requires write permission "
+                        f"({' or '.join(writers)}) — you are {membership or 'not a member'}",
+                    )
 
         current = await self._dynamo.get_phase_state(project_id, phase)
         if not current or current["status"] == "NOT_STARTED":
@@ -234,7 +257,7 @@ class FlowService:
         # the new set becomes the latest versions.
         await self._db.supersede_phase_artefacts(project_id, phase)
         await self._db.set_project_phase(project_id, phase, "ACTIVE")
-        # rewind to NOT_STARTED and route through the Plan Review gate — the
+        # D-56: rewind to NOT_STARTED and route through the Plan Review gate — the
         # writer reviews (and may edit) the plan, then explicitly triggers. No
         # silent auto-regeneration.
         await self._dynamo.put_phase_state(
@@ -264,7 +287,7 @@ class FlowService:
                 "retriggered": True, "planReview": True, "downstreamFlaggedStale": stale}
 
     async def delete_project(self, project_id: str, user: UserPublic) -> dict:
-        """Permanently delete a project across EVERY store: the content-store
+        """Permanently delete a project across EVERY store (D-55): the content-store
         subtree, the DynamoDB phase-states, and all Postgres rows. This is the
         cleanup path that was previously impossible (sessions/artefacts FKs blocked
         the DB delete and the external stores had no purge)."""

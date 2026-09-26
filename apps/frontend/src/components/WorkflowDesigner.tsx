@@ -2,12 +2,82 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import {
-  PHASE_ROLE_OPTIONS,
+  CONTEXT_SOURCE_OPTIONS,
   TEMPLATE_NAMES,
+  type OutputSpec,
   type StageConfig,
+  type UserPerm,
   type WorkflowView,
 } from '../api/flow';
+import type { ProjectMember } from '../api/types';
 import WorkflowCanvas, { STAGE_PALETTE, type StagePreset } from './WorkflowCanvas';
+
+/** Searchable user picker (D-90): search project members by name/email and add
+ *  them as chips. Reused for stage access, per-output reviewers and stage
+ *  reviewers — access is per USER, never per role. */
+function UserPicker({
+  members, value, onAdd, onRemove, placeholder,
+}: {
+  members: ProjectMember[];
+  value: string[];
+  onAdd: (email: string) => void;
+  onRemove: (email: string) => void;
+  placeholder?: string;
+}) {
+  const [q, setQ] = useState('');
+  const [open, setOpen] = useState(false);
+  const selected = new Set(value.map((e) => e.toLowerCase()));
+  const matches = members
+    .filter((m) => !selected.has(m.email.toLowerCase()))
+    .filter((m) => q.trim() === '' || `${m.displayName} ${m.email}`.toLowerCase().includes(q.trim().toLowerCase()))
+    .slice(0, 8);
+  return (
+    <div className="relative">
+      {value.length > 0 && (
+        <div className="mb-1 flex flex-wrap gap-1">
+          {value.map((e) => {
+            const m = members.find((x) => x.email.toLowerCase() === e.toLowerCase());
+            return (
+              <span key={e} className="inline-flex items-center gap-1 rounded-full bg-brand-100 px-2 py-0.5 text-[11px] text-brand-700">
+                {m?.displayName ?? e}
+                <button type="button" onClick={() => onRemove(e)} className="text-brand-400 hover:text-brand-700" title="Remove">×</button>
+              </span>
+            );
+          })}
+        </div>
+      )}
+      <input
+        value={q}
+        onChange={(e) => { setQ(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder={placeholder ?? 'Search users by name or email…'}
+        className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-xs focus:border-brand-400 focus:outline-none"
+      />
+      {open && matches.length > 0 && (
+        <div className="absolute z-20 mt-1 max-h-48 w-full overflow-auto rounded-lg border border-slate-200 bg-white shadow-lg">
+          {matches.map((m) => (
+            <button
+              key={m.email}
+              type="button"
+              onMouseDown={(ev) => { ev.preventDefault(); onAdd(m.email); setQ(''); }}
+              className="block w-full px-2 py-1.5 text-left text-xs hover:bg-slate-50"
+            >
+              <span className="font-medium text-slate-700">{m.displayName}</span>
+              <span className="ml-1 text-slate-400">{m.email}</span>
+              <span className="ml-1 rounded bg-slate-100 px-1 text-[9px] uppercase text-slate-500">{m.role}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {open && q.trim() !== '' && matches.length === 0 && (
+        <div className="absolute z-20 mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11px] text-slate-400 shadow">
+          No matching project member — add them to the team first (Team panel).
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface ValidateResult {
   valid: boolean;
@@ -22,7 +92,7 @@ const TEMPLATE_SHORT: Record<number, string> = {
 };
 
 /**
- * Visual workflow workspace (, redesigned): a three-pane visual editor.
+ * Visual workflow workspace (D-30, redesigned D-40): a three-pane visual editor.
  *   • left rail — ordered stage list, click to select, drag ⠿ to reorder, add;
  *   • center canvas — level columns with real dependency arrows (parallel stages
  *     stack in a column); click a node to select it;
@@ -45,6 +115,13 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
     queryKey: ['workflow', projectId],
     queryFn: () => api.get<WorkflowView>(`/api/projects/${projectId}/workflow`),
   });
+
+  // Project members drive the per-user ACL / reviewer pickers (D-90).
+  const membersQ = useQuery({
+    queryKey: ['members', projectId],
+    queryFn: () => api.get<{ members: ProjectMember[] }>(`/api/projects/${projectId}/members`),
+  });
+  const members = membersQ.data?.members ?? [];
 
   useEffect(() => {
     if (wf.data && stages === null) {
@@ -132,18 +209,13 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
     (list: StageConfig[], s: StageConfig): string[] => {
       const out: string[] = [];
       if (!s.name.trim()) out.push('Name is empty');
-      if (s.team.length === 0) out.push('Team is empty');
-      const reviewers = s.reviewerRoles?.length ? s.reviewerRoles : [s.reviewerRole];
-      for (const r of reviewers) {
-        if (!s.team.includes(r)) out.push(`Gate reviewer ${r} is not in the team`);
-      }
-      if (reviewers.length === 0) out.push('No gate reviewer selected');
-      // Empty writeRoles is valid: the server defaults write permission to the
-      // whole team (writers() = writeRoles || team). Only flag it when the team
-      // is ALSO empty (already reported above) so the default pipeline is clean.
-      if ((s.writeRoles?.length ?? 0) === 0 && s.team.length === 0)
-        out.push('No role has write permission');
       if (s.outputs.length === 0) out.push('Produces no outputs');
+      // D-90: per-output description + user-based write.
+      for (const o of s.outputSpecs ?? []) {
+        if (!(o.description ?? '').trim()) out.push(`Output "${o.name}" has no description`);
+      }
+      const perms = s.userPerms ?? [];
+      if (perms.length > 0 && !perms.some((p) => p.write)) out.push('No user has write permission');
       const producible = new Set(['requirements']);
       for (const anc of ancestorsOf(list, s.key)) {
         list.find((x) => x.key === anc)?.outputs.forEach((o) => producible.add(o));
@@ -256,65 +328,65 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
     setStages(autoFixInputs(next));
   };
 
-  /** Explicit permission lists are stored only once the user diverges from the
-   *  default ("empty = the whole team"), so untouched stages stay compatible
-   *  with configs saved before per-role permissions existed. */
-  const resolvedPerm = (list: string[] | undefined, team: string[]): string[] =>
-    list?.length ? list.filter((r) => team.includes(r)) : [...team];
+  // ---- D-90: per-user ACL, structured outputs & agent context helpers ----
+  const stageUserPerms = (s: StageConfig): UserPerm[] => s.userPerms ?? [];
 
-  const togglePerm = (field: 'readRoles' | 'writeRoles', role: string) => {
+  const addStageUser = (email: string) => {
     if (!selected) return;
-    const current = resolvedPerm(selected[field], selected.team);
-    const next = current.includes(role) ? current.filter((r) => r !== role) : [...current, role];
-    // Write implies read — granting write also grants read.
-    if (field === 'writeRoles' && !current.includes(role)) {
-      const reads = resolvedPerm(selected.readRoles, selected.team);
-      if (!reads.includes(role)) {
-        update(selectedIdx, { writeRoles: next, readRoles: [...reads, role] });
-        return;
-      }
-    }
-    // Revoking read also revokes write (write without read is meaningless).
-    if (field === 'readRoles' && current.includes(role)) {
-      const writes = resolvedPerm(selected.writeRoles, selected.team);
-      if (writes.includes(role)) {
-        update(selectedIdx, { readRoles: next, writeRoles: writes.filter((r) => r !== role) });
-        return;
-      }
-    }
-    update(selectedIdx, { [field]: next } as Partial<StageConfig>);
+    const cur = stageUserPerms(selected);
+    if (cur.some((p) => p.email.toLowerCase() === email.toLowerCase())) return;
+    update(selectedIdx, { userPerms: [...cur, { email, read: true, write: false, gate: false }] });
   };
-
-  const toggleReviewer = (role: string) => {
+  const removeStageUser = (email: string) => {
     if (!selected) return;
-    const current = selected.reviewerRoles?.length ? selected.reviewerRoles : [selected.reviewerRole];
-    const next = current.includes(role) ? current.filter((r) => r !== role) : [...current, role];
-    if (next.length === 0) return; // a gate always needs at least one reviewer
-    // Keep the primary reviewer inside the set (runtime/gate state uses it).
     update(selectedIdx, {
-      reviewerRoles: next,
-      reviewerRole: next.includes(selected.reviewerRole) ? selected.reviewerRole : next[0]!,
+      userPerms: stageUserPerms(selected).filter((p) => p.email.toLowerCase() !== email.toLowerCase()),
+    });
+  };
+  const toggleUserPerm = (email: string, kind: 'read' | 'write' | 'gate') => {
+    if (!selected) return;
+    update(selectedIdx, {
+      userPerms: stageUserPerms(selected).map((p) => {
+        if (p.email.toLowerCase() !== email.toLowerCase()) return p;
+        const next = { ...p, [kind]: !p[kind] };
+        if (kind === 'write' && next.write) next.read = true;   // write implies read
+        if (kind === 'read' && !next.read) next.write = false;  // read revoked => write revoked
+        return next;
+      }),
     });
   };
 
-  /** Adding/removing a team role keeps every permission list consistent. */
-  const toggleTeamRole = (role: string) => {
+  /** Outputs are the canonical name list; outputSpecs carries the per-output
+   *  metadata + reviewers. specsFor seeds a spec for any output lacking one; once
+   *  the user edits, outputSpecs becomes the source of truth (edited BY INDEX so
+   *  renaming stays stable). outputs is always kept aligned to the spec names. */
+  const specsFor = (s: StageConfig): OutputSpec[] =>
+    (s.outputSpecs && s.outputSpecs.length
+      ? s.outputSpecs
+      : s.outputs.map((name) => ({ name, description: '', spec: '', reviewers: [] })));
+  const commitSpecs = (specs: OutputSpec[]) =>
+    update(selectedIdx, { outputs: specs.map((o) => o.name), outputSpecs: specs });
+  const updateSpecAt = (i: number, patch: Partial<OutputSpec>) => {
     if (!selected) return;
-    const inTeam = selected.team.includes(role);
-    const team = inTeam ? selected.team.filter((r) => r !== role) : [...selected.team, role];
-    if (team.length === 0) return;
-    const reviewers = resolvedPerm(
-      selected.reviewerRoles?.length ? selected.reviewerRoles : [selected.reviewerRole], team,
-    );
-    const nextReviewers = reviewers.length ? reviewers : [team[0]!];
-    update(selectedIdx, {
-      team,
-      readRoles: selected.readRoles?.length ? resolvedPerm(selected.readRoles, team) : undefined,
-      writeRoles: selected.writeRoles?.length ? resolvedPerm(selected.writeRoles, team) : undefined,
-      reviewerRoles: nextReviewers,
-      reviewerRole: nextReviewers.includes(selected.reviewerRole) ? selected.reviewerRole : nextReviewers[0]!,
-    });
+    commitSpecs(specsFor(selected).map((o, idx) => (idx === i ? { ...o, ...patch } : o)));
   };
+  const addOutput = () => {
+    if (!selected) return;
+    const specs = specsFor(selected);
+    let name = 'new-output'; let n = 1;
+    while (specs.some((o) => o.name === name)) { name = `new-output-${n}`; n += 1; }
+    commitSpecs([...specs, { name, description: '', spec: '', reviewers: [] }]);
+  };
+  const removeOutputAt = (i: number) => {
+    if (!selected) return;
+    commitSpecs(specsFor(selected).filter((_, idx) => idx !== i));
+  };
+  const toggleContext = (id: string) => {
+    if (!selected) return;
+    const cur = selected.contextSources ?? [];
+    update(selectedIdx, { contextSources: cur.includes(id) ? cur.filter((c) => c !== id) : [...cur, id] });
+  };
+  const setStageReviewers = (emails: string[]) => update(selectedIdx, { reviewerUsers: emails });
 
   const removeStage = (idx: number) => {
     const gone = stages[idx]!.key;
@@ -545,7 +617,7 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
                   </div>
 
                   <div>
-                    <label className="text-[10px] font-semibold uppercase text-slate-400">Agent template</label>
+                    <label className="text-[10px] font-semibold uppercase text-slate-400">Agent</label>
                     <select
                       className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-xs focus:border-brand-400 focus:outline-none"
                       value={selected.template}
@@ -558,22 +630,39 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
                   </div>
 
                   <div>
-                    <label className="text-[10px] font-semibold uppercase text-slate-400">
-                      Authorised reviewers (emails, optional)
-                    </label>
-                    <input
-                      className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-xs focus:border-brand-400 focus:outline-none"
-                      value={(selected.reviewerUsers ?? []).join(', ')}
-                      onChange={(e) => update(selectedIdx, {
-                        reviewerUsers: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
+                    <label className="text-[10px] font-semibold uppercase text-slate-400">Project context to feed the agent</label>
+                    <div className="mt-1 grid grid-cols-1 gap-1">
+                      {CONTEXT_SOURCE_OPTIONS.map((c) => {
+                        const on = (selected.contextSources ?? []).includes(c.id);
+                        return (
+                          <label
+                            key={c.id}
+                            className={`flex cursor-pointer items-start gap-2 rounded-md border px-2 py-1.5 text-[11px] ${
+                              on ? 'border-brand-300 bg-brand-50' : 'border-slate-200 bg-white'
+                            }`}
+                          >
+                            <input type="checkbox" checked={on} onChange={() => toggleContext(c.id)} className="mt-0.5 h-3.5 w-3.5 accent-brand-600" />
+                            <span>
+                              <span className="font-medium text-slate-700">{c.label}</span>
+                              <span className="block text-[10px] text-slate-400">{c.hint}</span>
+                            </span>
+                          </label>
+                        );
                       })}
-                      placeholder="e.g. po@acme.com, sa@acme.com — blank = all members with the reviewer role(s)"
-                    />
-                    <div className="mt-0.5 text-[10px] text-slate-400">
-                      Users allowed to sign off this stage's documents. Any of them can review any document and one reviewer
-                      can sign several — the stage completes once <span className="font-semibold">every document</span> has
-                      been signed off. Leave blank to default to the project members holding the reviewer role(s).
                     </div>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-semibold uppercase text-slate-400">
+                      Agent notes / metadata <span className="normal-case text-slate-300">(optional)</span>
+                    </label>
+                    <textarea
+                      rows={2}
+                      className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-xs focus:border-brand-400 focus:outline-none"
+                      value={selected.agentNotes ?? ''}
+                      onChange={(e) => update(selectedIdx, { agentNotes: e.target.value })}
+                      placeholder="Extra instructions or context the agent should apply for this stage…"
+                    />
                   </div>
 
                   {selected.template === 7 && (
@@ -620,71 +709,66 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
 
                   <div>
                     <label className="text-[10px] font-semibold uppercase text-slate-400">
-                      Team, permissions &amp; gate reviewers
+                      Stage access (per user)
                     </label>
-                    <div className="mt-1 overflow-hidden rounded-lg border border-slate-200">
-                      <table className="w-full text-[11px]">
-                        <thead>
-                          <tr className="bg-slate-50 text-[9px] uppercase tracking-wide text-slate-400">
-                            <th className="px-2 py-1 text-left font-semibold">Role</th>
-                            <th className="px-1 py-1 font-semibold" title="Can view this stage's artifacts">Read</th>
-                            <th className="px-1 py-1 font-semibold" title="Can run / retrigger this stage">Write</th>
-                            <th className="px-1 py-1 font-semibold" title="Can approve or amend this stage's gate">Gate</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {PHASE_ROLE_OPTIONS.map((r) => {
-                            const inTeam = selected.team.includes(r);
-                            const canRead = inTeam && (selected.readRoles?.length ? selected.readRoles.includes(r) : true);
-                            const canWrite = inTeam && (selected.writeRoles?.length ? selected.writeRoles.includes(r) : true);
-                            const isReviewer = inTeam && (selected.reviewerRoles?.length
-                              ? selected.reviewerRoles.includes(r)
-                              : r === selected.reviewerRole);
-                            return (
-                              <tr key={r} className={inTeam ? 'border-t border-slate-100' : 'border-t border-slate-100 opacity-50'}>
-                                <td className="px-2 py-1">
-                                  <button
-                                    onClick={() => toggleTeamRole(r)}
-                                    className={`rounded px-1.5 py-0.5 font-semibold ${
-                                      inTeam ? 'bg-brand-100 text-brand-700' : 'bg-slate-100 text-slate-400'
-                                    }`}
-                                    title={inTeam ? 'Remove from the stage team' : 'Add to the stage team'}
-                                  >
-                                    {r}
-                                  </button>
-                                </td>
-                                <td className="px-1 py-1 text-center">
-                                  <input
-                                    type="checkbox" checked={canRead} disabled={!inTeam}
-                                    onChange={() => togglePerm('readRoles', r)}
-                                    className="h-3.5 w-3.5 accent-amber-500 disabled:opacity-40"
-                                  />
-                                </td>
-                                <td className="px-1 py-1 text-center">
-                                  <input
-                                    type="checkbox" checked={canWrite} disabled={!inTeam}
-                                    onChange={() => togglePerm('writeRoles', r)}
-                                    className="h-3.5 w-3.5 accent-emerald-600 disabled:opacity-40"
-                                  />
-                                </td>
-                                <td className="px-1 py-1 text-center">
-                                  <input
-                                    type="checkbox" checked={isReviewer} disabled={!inTeam}
-                                    onChange={() => toggleReviewer(r)}
-                                    className="h-3.5 w-3.5 accent-brand-600 disabled:opacity-40"
-                                  />
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                    <div className="mt-1">
+                      <UserPicker
+                        members={members}
+                        value={[]}
+                        onAdd={addStageUser}
+                        onRemove={() => {}}
+                        placeholder="Add a user to this stage…"
+                      />
                     </div>
-                    <div className="mt-1 text-[10px] text-slate-400">
-                      Click a role to add/remove it from the team. Multiple roles can hold each permission;
-                      any <span className="font-semibold text-brand-600">Gate</span> role may sign the stage.
-                      Write implies read.
-                    </div>
+                    {stageUserPerms(selected).length > 0 ? (
+                      <div className="mt-2 overflow-hidden rounded-lg border border-slate-200">
+                        <table className="w-full text-[11px]">
+                          <thead>
+                            <tr className="bg-slate-50 text-[9px] uppercase tracking-wide text-slate-400">
+                              <th className="px-2 py-1 text-left font-semibold">User</th>
+                              <th className="px-1 py-1 font-semibold" title="Can view this stage's artifacts">Read</th>
+                              <th className="px-1 py-1 font-semibold" title="Can run / retrigger this stage">Write</th>
+                              <th className="px-1 py-1 font-semibold" title="Can approve or amend this stage's gate">Gate</th>
+                              <th className="px-1 py-1" />
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {stageUserPerms(selected).map((p) => {
+                              const m = members.find((x) => x.email.toLowerCase() === p.email.toLowerCase());
+                              return (
+                                <tr key={p.email} className="border-t border-slate-100">
+                                  <td className="px-2 py-1">
+                                    <div className="font-medium text-slate-700">{m?.displayName ?? p.email}</div>
+                                    <div className="text-[9px] text-slate-400">{p.email}</div>
+                                  </td>
+                                  <td className="px-1 py-1 text-center">
+                                    <input type="checkbox" checked={p.read} onChange={() => toggleUserPerm(p.email, 'read')}
+                                      className="h-3.5 w-3.5 accent-amber-500" />
+                                  </td>
+                                  <td className="px-1 py-1 text-center">
+                                    <input type="checkbox" checked={p.write} onChange={() => toggleUserPerm(p.email, 'write')}
+                                      className="h-3.5 w-3.5 accent-emerald-600" />
+                                  </td>
+                                  <td className="px-1 py-1 text-center">
+                                    <input type="checkbox" checked={p.gate} onChange={() => toggleUserPerm(p.email, 'gate')}
+                                      className="h-3.5 w-3.5 accent-brand-600" />
+                                  </td>
+                                  <td className="px-1 py-1 text-center">
+                                    <button type="button" onClick={() => removeStageUser(p.email)}
+                                      className="text-slate-300 hover:text-red-500" title="Remove user">×</button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="mt-1 text-[10px] text-slate-400">
+                        No users added — access falls back to the project defaults. Add specific users to control
+                        who can read, run and approve this stage. <span className="font-semibold">Write</span> implies read.
+                      </div>
+                    )}
                   </div>
 
                   <div>
@@ -739,15 +823,73 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
                   </div>
 
                   <div>
-                    <label className="text-[10px] font-semibold uppercase text-slate-400">Outputs (comma-separated)</label>
-                    <input
-                      className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 font-mono text-[11px] focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-200"
-                      value={selected.outputs.join(', ')}
-                      onChange={(e) =>
-                        update(selectedIdx, { outputs: e.target.value.split(',').map((x) => x.trim()).filter(Boolean) })
-                      }
-                      placeholder="PRD, acceptance-criteria"
-                    />
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-semibold uppercase text-slate-400">Output artifacts &amp; reviewers</label>
+                      <button
+                        type="button"
+                        onClick={addOutput}
+                        className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600 hover:bg-slate-200"
+                      >+ Add output</button>
+                    </div>
+                    <div className="mt-1 space-y-2">
+                      {specsFor(selected).map((o, i) => (
+                        <div key={i} className="rounded-lg border border-slate-200 bg-slate-50/50 p-2">
+                          <div className="flex items-center gap-1">
+                            <input
+                              className="w-full rounded-md border border-slate-300 px-2 py-1 font-mono text-[11px] focus:border-brand-400 focus:outline-none"
+                              value={o.name}
+                              onChange={(e) => updateSpecAt(i, { name: e.target.value.trim() })}
+                              placeholder="artifact-name e.g. PRD"
+                            />
+                            <button type="button" onClick={() => removeOutputAt(i)}
+                              className="shrink-0 rounded px-1.5 py-1 text-xs text-slate-400 hover:bg-red-50 hover:text-red-600" title="Remove output">🗑</button>
+                          </div>
+                          <input
+                            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-[11px] focus:border-brand-400 focus:outline-none"
+                            value={o.description ?? ''}
+                            onChange={(e) => updateSpecAt(i, { description: e.target.value })}
+                            placeholder="Description — what this artifact is"
+                          />
+                          <textarea
+                            rows={2}
+                            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-[11px] focus:border-brand-400 focus:outline-none"
+                            value={o.spec ?? ''}
+                            onChange={(e) => updateSpecAt(i, { spec: e.target.value })}
+                            placeholder="Specification — acceptance criteria / required sections (optional)"
+                          />
+                          <div className="mt-1">
+                            <div className="text-[9px] font-semibold uppercase tracking-wide text-slate-400">Reviewers for this artifact</div>
+                            <UserPicker
+                              members={members}
+                              value={o.reviewers ?? []}
+                              onAdd={(email) => updateSpecAt(i, { reviewers: [...(o.reviewers ?? []), email] })}
+                              onRemove={(email) => updateSpecAt(i, { reviewers: (o.reviewers ?? []).filter((r) => r.toLowerCase() !== email.toLowerCase()) })}
+                              placeholder="Assign a reviewer for this artifact…"
+                            />
+                          </div>
+                        </div>
+                      ))}
+                      {specsFor(selected).length === 0 && (
+                        <div className="text-[10px] text-slate-400">No outputs yet — add at least one artifact this stage produces.</div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-semibold uppercase text-slate-400">Stage reviewers (optional)</label>
+                    <div className="mt-1">
+                      <UserPicker
+                        members={members}
+                        value={selected.reviewerUsers ?? []}
+                        onAdd={(email) => setStageReviewers([...(selected.reviewerUsers ?? []), email])}
+                        onRemove={(email) => setStageReviewers((selected.reviewerUsers ?? []).filter((r) => r.toLowerCase() !== email.toLowerCase()))}
+                        placeholder="Add a stage-level reviewer…"
+                      />
+                    </div>
+                    <div className="mt-0.5 text-[10px] text-slate-400">
+                      The stage completes when <span className="font-semibold">every artifact's reviewers</span> have signed,
+                      <span className="font-semibold"> or</span> any one stage-level reviewer signs off the whole stage.
+                    </div>
                   </div>
                 </div>
               </>

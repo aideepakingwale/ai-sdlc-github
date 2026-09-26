@@ -47,14 +47,14 @@ export interface ProjectFlow {
   stages: FlowStage[];
 }
 
-// ---------------- workflow designer ----------------
+// ---------------- workflow designer (D-30) ----------------
 export interface StageConfig {
   key: string;
   name: string;
   template: number;
   /** Primary gate reviewer (kept for runtime/gate-state compatibility). */
   reviewerRole: string;
-  /** Every role allowed to sign this stage's gate. Empty = [reviewerRole]. */
+  /** Every role allowed to sign this stage's gate (D-42). Empty = [reviewerRole]. */
   reviewerRoles?: string[];
   team: string[];
   /** Roles that may view the stage's artifacts. Empty = the whole team. */
@@ -66,11 +66,44 @@ export interface StageConfig {
   inputs: string[];
   outputs: string[];
   dependsOn: string[];
-  // Custom phase type (template 7): the PM defines the phase by config.
+  // Custom phase type (template 7, D-74): the PM defines the phase by config.
   persona?: string;
   promptId?: string;
   tools?: string[];
+  // --- D-90: user-based ACL, per-artifact reviewers, agent context ---
+  /** Per-user access; authoritative when non-empty (else role lists apply). */
+  userPerms?: UserPerm[];
+  /** Rich metadata + per-artifact reviewer users, keyed to an entry in `outputs`. */
+  outputSpecs?: OutputSpec[];
+  /** Which project context to feed the agent: brief | techStack | uploads | upstream. */
+  contextSources?: string[];
+  /** Free-text instructions/metadata for the stage's agent. */
+  agentNotes?: string;
 }
+
+/** Per-user access on a stage (D-90). Write implies read. */
+export interface UserPerm {
+  email: string;
+  read: boolean;
+  write: boolean;
+  gate: boolean;
+}
+
+/** One stage output artifact's metadata + assigned reviewer users (emails). */
+export interface OutputSpec {
+  name: string;
+  description?: string;
+  spec?: string;
+  reviewers?: string[];
+}
+
+/** Project context sources selectable per stage. */
+export const CONTEXT_SOURCE_OPTIONS: Array<{ id: string; label: string; hint: string }> = [
+  { id: 'brief', label: 'Project brief', hint: "The project's description & goals" },
+  { id: 'techStack', label: 'Tech stack', hint: 'The chosen stack / codebase context' },
+  { id: 'uploads', label: 'Uploaded docs', hint: 'Reference documents attached to the project' },
+  { id: 'upstream', label: 'Upstream outputs', hint: 'Artifacts produced by dependency stages' },
+];
 
 export interface WorkflowView {
   config: { stages: StageConfig[] };
