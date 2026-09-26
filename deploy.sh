@@ -1,27 +1,29 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# AI-SDLC — single-host PoC deploy on Linux (EC2) with Amazon Bedrock.
+# AI-SDLC — single-host PoC deploy on Linux (EC2). Two model backends:
+#   • bedrock (default): Amazon Bedrock via the EC2 INSTANCE ROLE (no API keys).
+#   • keys:              Groq -> Gemini -> xAI from .env (for accounts where
+#                        Bedrock is blocked). You paste the keys into .env.
 #
-# Run this ON the instance, from the repo root, after `git clone`.
-# It configures .env for Bedrock (instance-role auth, no API keys), writes the
-# ai-client credential override, then builds, migrates, seeds and starts the
-# whole docker-compose stack.
+# Run this ON the instance, from the repo root, after `git clone`. It configures
+# .env, (for bedrock) writes the ai-client instance-role override, then builds,
+# migrates, seeds and starts the whole docker-compose stack. It NEVER writes API
+# keys — for --provider keys you paste them into .env yourself.
 #
-# Bedrock auth uses the EC2 INSTANCE ROLE (see docs/DEPLOY-AWS-EC2-BEDROCK.md
-# steps 1-3). This script does NOT create AWS IAM/Bedrock resources — those are
-# a one-time account setup done from your laptop per the guide.
-#
-# Quick start:
+# Quick start (Bedrock):
 #   ./deploy.sh --model-id us.anthropic.claude-3-5-sonnet-20241022-v2:0
-#
-# Full first-boot (also installs swap + Docker, needs sudo):
+# Full first-boot (installs swap + Docker):
 #   ./deploy.sh --bootstrap --model-id <ID> --region us-east-1
+# Key-based fallback (Groq/Gemini):
+#   nano .env   # paste GROQ_API_KEY=... and/or GEMINI_API_KEY=...
+#   ./deploy.sh --provider keys
 #
 # Everything is idempotent — safe to re-run.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
 # ---- defaults ----------------------------------------------------------------
+PROVIDER="bedrock"        # bedrock (instance-role) | keys (Groq/Gemini/xAI)
 MODEL_ID="${BEDROCK_MODEL_ID:-}"
 REGION="${BEDROCK_REGION:-${AWS_REGION:-}}"
 PUBIP="${PUBIP:-}"
@@ -49,11 +51,17 @@ Bedrock auth uses the EC2 INSTANCE ROLE — this script does NOT create AWS
 IAM/Bedrock resources (that's a one-time laptop setup per the guide).
 
 Usage:
+  # Bedrock (default) — auth via the EC2 instance role, no API keys:
   ./deploy.sh --model-id <bedrock-id> [options]
   ./deploy.sh --bootstrap --model-id <bedrock-id> --region us-east-1
+  # Key-based fallback — Groq/Gemini/xAI (no Bedrock, no instance role):
+  ./deploy.sh --provider keys        # paste GROQ_API_KEY / GEMINI_API_KEY into .env first
 
 Options:
-  --model-id <id>     Bedrock model / inference-profile id (required).
+  --provider <p>      bedrock (default) | keys. 'keys' uses the Groq -> Gemini ->
+                      xAI chain from .env instead of Bedrock (for accounts where
+                      Bedrock is blocked). No --model-id / --region needed.
+  --model-id <id>     Bedrock model / inference-profile id (required for bedrock).
                       e.g. us.anthropic.claude-3-5-sonnet-20241022-v2:0
   --region <region>   AWS/Bedrock region. Auto-detected from IMDS if omitted.
   --pubip <ip|host>   Public address for APP_PUBLIC_URL. Auto-detected if omitted.
@@ -63,12 +71,17 @@ Options:
   --skip-build        Reuse existing images (don't run `docker compose build`).
   --skip-check        Skip the Bedrock/instance-role preflight check.
   -h, --help          Show this help.
+
+Provider keys (paste into .env yourself — this script NEVER writes keys):
+  GROQ_API_KEY=...    GROQ_MODEL=llama-3.3-70b-versatile
+  GEMINI_API_KEY=...  GEMINI_MODEL=gemini-2.5-flash-lite
 EOF
 }
 
 # ---- arg parsing -------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --provider)   PROVIDER="${2:?}"; shift 2 ;;
     --model-id)   MODEL_ID="${2:?}"; shift 2 ;;
     --region)     REGION="${2:?}"; shift 2 ;;
     --pubip)      PUBIP="${2:?}"; shift 2 ;;
@@ -123,16 +136,19 @@ command -v docker >/dev/null 2>&1 || die "docker not found. Re-run with --bootst
 docker compose version >/dev/null 2>&1 || die "docker compose plugin not found."
 command -v openssl >/dev/null 2>&1 || die "openssl not found (needed to generate JWT_SECRET)."
 
-# ---- resolve region / model / pubip -----------------------------------------
-[[ -n "$MODEL_ID" ]] || die "Bedrock model id required. Pass --model-id <id>. Find it with:
+case "$PROVIDER" in bedrock|keys) ;; *) die "--provider must be 'bedrock' or 'keys' (got '$PROVIDER')" ;; esac
+
+# ---- resolve model / region (bedrock only) + pubip (both) --------------------
+if [[ "$PROVIDER" == "bedrock" ]]; then
+  [[ -n "$MODEL_ID" ]] || die "Bedrock model id required. Pass --model-id <id>, or use --provider keys. Find it with:
   aws bedrock list-inference-profiles --region <REGION> \\
     --query \"inferenceProfileSummaries[?contains(inferenceProfileId,'anthropic')].[inferenceProfileId]\" --output table"
-
-if [[ -z "$REGION" ]]; then
-  REGION="$(imds "placement/region")"
-  [[ -n "$REGION" ]] && log "Region auto-detected from IMDS: $REGION"
+  if [[ -z "$REGION" ]]; then
+    REGION="$(imds "placement/region")"
+    [[ -n "$REGION" ]] && log "Region auto-detected from IMDS: $REGION"
+  fi
+  [[ -n "$REGION" ]] || die "Region not set and not detectable. Pass --region <region>."
 fi
-[[ -n "$REGION" ]] || die "Region not set and not detectable. Pass --region <region>."
 
 if [[ -z "$PUBIP" ]]; then
   PUBIP="$(imds "public-ipv4")"
@@ -140,8 +156,8 @@ if [[ -z "$PUBIP" ]]; then
 fi
 [[ -n "$PUBIP" ]] || { PUBIP="localhost"; warn "No public IP detected — using localhost for APP_PUBLIC_URL."; }
 
-# ---- Bedrock / instance-role preflight --------------------------------------
-if [[ "$DO_CHECK" == "1" ]]; then
+# ---- Bedrock / instance-role preflight (bedrock only) -----------------------
+if [[ "$PROVIDER" == "bedrock" && "$DO_CHECK" == "1" ]]; then
   ROLE="$(imds "iam/security-credentials/")"
   if [[ -z "$ROLE" ]]; then
     warn "No IAM instance role visible from IMDS. Bedrock auth needs the instance role."
@@ -176,24 +192,26 @@ else
   JWT_NEW="$JWT_CUR"   # keep an operator-set secret across re-runs
 fi
 
-# NOTE: no API keys are written here — Bedrock auth is the instance role.
+# Values common to both providers. NOTE: this script NEVER writes API keys.
 sed -i \
   -e "s|^GENERATION_MODE=.*|GENERATION_MODE=llm|" \
-  -e "s|^BEDROCK_MODEL_ID=.*|BEDROCK_MODEL_ID=${MODEL_ID}|" \
-  -e "s|^BEDROCK_REGION=.*|BEDROCK_REGION=${REGION}|" \
-  -e "s|^AWS_REGION=.*|AWS_REGION=${REGION}|" \
   -e "s|^AUTH_MODE=.*|AUTH_MODE=local|" \
   -e "s|^APP_PUBLIC_URL=.*|APP_PUBLIC_URL=http://${PUBIP}:3000|" \
   -e "s|^JWT_SECRET=.*|JWT_SECRET=${JWT_NEW}|" \
   -e "s|^CONTEXT_TOKEN_THRESHOLD=.*|CONTEXT_TOKEN_THRESHOLD=${CTX_THRESHOLD}|" \
   .env
-log ".env configured (mode=llm, model=${MODEL_ID}, region=${REGION}, url=http://${PUBIP}:3000)"
 
-# ---- ai-client credential override (guide step 6a) ---------------------------
-# .env ships AWS_ACCESS_KEY_ID=local for the DynamoDB/S3 emulators. That dummy
-# value would override the instance role inside ai-client and break Bedrock, so
-# blank it JUST for ai-client — its SDK then falls through to the instance role.
-cat > docker-compose.override.yml <<'YAML'
+if [[ "$PROVIDER" == "bedrock" ]]; then
+  # Bedrock: set the model/region; auth is the EC2 instance role (no keys).
+  sed -i \
+    -e "s|^BEDROCK_MODEL_ID=.*|BEDROCK_MODEL_ID=${MODEL_ID}|" \
+    -e "s|^BEDROCK_REGION=.*|BEDROCK_REGION=${REGION}|" \
+    -e "s|^AWS_REGION=.*|AWS_REGION=${REGION}|" \
+    .env
+  log ".env configured (bedrock; model=${MODEL_ID}, region=${REGION}, url=http://${PUBIP}:3000)"
+  # ai-client override: .env ships AWS_ACCESS_KEY_ID=local for DynamoDB/S3 emulators;
+  # that dummy value would shadow the instance role, so blank it JUST for ai-client.
+  cat > docker-compose.override.yml <<'YAML'
 services:
   ai-client:
     environment:
@@ -201,7 +219,31 @@ services:
       AWS_ACCESS_KEY_ID: ""
       AWS_SECRET_ACCESS_KEY: ""
 YAML
-log "Wrote docker-compose.override.yml (ai-client uses the instance role for Bedrock)."
+  log "Wrote docker-compose.override.yml (ai-client uses the instance role for Bedrock)."
+else
+  # Key-based providers: clear Bedrock so the router uses Groq -> Gemini -> xAI
+  # from .env. Do NOT touch AWS_REGION (that would break the local DynamoDB/S3
+  # emulators / audit bucket). No instance-role override is needed.
+  sed -i -e "s|^BEDROCK_MODEL_ID=.*|BEDROCK_MODEL_ID=|" .env
+  rm -f docker-compose.override.yml
+  log ".env configured (keys; Bedrock disabled; provider chain = Groq -> Gemini -> xAI; url=http://${PUBIP}:3000)"
+
+  # A provider key MUST be present before we start, or ai-client (GENERATION_MODE=llm)
+  # fails to boot. We never write the key — the operator pastes it into .env.
+  keyval() { grep -E "^$1=" .env | head -1 | cut -d= -f2- | tr -d '[:space:]'; }
+  if [[ -z "$(keyval GROQ_API_KEY)$(keyval GEMINI_API_KEY)$(keyval XAI_API_KEY)" ]]; then
+    warn "No provider key found in .env. Paste at least one, then re-run this script:"
+    warn "    GROQ_API_KEY=...     (get one at https://console.groq.com/keys)"
+    warn "    GEMINI_API_KEY=...   (get one at https://aistudio.google.com/app/apikey)"
+    warn "Edit with:  nano .env   — then:  ./deploy.sh --provider keys --skip-build"
+    die "Aborting before build so nothing boots without a provider."
+  fi
+  present=""
+  [[ -n "$(keyval GROQ_API_KEY)" ]]   && present="$present groq"
+  [[ -n "$(keyval GEMINI_API_KEY)" ]] && present="$present gemini"
+  [[ -n "$(keyval XAI_API_KEY)" ]]    && present="$present xai"
+  log "Provider key(s) detected:${present}"
+fi
 
 # ---- services list -----------------------------------------------------------
 SVCS="$CORE_SVCS"
@@ -223,15 +265,21 @@ log "Starting the stack…"
 docker compose up -d ${SVCS}
 
 # ---- verify ------------------------------------------------------------------
-log "Waiting for ai-client to answer /healthz…"
+# ai-client's port 8081 is internal-only, so check the CONTAINER health status
+# rather than curling the host.
+log "Waiting for ai-client to become healthy…"
 ok=0
 for _ in $(seq 1 30); do
-  if curl -sf http://localhost:8081/healthz >/dev/null 2>&1; then ok=1; break; fi
+  cid="$(docker compose ps -q ai-client 2>/dev/null)"
+  if [[ -n "$cid" ]]; then
+    h="$(docker inspect --format '{{.State.Health.Status}}' "$cid" 2>/dev/null || true)"
+    [[ "$h" == "healthy" ]] && { ok=1; break; }
+  fi
   sleep 3
 done
 if [[ "$ok" == "1" ]]; then
-  log "ai-client healthy. Bedrock providers:"
-  docker compose logs ai-client 2>/dev/null | grep -iE "provider|bedrock|mock" | tail -5 || true
+  log "ai-client healthy. Active providers (want effectiveMock:false):"
+  docker compose logs ai-client 2>/dev/null | grep -iE "provider|bedrock|groq|gemini|mock" | tail -5 || true
 else
   warn "ai-client did not report healthy in time. Check: docker compose logs -f ai-client"
 fi
@@ -239,4 +287,8 @@ fi
 echo
 log "Done. Open:  http://${PUBIP}:3000"
 log "Sign in:     superadmin@sdlc.local  /  Password123!"
-log "If generations fall back to mock, see guide §8 (hop-limit, model access, override)."
+if [[ "$PROVIDER" == "bedrock" ]]; then
+  log "If generations fall back to mock, see guide §8 (hop-limit, model access, override)."
+else
+  log "Provider = Groq/Gemini from .env. If a stage errors, check: docker compose logs ai-client"
+fi
