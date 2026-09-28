@@ -32,6 +32,9 @@ function fakeStore(): BreakerStore {
       if (!e || e.expiresAt === null) return -1;
       return Math.ceil((e.expiresAt - Date.now()) / 1000);
     },
+    async del(key) {
+      data.delete(key);
+    },
   };
 }
 
@@ -57,13 +60,13 @@ const req: GenerateRequest = {
 };
 
 describe('chainFor', () => {
-  it('bedrock leads every frontier chain; key-based providers follow', () => {
+  it('bedrock leads every frontier chain; key-based providers follow (D-33)', () => {
     expect(chainFor('architecture')).toEqual(['bedrock', 'groq', 'grok', 'gemini']);
     expect(chainFor('generation')).toEqual(['bedrock', 'groq', 'gemini', 'grok']);
   });
 });
 
-describe('bedrock routing', () => {
+describe('bedrock routing (D-33)', () => {
   it('serves from bedrock first when configured', async () => {
     const breaker = new CircuitBreaker(fakeStore(), 0);
     const bedrock: LlmProvider = {
@@ -129,7 +132,7 @@ describe('bedrock routing', () => {
   });
 });
 
-describe('local model as real fallback', () => {
+describe('local model as real fallback (D-40)', () => {
   it('serves the frontier chain from the local model when no cloud provider is configured', async () => {
     const breaker = new CircuitBreaker(fakeStore(), 0);
     const local: LlmProvider = {
@@ -238,7 +241,7 @@ describe('LlmRouter failover', () => {
     expect(res.provider).toBe('mock');
   });
 
-  it('tier=local routes to the local provider and reports the tier', async => {
+  it('tier=local routes to the local provider and reports the tier (D-25)', async () => {
     const breaker = new CircuitBreaker(fakeStore(), 0);
     const local: LlmProvider = {
       id: 'local',
@@ -271,7 +274,7 @@ describe('LlmRouter failover', () => {
   });
 });
 
-describe('vision routing', () => {
+describe('vision routing (D-66)', () => {
   const visionProvider = (id: 'bedrock' | 'gemini', content: string): LlmProvider => ({
     id,
     configured: true,
@@ -333,7 +336,7 @@ describe('vision routing', () => {
   });
 });
 
-describe('model override', () => {
+describe('model override (D-68)', () => {
   const capturing = (id: 'bedrock' | 'gemini', model: string) => {
     let last: GenerateRequest | null = null;
     const p: LlmProvider = {
@@ -382,7 +385,7 @@ describe('model override', () => {
   });
 });
 
-describe('mock corpus diagrams are valid mermaid', () => {
+describe('mock corpus diagrams are valid mermaid (D-41)', () => {
   const render = async (kind: string, field: string): Promise<string> => {
     const mock = createMockProvider();
     const res = await mock.generate(
@@ -424,9 +427,9 @@ describe('mock provider directives', () => {
     };
     expect(parsed.epics.length).toBeGreaterThan(0);
     expect(parsed.prdMarkdown).toContain('Product Requirements Document');
-    // the corpus must be professional-grade, not placeholder text.
+    // D-39: the corpus must be professional-grade, not placeholder text.
     expect(parsed.prdMarkdown).toContain('Non-functional requirements');
-    // a real Agile hierarchy — Epic -> Feature -> Story with structured
+    // D-45: a real Agile hierarchy — Epic -> Feature -> Story with structured
     // statement, Gherkin ACs and sub-tasks, plus a Definition of Ready.
     expect(parsed.epics[0]!.businessCase).toBeTruthy();
     expect(parsed.definitionOfReady.length).toBeGreaterThan(0);

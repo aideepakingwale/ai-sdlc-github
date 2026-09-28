@@ -174,11 +174,19 @@ export class LlmRouter {
       } catch (err) {
         if (!(err instanceof ProviderCallError)) throw err;
         attempts.push(`${provider.id}:${err.kind}`);
+        // D-94: log the RAW provider error (status + message) so failures are
+        // diagnosable from the logs instead of being flattened to a kind.
         if (err.kind === 'auth_or_billing') {
-          this.log.warn({ provider: provider.id, status: err.status }, 'provider disabled (auth/billing)');
+          this.log.warn(
+            { provider: provider.id, status: err.status, error: err.message },
+            'provider disabled (auth/billing)',
+          );
           await this.breaker.disable(provider.id);
         } else {
-          this.log.warn({ provider: provider.id, kind: err.kind }, 'provider tripped open');
+          this.log.warn(
+            { provider: provider.id, kind: err.kind, status: err.status, error: err.message },
+            'provider call failed — breaker tripped',
+          );
           await this.breaker.trip(provider.id);
         }
       }

@@ -142,7 +142,13 @@ async function ensureCurrent(): Promise<typeof current> {
   const psig = providerSig(cfg);
   if (psig !== current.psig) {
     current = { psig, router: buildRouter(cfg), active: activeProvidersFor(cfg), mode: cfg.mode };
-    log.info({ mode: cfg.mode, activeProviders: current.active }, 'llm config reloaded');
+    // D-94: a config change gives every provider a fresh chance — clear any breaker
+    // a prior misconfig tripped (e.g. an auth 403 that 'disabled' a provider), so an
+    // admin fix in the UI self-heals without a manual Redis reset.
+    await Promise.all(
+      ['bedrock', 'groq', 'gemini', 'grok', 'local'].map((p) => breaker.reset(p).catch(() => {})),
+    );
+    log.info({ mode: cfg.mode, activeProviders: current.active }, 'llm config reloaded — breakers reset');
   } else {
     current.mode = cfg.mode;
   }

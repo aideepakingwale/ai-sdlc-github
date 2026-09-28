@@ -6,6 +6,7 @@ export interface BreakerStore {
   setWithTtl(key: string, value: string, ttlSeconds: number): Promise<void>;
   setPersistent(key: string, value: string): Promise<void>;
   ttl(key: string): Promise<number>;
+  del(key: string): Promise<void>;
 }
 
 /** Adapt an ioredis client to the BreakerStore interface. */
@@ -14,6 +15,7 @@ export function redisBreakerStore(redis: {
   set(key: string, value: string, mode: 'EX', ttl: number): Promise<unknown>;
   set(key: string, value: string): Promise<unknown>;
   ttl(key: string): Promise<number>;
+  del(key: string): Promise<unknown>;
 }): BreakerStore {
   return {
     get: (key) => redis.get(key),
@@ -24,13 +26,16 @@ export function redisBreakerStore(redis: {
       await redis.set(key, value);
     },
     ttl: (key) => redis.ttl(key),
+    del: async (key) => {
+      await redis.del(key);
+    },
   };
 }
 
 const OPEN_TTL_SECONDS = 120;
 
 /**
- * Circuit breaker with Redis-backed state shared across replicas:
+ * Circuit breaker with Redis-backed state shared across replicas (D-04):
  * - `open`  — provider tripped by rate-limit/transient failures; auto half-opens via TTL
  * - `disabled` — auth/billing failure (401/402/403); persists until manually cleared
  * A 5s in-process read-through cache keeps the hot path off Redis.
@@ -73,5 +78,13 @@ export class CircuitBreaker {
   async disable(provider: string): Promise<void> {
     await this.store.setPersistent(this.key(provider), 'disabled');
     this.cache.set(provider, { state: 'disabled', at: Date.now() });
+  }
+
+  /** Clear a breaker back to `closed` (D-94). Called when a provider is
+   *  reconfigured so an admin fix in the UI self-heals a prior `disabled`
+   *  (auth/billing) trip without a manual Redis poke. */
+  async reset(provider: string): Promise<void> {
+    await this.store.del(this.key(provider));
+    this.cache.set(provider, { state: 'closed', at: Date.now() });
   }
 }
