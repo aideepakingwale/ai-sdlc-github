@@ -61,7 +61,7 @@ class Database:
         return await self.pool.fetchrow("SELECT * FROM users WHERE email=$1", email.lower())
 
     async def upsert_idp_user(self, *, sub: str, email: str, display_name: str, role: str) -> dict[str, Any]:
-        """JIT provisioning: local row for FK integrity + audit."""
+        """JIT provisioning (D-14): local row for FK integrity + audit."""
         assert self.pool
         row = await self.pool.fetchrow(
             """
@@ -93,6 +93,25 @@ class Database:
             "SELECT id, email, display_name, role FROM users ORDER BY email LIMIT $1", limit
         )
 
+    # ------------------------------------------------------------ platform settings (D-91)
+    async def get_setting(self, key: str) -> str | None:
+        assert self.pool
+        return await self.pool.fetchval("SELECT value FROM platform_settings WHERE key=$1", key)
+
+    async def set_setting(self, key: str, value: str, updated_by: str | None = None) -> None:
+        assert self.pool
+        await self.pool.execute(
+            "INSERT INTO platform_settings (key, value, updated_by, updated_at) "
+            "VALUES ($1, $2, $3, now()) "
+            "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, "
+            "updated_by=EXCLUDED.updated_by, updated_at=now()",
+            key, value, updated_by,
+        )
+
+    async def delete_setting(self, key: str) -> None:
+        assert self.pool
+        await self.pool.execute("DELETE FROM platform_settings WHERE key=$1", key)
+
     # ------------------------------------------------------------ projects & sessions
     async def create_project(
         self, *, name: str, created_by: str, tech_stack: str = "Node.js + TypeScript",
@@ -123,7 +142,7 @@ class Database:
         return await self.pool.fetchrow("SELECT * FROM projects WHERE id=$1", project_id)
 
     async def update_project_integrations(self, project_id: str, integrations: dict[str, Any]) -> None:
-        """Edit a project's GitHub/Atlassian targets after creation."""
+        """Edit a project's GitHub/Atlassian targets after creation (D-62)."""
         assert self.pool
         await self.pool.execute(
             "UPDATE projects SET github_repo=$2, atlassian_site_url=$3, "
@@ -133,11 +152,11 @@ class Database:
         )
 
     async def delete_project(self, project_id: str) -> bool:
-        """Delete a project and its Postgres rows. Tables with an ON DELETE
+        """Delete a project and its Postgres rows (D-55). Tables with an ON DELETE
         CASCADE FK go automatically once the project row is removed (migration 0010
         fixed sessions + artefacts). `llm_traces` carries a project_id with no FK,
         so purge it explicitly. `audit_index` is deliberately NOT deleted — it is
-        append-only by trigger and an audit trail must survive the deletion
+        append-only by trigger (D-09) and an audit trail must survive the deletion
         of what it describes (non-repudiation); it has no FK, so retained rows
         don't block the delete. Runs in one transaction. Returns False if absent."""
         assert self.pool
@@ -197,7 +216,7 @@ class Database:
             session_id, [a.model_dump(exclude_none=True) for a in artifacts],
         )
 
-    # ------------------------------------------------------------ members
+    # ------------------------------------------------------------ members (D-15)
     async def get_membership_role(self, project_id: str, user_id: str) -> str | None:
         assert self.pool
         return await self.pool.fetchval(
@@ -239,7 +258,7 @@ class Database:
         lineage_id: str | None = None, version: int = 1,
     ) -> str:
         """When storage_key is set, the body lives in the content-store tier
- and only a short pointer/preview is kept in the `content` column.
+        (D-23) and only a short pointer/preview is kept in the `content` column.
         Each row is a version in its lineage; the newest is is_latest=true."""
         assert self.pool
         artefact_id = artefact_id or new_id()
@@ -314,7 +333,7 @@ class Database:
         return await self.pool.fetchrow("SELECT * FROM artefacts WHERE id=$1", artefact_id)
 
     async def update_artefact_content(self, artefact_id: str, content: str) -> int:
-        """Replace an artifact's body in place and bump its version ( diagram
+        """Replace an artifact's body in place and bump its version (D-58 diagram
         repair). Returns the new version. `content` is the DB column value — the
         caller writes the full body to the content-store tier separately."""
         assert self.pool
@@ -326,7 +345,7 @@ class Database:
     async def set_artefact_url_where(
         self, *, project_id: str, phase: int, old_url: str, new_url: str | None,
     ) -> int:
-        """Back-patch artifact URLs after deferred publish: every artifact
+        """Back-patch artifact URLs after deferred publish (D-67): every artifact
         saved during generation with the pending sentinel `old_url` gets the real
         external URL once the gate is approved and publication runs. Returns the
         number of rows updated."""
@@ -339,7 +358,7 @@ class Database:
         return int(result.rsplit(" ", 1)[-1]) if result else 0
 
     async def delete_phase_artefacts(self, project_id: str, phase: int) -> list[asyncpg.Record]:
-        """Remove a stage's artifacts (on retrigger); returns deleted rows
+        """Remove a stage's artifacts (on retrigger, D-24); returns deleted rows
         (with storage_key) so the caller can purge the content-store too."""
         assert self.pool
         return await self.pool.fetch(
@@ -347,7 +366,7 @@ class Database:
             project_id, phase,
         )
 
-    # ------------------------------------------------------------ notifications
+    # ------------------------------------------------------------ notifications (D-53)
     async def insert_notification(
         self, *, project_id: str, phase: int | None, kind: str, title: str,
         body: str = "", roles: list[str] | None = None,
@@ -379,7 +398,7 @@ class Database:
             notification_id, user_id,
         )
 
-    # ------------------------------------------------------------ stage attachments
+    # ------------------------------------------------------------ stage attachments (D-54)
     async def insert_attachment(
         self, *, project_id: str, phase: int, filename: str, content_type: str,
         size_bytes: int, is_text: bool, storage_key: str, created_by: str | None,
@@ -387,7 +406,7 @@ class Database:
     ) -> str:
         assert self.pool
         # Caller may supply the id so the DB row, the content-store key and the
-        # id returned to the client all agree.
+        # id returned to the client all agree (D-54).
         attachment_id = attachment_id or new_id()
         await self.pool.execute(
             "INSERT INTO stage_attachments "
@@ -422,13 +441,13 @@ class Database:
         )
 
     async def get_artefacts_by_ids(self, ids: list[str]) -> list[asyncpg.Record]:
-        """Resolve a curated set of artifact @references for injection."""
+        """Resolve a curated set of artifact @references for injection (D-54)."""
         assert self.pool
         if not ids:
             return []
         return await self.pool.fetch("SELECT * FROM artefacts WHERE id = ANY($1::text[])", ids)
 
-    # ------------------------------------------------------------ stage plan drafts
+    # ------------------------------------------------------------ stage plan drafts (D-56)
     async def get_stage_plan(self, project_id: str, phase: int) -> asyncpg.Record | None:
         assert self.pool
         return await self.pool.fetchrow(
@@ -461,14 +480,14 @@ class Database:
         assert self.pool
         await self.pool.execute("DELETE FROM stage_plans WHERE project_id=$1 AND phase=$2", project_id, phase)
 
-    # ------------------------------------------------------------ generation feedback
+    # ------------------------------------------------------------ generation feedback (D-57)
     async def insert_feedback(
         self, *, project_id: str, phase: int, source: str, category: str,
         severity: str, comment: str, rating: int | None = None,
         artefact_id: str | None = None, created_by: str | None = None,
     ) -> str:
         """A quality signal on a stage generation. source='human' (a person reports
-        an issue) or source='validation' (the agent's verdict)."""
+        an issue) or source='validation' (the D-52 agent's verdict)."""
         assert self.pool
         feedback_id = new_id()
         await self.pool.execute(
@@ -497,7 +516,7 @@ class Database:
     ) -> None:
         """Refresh the validation agent's verdict for a stage: drop the previous
         auto rows and insert the current ones so the surfaced result always
-        reflects the latest generation."""
+        reflects the latest generation (D-57)."""
         assert self.pool
         async with self.pool.acquire() as conn, conn.transaction():
             await conn.execute(
@@ -526,7 +545,7 @@ class Database:
             feedback_id, user_id,
         )
 
-    # ------------------------------------------------------------ audit index
+    # ------------------------------------------------------------ audit index (D-09)
     async def insert_audit_index(self, row: dict[str, Any]) -> None:
         assert self.pool
         await self.pool.execute(
@@ -635,7 +654,7 @@ class Database:
             "SELECT * FROM chat_messages WHERE session_id=$1 ORDER BY created_at LIMIT 500", session_id
         )
 
-    # ------------------------------------------------------------ workflow config
+    # ------------------------------------------------------------ workflow config (D-30)
     async def get_workflow(self, project_id: str) -> asyncpg.Record | None:
         assert self.pool
         return await self.pool.fetchrow(
@@ -643,7 +662,7 @@ class Database:
             project_id,
         )
 
-    # ------------------------------------------------------------------ Canon + Formwork
+    # ------------------------------------------------------------------ Canon + Formwork (D-38)
     async def list_canon(self, project_id: str, *, active_only: bool = True) -> list:
         assert self.pool
         sql = "SELECT * FROM project_canon WHERE project_id=$1"
@@ -735,14 +754,14 @@ class Database:
         return dict(row) if row else None
 
     async def get_formworks_by_ids(self, ids: list[str]) -> list[asyncpg.Record]:
-        """Resolve curated template @references. Platform-wide templates
+        """Resolve curated template @references (D-56). Platform-wide templates
         (project_id NULL) are shareable, so they resolve for any project."""
         assert self.pool
         if not ids:
             return []
         return await self.pool.fetch("SELECT * FROM formworks WHERE id = ANY($1::text[])", ids)
 
-    # ------------------------------------------------------------------ observability
+    # ------------------------------------------------------------------ observability (D-35)
     async def insert_trace(
         self, *, project_id: str | None, stage: int | None, kind: str,
         provider: str | None, model: str | None, tier: str | None, tag: str | None,
@@ -845,7 +864,7 @@ class Database:
         )
         return int(version)
 
-    # ------------------------------------------------------------ RAG documents
+    # ------------------------------------------------------------ RAG documents (D-19)
     async def upsert_kb_doc(
         self, *, doc_id: str, scope: str, source: str, title: str, content: str, embedding: list[float]
     ) -> None:
@@ -860,7 +879,7 @@ class Database:
             doc_id, scope, source, title, content, embedding,
         )
 
-    # ------------------------------------------------------------ codebase
+    # ------------------------------------------------------------ codebase (D-21)
     async def upsert_codebase_file(
         self, *, project_id: str, path: str, content: str, uploaded_by: str
     ) -> None:

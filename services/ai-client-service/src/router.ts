@@ -16,7 +16,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * Intent-based provider chains (Module 3 §2):
  *   recommendation | architecture → Groq, Grok, Gemini
  *   generation | standard         → Groq, Gemini, Grok
- * When AWS Bedrock is configured (cloud deployment) it LEADS every
+ * When AWS Bedrock is configured (cloud deployment, D-33) it LEADS every
  * frontier chain — Claude on Bedrock is the primary AI service platform and
  * the key-based providers become the fallback tier.
  * The mock provider is appended as a last resort when `allowMockFallback`
@@ -56,7 +56,7 @@ export class LlmRouter {
   }
 
   /**
-   * Resolve a pinned model to a concrete provider + bare model id.
+   * Resolve a pinned model (D-68) to a concrete provider + bare model id.
    * Accepts `"<provider>/<modelId>"`, or a bare modelId matching a configured
    * provider's default. Returns null when no pin is requested.
    */
@@ -74,7 +74,7 @@ export class LlmRouter {
   }
 
   /**
-   * Provider candidates for a request. Tier selects the pool:
+   * Provider candidates for a request. Tier (D-25) selects the pool:
    *   - local:    the local lightweight model, then mock fallback
    *   - frontier: the intent-based frontier chain
    *   - auto:     legacy intent-based chain
@@ -82,25 +82,25 @@ export class LlmRouter {
    * A configured LOCAL model (Ollama/vLLM) is a genuine LLM, so it serves as
    * the last real fallback for EVERY tier before the deterministic mock —
    * this lets the whole pipeline run on a real model offline with no API keys
-   *. The mock is only reached when nothing real is configured (or
+   * (D-40). The mock is only reached when nothing real is configured (or
    * `allowMockFallback` in non-production).
    */
-  private candidates(req: GenerateRequest): LlmProvider[] {
+  private candidates(req: GenerateRequest, opts: { forceMock: boolean; allowMockFallback: boolean }): LlmProvider[] {
     const local = this.providers.get('local');
     const localConfigured = Boolean(local?.configured);
 
-    if (this.opts.forceMock) {
+    if (opts.forceMock) {
       const mock = this.providers.get('mock');
       return mock ? [mock] : [];
     }
 
-    // Pinned model: an authorised user chose a specific model — try only
+    // Pinned model (D-68): an authorised user chose a specific model — try only
     // that provider, then the mock fallback (non-prod) so the run never dead-ends.
     const pin = this.resolvePinned(req);
     if (pin) {
       const p = this.providers.get(pin.providerId);
       const pinned = p && p.configured ? [p] : [];
-      if (this.opts.allowMockFallback || pinned.length === 0) {
+      if (opts.allowMockFallback || pinned.length === 0) {
         const mock = this.providers.get('mock');
         if (mock) pinned.push(mock);
       }
@@ -121,12 +121,12 @@ export class LlmRouter {
       }
     }
 
-    if (this.opts.allowMockFallback || chain.length === 0) {
+    if (opts.allowMockFallback || chain.length === 0) {
       const mock = this.providers.get('mock');
       if (mock) chain.push(mock);
     }
 
-    // Vision: a request carrying inline images can only be served by a
+    // Vision (D-66): a request carrying inline images can only be served by a
     // vision-capable provider. Filter the chain down to those — the order is
     // preserved, so it stays a genuine multi-model failover (e.g. Bedrock →
     // Gemini) rather than pinning a single model. The mock is vision-capable so
@@ -137,14 +137,18 @@ export class LlmRouter {
     return chain;
   }
 
-  async generate(req: GenerateRequest, signal: AbortSignal): Promise<GenerateResponse> {
+  async generate(
+    req: GenerateRequest,
+    signal: AbortSignal,
+    optsOverride?: { forceMock: boolean; allowMockFallback: boolean },
+  ): Promise<GenerateResponse> {
     const attempts: string[] = [];
-    const candidates = this.candidates(req);
+    const candidates = this.candidates(req, optsOverride ?? this.opts);
     if (candidates.length === 0) {
       throw new SdlcError('PROVIDER_EXHAUSTED', 'No LLM providers configured');
     }
     // When a model is pinned, hand each provider the BARE model id (prefix
-    // stripped) so it calls the exact model the user chose.
+    // stripped) so it calls the exact model the user chose (D-68).
     const pin = this.resolvePinned(req);
     const callReq: GenerateRequest = pin ? { ...req, model: pin.modelId } : req;
 

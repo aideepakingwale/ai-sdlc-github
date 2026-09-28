@@ -1,9 +1,9 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 
 /**
- * AI observability dashboard (, SUPER_ADMIN): live view over every LLM
+ * AI observability dashboard (D-35, SUPER_ADMIN): live view over every LLM
  * call and MCP tool execution — volumes, tokens, latency, error rate,
  * estimated cost, per-provider/per-day breakdowns and a recent-trace feed.
  * Backed by the same llm_traces table that /metrics (Prometheus) exposes.
@@ -28,6 +28,79 @@ interface Trace {
   provider: string | null; model: string | null; tier: string | null; tag: string | null;
   promptTokens: number; completionTokens: number; latencyMs: number;
   status: string; error: string | null; costUsd: number;
+}
+
+interface GenModeState {
+  override: string | null;    // 'auto' | 'llm' | 'mock' | null (= env default)
+  options: string[];
+  generationMode: string;     // live effective mode reported by ai-client
+  effectiveMock: boolean;
+  activeProviders: string[];
+}
+
+/** Super-Admin runtime control for the LLM generation mode (D-91). */
+function GenerationModeControl() {
+  const qc = useQueryClient();
+  const state = useQuery({
+    queryKey: ['admin', 'generation-mode'],
+    queryFn: () => api.get<GenModeState>('/api/admin/generation-mode'),
+    refetchInterval: 10_000,
+  });
+  const setMode = useMutation({
+    mutationFn: (mode: string) => api.put<GenModeState>('/api/admin/generation-mode', { mode }),
+    onSuccess: (data) => qc.setQueryData(['admin', 'generation-mode'], data),
+  });
+  const s = state.data;
+  const selected = s?.override ?? 'env'; // 'env' = use the deployment default
+  const choices: Array<{ id: string; label: string; hint: string }> = [
+    { id: 'env', label: 'Env default', hint: 'Use the deployment’s GENERATION_MODE' },
+    { id: 'auto', label: 'Auto', hint: 'Real providers if configured, else mock' },
+    { id: 'llm', label: 'LLM only', hint: 'Real providers only — never mock' },
+    { id: 'mock', label: 'Mock', hint: 'Deterministic mock — no LLM calls / cost' },
+  ];
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+          Generation mode <span className="normal-case text-slate-300">(super-admin runtime override)</span>
+        </div>
+        {s && (
+          <div className="text-[11px] text-slate-500">
+            live: <span className="font-semibold text-slate-700">{s.generationMode}</span>
+            {' · '}
+            <span className={s.effectiveMock ? 'font-semibold text-amber-600' : 'font-semibold text-emerald-600'}>
+              {s.effectiveMock ? 'mock serving' : 'real LLM serving'}
+            </span>
+            {' · providers: '}
+            <span className="font-mono">{s.activeProviders.length ? s.activeProviders.join(', ') : 'none'}</span>
+          </div>
+        )}
+      </div>
+      <div className="inline-flex flex-wrap gap-1 rounded-lg bg-slate-100 p-1">
+        {choices.map((c) => {
+          const active = selected === c.id;
+          return (
+            <button
+              key={c.id}
+              type="button"
+              disabled={setMode.isPending}
+              onClick={() => setMode.mutate(c.id)}
+              title={c.hint}
+              className={`rounded-md px-3 py-1 text-xs font-semibold transition disabled:opacity-50 ${
+                active ? 'bg-white text-brand-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              {c.label}
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-1 text-[10px] text-slate-400">
+        Applies immediately to new generations (no redeploy). “LLM only” with no configured provider will
+        error rather than fall back to mock. {setMode.isError && <span className="text-red-600">Change failed.</span>}
+      </div>
+    </div>
+  );
 }
 
 function Kpi({ label, value, sub }: { label: string; value: string; sub?: string }) {
@@ -92,6 +165,8 @@ export default function ObservabilityPanel({ onClose }: { onClose: () => void })
         </div>
 
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+          <GenerationModeControl />
+
           {t && (
             <div className="grid grid-cols-3 gap-2 md:grid-cols-6">
               <Kpi label="LLM calls" value={String(t.llm_calls)} />

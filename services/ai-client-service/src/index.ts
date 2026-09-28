@@ -20,7 +20,7 @@ const log = pino({ level: env.LOG_LEVEL, name: 'ai-client' });
 const redis = new Redis(env.REDIS_URL, { maxRetriesPerRequest: 2 });
 const breaker = new CircuitBreaker(redisBreakerStore(redis));
 
-// Which real providers have credentials — the multimodel roster.
+// Which real providers have credentials — the multimodel roster (D-40).
 const activeProviders = [
   env.BEDROCK_MODEL_ID ? 'bedrock' : null,
   env.GROQ_API_KEY ? 'groq' : null,
@@ -43,6 +43,28 @@ if (mode === 'llm' && activeProviders.length === 0) {
 
 const effectiveMock = mode === 'mock' || (mode === 'auto' && activeProviders.length === 0);
 log.info({ mode, effectiveMock, activeProviders }, 'generation mode resolved');
+
+// D-91: Super-Admin runtime override. The orchestrator writes this Redis key
+// (mirrored from a durable platform_settings row); when present it overrides the
+// env GENERATION_MODE per request. Absent/invalid => the env default above.
+const MODE_KEY = 'sdlc:settings:generation_mode';
+type GenMode = 'mock' | 'llm' | 'auto';
+function optsFor(requested: GenMode): { forceMock: boolean; allowMockFallback: boolean } {
+  return {
+    forceMock: requested === 'mock' || (requested === 'auto' && activeProviders.length === 0),
+    allowMockFallback: requested !== 'llm' && env.NODE_ENV !== 'production',
+  };
+}
+async function currentMode(): Promise<GenMode> {
+  if (env.LLM_FORCE_MOCK) return 'mock';
+  try {
+    const v = await redis.get(MODE_KEY);
+    if (v === 'mock' || v === 'llm' || v === 'auto') return v;
+  } catch {
+    /* Redis unreachable => fall back to the env default */
+  }
+  return mode;
+}
 
 const router = new LlmRouter(
   [
@@ -99,12 +121,15 @@ app.get('/readyz', async (_req, reply) => {
   }
 });
 
-app.get('/v1/providers', async () => ({
-  mode, // mock | llm | auto (requested)
-  effectiveMock, // true = the deterministic mock is serving generation
-  activeProviders, // real providers with credentials (multimodel roster)
-  providers: await router.health(),
-}));
+app.get('/v1/providers', async () => {
+  const requested = await currentMode(); // env default OR Super-Admin override
+  return {
+    mode: requested, // mock | llm | auto (effective)
+    effectiveMock: optsFor(requested).forceMock, // true = the mock is serving
+    activeProviders, // real providers with credentials (multimodel roster)
+    providers: await router.health(),
+  };
+});
 
 app.post('/v1/generate', async (req, reply) => {
   const parsed = GenerateRequestSchema.safeParse(req.body);
@@ -124,7 +149,8 @@ app.post('/v1/generate', async (req, reply) => {
   });
   try {
     const started = Date.now();
-    const res = await router.generate(parsed.data, controller.signal);
+    // D-91: resolve the effective mode per request (env default or runtime override).
+    const res = await router.generate(parsed.data, controller.signal, optsFor(await currentMode()));
     log.info(
       {
         provider: res.provider,

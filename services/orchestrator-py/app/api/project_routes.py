@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac as hmac_mod
+from typing import Literal
 
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
@@ -32,7 +34,7 @@ from .deps import Container, current_user, get_container
 
 router = APIRouter()
 
-# ------------------------------------------------------------------ model catalog
+# ------------------------------------------------------------------ model catalog (D-68)
 # The catalog builder lives in the services layer (plan_model) so plan derivation
 # and this route share one definition; re-exported for tests that import it here.
 from ..services.plan_model import build_model_catalog  # noqa: E402
@@ -44,7 +46,7 @@ _models_cache: dict[str, object] = {"at": 0.0, "data": None}
 async def list_models(
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
-    """The selectable model catalog for the Plan Review picker — one entry
+    """The selectable model catalog for the Plan Review picker (D-68) — one entry
     per configured provider with its model, tier hint, vision support and health.
     Platform-level (any authenticated user); cached ~30s so a plan render never
     hammers the gateway. Deterministic and zero-token."""
@@ -73,7 +75,7 @@ def _project_row(p) -> dict:  # noqa: ANN001
         "id": p["id"], "name": p["name"], "status": p["status"],
         "currentPhase": p["current_phase"], "createdAt": p["created_at"].isoformat(),
         "techStack": p.get("tech_stack") or "Node.js + TypeScript",
-        "integrations": { # per-project GitHub/Atlassian targets
+        "integrations": {  # per-project GitHub/Atlassian targets (D-62)
             "githubRepo": p.get("github_repo"),
             "atlassianSiteUrl": p.get("atlassian_site_url"),
             "jiraProjectKey": p.get("jira_project_key"),
@@ -104,7 +106,7 @@ async def create_project(
 ) -> dict:
     container.authz.assert_can_create_project(user)
     # Validate an optional create-time workflow BEFORE creating anything, so an
-    # invalid plan never leaves a half-created project.
+    # invalid plan never leaves a half-created project (D-76).
     if body.workflow is not None:
         from ..services.workflow import WorkflowConfig, validate_workflow
         try:
@@ -138,7 +140,7 @@ async def update_integrations(
     project_id: str, body: ProjectIntegrations,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
-    """Edit a project's GitHub repo + Atlassian (Jira + Confluence) targets.
+    """Edit a project's GitHub repo + Atlassian (Jira + Confluence) targets (D-62).
     Restricted to the managing PM (creator) / SUPER_ADMIN."""
     await container.authz.assert_project_access(project_id, user)
     project = await container.db.get_project(project_id)
@@ -195,12 +197,12 @@ async def delete_project(
     project_id: str,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
-    """Permanently delete a project and all its data across every store.
+    """Permanently delete a project and all its data across every store (D-55).
     Restricted to the managing PM (creator) or a SUPER_ADMIN."""
     return await container.flow.delete_project(project_id, user)
 
 
-# ------------------------------------------------------------------ members
+# ------------------------------------------------------------------ members (D-15)
 @router.get("/api/projects/{project_id}/members")
 async def list_members(
     project_id: str, user: UserPublic = Depends(current_user),
@@ -249,7 +251,7 @@ async def list_users(
     ]}
 
 
-# ------------------------------------------------------------------ workflow config
+# ------------------------------------------------------------------ workflow config (D-30)
 @router.get("/api/projects/{project_id}/workflow")
 async def get_workflow(
     project_id: str,
@@ -296,7 +298,7 @@ async def save_workflow(
     return await container.workflow.save(project_id, body, user)
 
 
-# ------------------------------------------------------------------ pipeline flow + retrigger
+# ------------------------------------------------------------------ pipeline flow + retrigger (D-24)
 @router.get("/api/projects/{project_id}/flow")
 async def project_flow(
     project_id: str, user: UserPublic = Depends(current_user),
@@ -311,7 +313,7 @@ async def phase_detail(
     project_id: str, phase_id: int,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
-    """Phase-scoped bundle: a single stage's tasks + artifacts + skills,
+    """Phase-scoped bundle (D-27): a single stage's tasks + artifacts + skills,
     available to any user authorised on the project (managing PM, phase-role
     member, or SUPER_ADMIN). This is the 'that particular phase' access surface."""
     if not 1 <= phase_id <= 12:
@@ -349,7 +351,7 @@ async def plan_preview(
     project_id: str, message: str = "",
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
-    """Run visualizer: the plan, execution path, model tier, expected MCP
+    """Run visualizer (D-31): the plan, execution path, model tier, expected MCP
     tools and stage skills for what the NEXT chat turn would run — no execution."""
     return await container.chat.plan_preview(project_id=project_id, user=user, message=message)
 
@@ -365,14 +367,14 @@ async def retrigger_stage(
     return await container.flow.retrigger(project_id, phase_id, user)
 
 
-# ------------------------------------------------------------------ Plan Review & Edit gate
+# ------------------------------------------------------------------ Plan Review & Edit gate (D-56)
 @router.get("/api/projects/{project_id}/phase/{phase_id}/plan")
 async def get_stage_plan(
     project_id: str, phase_id: int,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
     """Full pre-generation plan for a stage: agent, skills, expected tools, model
-    tier, context inventory and the actual system-generated prompt."""
+    tier, context inventory and the actual system-generated prompt (D-56)."""
     if not 1 <= phase_id <= 12:
         raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
     return await container.chat.build_plan(project_id=project_id, phase=phase_id, user=user)
@@ -395,7 +397,7 @@ async def trigger_stage_plan(
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> StreamingResponse:
     """Run the stage using its reviewed plan (SSE). Nothing generates until this is
-    invoked by a writer; the result goes straight to gate review."""
+    invoked by a writer; the result goes straight to gate review (D-56)."""
     if not 1 <= phase_id <= 12:
         raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
 
@@ -485,7 +487,7 @@ async def sign_off_target(
     )
 
 
-# ------------------------------------------------------------------ notifications
+# ------------------------------------------------------------------ notifications (D-53)
 @router.get("/api/projects/{project_id}/notifications")
 async def list_notifications(
     project_id: str, user: UserPublic = Depends(current_user),
@@ -522,7 +524,7 @@ async def read_notification(
     return {"ok": True}
 
 
-# ------------------------------------------------------------------ generation feedback
+# ------------------------------------------------------------------ generation feedback (D-57)
 def _feedback_public(r) -> dict:  # noqa: ANN001
     return {
         "id": r["id"], "phase": r["phase"], "artefactId": r["artefact_id"],
@@ -541,7 +543,7 @@ async def list_feedback(
 ) -> dict:
     """Quality signals for a stage: the validation agent's verdict (source=validation)
     plus human-reported issues (source=human) — the single quality view a reviewer
-    sees before sign-off."""
+    sees before sign-off (D-57)."""
     await container.authz.assert_project_access(project_id, user)
     if not 1 <= phase_id <= 12:
         raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
@@ -554,7 +556,7 @@ async def report_feedback(
     project_id: str, phase_id: int, body: FeedbackRequest,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
-    """Any project member can report/mark a quality issue on a generation."""
+    """Any project member can report/mark a quality issue on a generation (D-57)."""
     await container.authz.assert_project_access(project_id, user)
     if not 1 <= phase_id <= 12:
         raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
@@ -577,7 +579,7 @@ async def resolve_feedback(
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
     """Mark a reported issue resolved. Restricted to users who can write a stage in
-    this project (reviewers/writers/PM), not every viewer."""
+    this project (reviewers/writers/PM), not every viewer (D-57)."""
     await container.authz.assert_project_access(project_id, user)
     row = await container.db.get_feedback(feedback_id)
     if not row or row["project_id"] != project_id:
@@ -617,7 +619,7 @@ async def artefact_detail(
     row = await container.db.get_artefact(artefact_id)
     if not row or row["project_id"] != project_id:
         raise SdlcError("NOT_FOUND", "Artefact not found")
-    # Prefer the content-store tier; fall back to the DB column for
+    # Prefer the content-store tier (D-23); fall back to the DB column for
     # rows written before the tier existed.
     content = row["content"]
     if row["storage_key"]:
@@ -626,7 +628,7 @@ async def artefact_detail(
             content = stored
     data = dict(row)
     data["content"] = content
-    # Whether THIS user may edit the artifact in place: stage write
+    # Whether THIS user may edit the artifact in place (D-70): stage write
     # permission for the artifact's phase. The PUT endpoint re-checks server-side.
     can_edit = await container.chat.can_write_stage(project_id, int(row["phase"]), user)
     return {
@@ -664,9 +666,9 @@ async def artefact_versions(
 async def _save_artefact_edit(
     container: Container, row, project_id: str, new_content: str, user: UserPublic, *, via: str,
 ) -> dict:
-    """Shared persistence for an authorised artefact edit — used by both the
-    JSON PUT and the file Replace. Masks secrets/PII, structurally
-    validates draw.io so a broken diagram can't be saved, writes the
+    """Shared persistence for an authorised artefact edit (D-70) — used by both the
+    JSON PUT and the file Replace. Masks secrets/PII (D-34), structurally
+    validates draw.io (D-69) so a broken diagram can't be saved, writes the
     content-store tier + DB preview with a version bump, and audits. The caller
     has already checked project access + stage write permission."""
     new_content, masked = guardrails_svc.sanitise_output(new_content)
@@ -699,7 +701,7 @@ async def _save_artefact_edit(
 
 
 async def _writable_artefact_or_error(container: Container, project_id: str, artefact_id: str, user: UserPublic):
-    """Resolve an artefact for an edit and enforce the ACL: project access,
+    """Resolve an artefact for an edit and enforce the ACL (D-70): project access,
     project ownership of the artefact, and stage write permission."""
     await container.authz.assert_project_access(project_id, user)
     row = await container.db.get_artefact(artefact_id)
@@ -715,7 +717,7 @@ async def update_artefact(
     project_id: str, artefact_id: str, body: ArtefactUpdate,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
-    """In-place manual edit of an artefact by an authorised stage writer:
+    """In-place manual edit of an artefact by an authorised stage writer (D-70):
     documents and diagram source, saved instantly with a version bump."""
     row = await _writable_artefact_or_error(container, project_id, artefact_id, user)
     return await _save_artefact_edit(container, row, project_id, body.content, user, via="edit")
@@ -726,7 +728,7 @@ async def replace_artefact(
     project_id: str, artefact_id: str, request: Request,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
-    """Replace an artefact's content from an uploaded file — e.g. a
+    """Replace an artefact's content from an uploaded file (D-71) — e.g. a
     `.drawio` edited in the desktop draw.io app, or a revised document. Same ACL
     and save path as the in-place edit; text files only (max 10 MB)."""
     from starlette.datastructures import UploadFile as StarletteUploadFile
@@ -746,7 +748,7 @@ async def replace_artefact(
     return await _save_artefact_edit(container, row, project_id, text, user, via="replace")
 
 
-# ------------------------------------------------------------------ diagram repair
+# ------------------------------------------------------------------ diagram repair (D-58)
 _MERMAID_TYPES = {"HLD_DIAGRAM", "LLD_DIAGRAM"}
 _MERMAID_EXTS = {".mmd", ".mermaid"}
 _PLANTUML_EXTS = {".puml", ".plantuml", ".iuml"}
@@ -785,7 +787,7 @@ async def repair_artefact(
     project_id: str, artefact_id: str, body: DiagramRepairRequest,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
-    """Repair a broken generated diagram from the viewer: deterministic
+    """Repair a broken generated diagram from the viewer (D-58): deterministic
     syntax auto-fix first, then an LLM syntax-fix ('fix') or redraw ('regenerate')
     fallback. Saves a new version in place (audited); gated to stage writers. If
     the result still won't parse, nothing is overwritten and the issues are returned
@@ -846,12 +848,12 @@ async def repair_artefact(
 
 
 # MIME per stored extension so a downloaded artifact opens in the right
-# desktop application (file-first artifacts).
+# desktop application (file-first artifacts, D-32).
 _DOWNLOAD_MIME = {
     ".md": "text/markdown", ".json": "application/json", ".yaml": "application/yaml",
     ".yml": "application/yaml", ".mmd": "text/plain", ".puml": "text/plain",
     ".dsl": "text/plain", ".dbml": "text/plain", ".ts": "text/plain",
-    ".drawio": "application/xml", # draw.io / diagrams.net editable diagram
+    ".drawio": "application/xml",  # draw.io / diagrams.net editable diagram (D-61)
     ".js": "text/javascript", ".py": "text/x-python", ".sql": "application/sql",
     ".txt": "text/plain", ".html": "text/html", ".css": "text/css",
     ".java": "text/plain", ".jmx": "application/xml",
@@ -983,13 +985,13 @@ async def project_audit(
     ]}
 
 
-# ------------------------------------------------------------------ stage attachments
+# ------------------------------------------------------------------ stage attachments (D-54)
 @router.post("/api/projects/{project_id}/phase/{phase_id}/attachments", status_code=201)
 async def upload_attachment(
     project_id: str, phase_id: int, request: Request,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
-    """Attach a file to a stage's compose context. Text is decoded and
+    """Attach a file to a stage's compose context (D-54). Text is decoded and
     stored for inlining into the prompt; binary is kept but flagged not-inlined."""
     from starlette.datastructures import UploadFile as StarletteUploadFile
 
@@ -1011,7 +1013,7 @@ async def upload_attachment(
 
     # Extract usable context: documents (PDF/DOCX) are parsed, images are read by
     # a vision LLM (preferred) or OCR, text is decoded — so the attachment
-    # becomes inlineable context.
+    # becomes inlineable context (D-65, D-66).
     from ..services import attachment_extract as ax
 
     text, kind, note = ax.extract(raw, filename, content_type)
@@ -1079,13 +1081,13 @@ async def delete_attachment(
     row = await container.db.delete_attachment(attachment_id)
     if row and row["storage_key"]:
         try:
-            await container.content.put(row["storage_key"], "") # tombstone the body ( pattern)
+            await container.content.put(row["storage_key"], "")  # tombstone the body (D-24 pattern)
         except Exception:  # noqa: BLE001 — content-store purge is best-effort
             pass
     return {"ok": True}
 
 
-# ------------------------------------------------------------------ codebase
+# ------------------------------------------------------------------ codebase (D-21)
 @router.post("/api/projects/{project_id}/codebase", status_code=201)
 async def upload_codebase(
     project_id: str, request: Request,
@@ -1124,7 +1126,7 @@ async def list_codebase(
     ]}
 
 
-# ------------------------------------------------------------------ file explorer
+# ------------------------------------------------------------------ file explorer (D-28)
 @router.get("/api/projects/{project_id}/files")
 async def project_files(
     project_id: str,
@@ -1196,7 +1198,7 @@ async def codebase_file_download(
     return _file_response(row["content"], row["path"].rsplit("/", 1)[-1])
 
 
-# ------------------------------------------------------------------ Project Canon
+# ------------------------------------------------------------------ Project Canon (D-38)
 @router.get("/api/projects/{project_id}/canon")
 async def list_canon(
     project_id: str, includeInactive: bool = True,
@@ -1261,7 +1263,7 @@ async def preview_canon(
             "chars": len(canon_block) + len(formwork_block)}
 
 
-# ------------------------------------------------------------------ Formwork Library
+# ------------------------------------------------------------------ Formwork Library (D-38)
 @router.get("/api/projects/{project_id}/formworks")
 async def list_project_formworks(
     project_id: str,
@@ -1304,7 +1306,7 @@ async def retire_formwork(
     return {"retired": True}
 
 
-# ------------------------------------------------------------------ governance (, Responsible AI)
+# ------------------------------------------------------------------ governance (D-34, Responsible AI)
 @router.get("/api/governance/guardrails")
 async def governance_guardrails(_user: UserPublic = Depends(current_user)) -> dict:
     """Read-only inventory of every input/output guardrail rule and where it
@@ -1322,7 +1324,7 @@ async def governance_prompts(_user: UserPublic = Depends(current_user)) -> dict:
 
 @router.get("/api/governance/skills")
 async def governance_skills(_user: UserPublic = Depends(current_user)) -> dict:
-    """Read-only skill packs: every skill is a markdown file — the
+    """Read-only skill packs (D-37): every skill is a markdown file — the
     frontmatter (identity, RBAC roles, tier, execution wiring) plus the
     markdown instruction body, exactly as loaded at boot."""
     from ..services.skills import SKILL_PACKS
@@ -1341,7 +1343,7 @@ async def governance_skills(_user: UserPublic = Depends(current_user)) -> dict:
     }
 
 
-# ------------------------------------------------------------------ observability
+# ------------------------------------------------------------------ observability (D-35)
 def _require_admin(user: UserPublic) -> None:
     if user.role != "SUPER_ADMIN":
         raise SdlcError("FORBIDDEN", "Observability dashboard requires SUPER_ADMIN")
@@ -1449,11 +1451,79 @@ async def provider_status(
         pass
     return {
         "llm": llm_providers, "tools": tool_modes, "authMode": container.settings.AUTH_MODE,
-        # Generation mode: mock | llm | auto, whether the mock is actually
+        # Generation mode (D-40): mock | llm | auto, whether the mock is actually
         # serving, and the multimodel roster of real providers with credentials.
         "generationMode": gen_mode, "effectiveMock": effective_mock,
         "activeProviders": active_providers,
     }
+
+
+# --------------------------------------------------- generation-mode toggle (D-91)
+# Super-Admin runtime override for the LLM generation mode. Stored durably as a
+# platform_settings row and mirrored to Redis so ai-client can read it without a
+# DB dependency. Absence of the override = ai-client uses its env GENERATION_MODE.
+GENERATION_MODE_SETTING = "generation_mode"
+GENERATION_MODE_REDIS_KEY = "sdlc:settings:generation_mode"
+_VALID_MODES = ("auto", "llm", "mock")
+
+
+class GenerationModeRequest(BaseModel):
+    # 'env' clears the override and reverts to ai-client's environment default.
+    mode: Literal["auto", "llm", "mock", "env"]
+
+
+async def _live_generation_state(container: Container) -> dict:
+    """Proxy ai-client for the live effective mode / providers (best-effort)."""
+    import httpx
+
+    out = {"generationMode": "unknown", "effectiveMock": True, "activeProviders": []}
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            res = await client.get(f"{container.settings.AI_CLIENT_URL}/v1/providers")
+            body = res.json()
+            out["generationMode"] = body.get("mode", "unknown")
+            out["effectiveMock"] = bool(body.get("effectiveMock", True))
+            out["activeProviders"] = body.get("activeProviders", [])
+    except Exception:
+        pass
+    return out
+
+
+@router.get("/api/admin/generation-mode")
+async def get_generation_mode(
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    if user.role != "SUPER_ADMIN":
+        raise SdlcError("FORBIDDEN", "Only a super admin can view the generation-mode override")
+    override = await container.db.get_setting(GENERATION_MODE_SETTING)
+    live = await _live_generation_state(container)
+    return {"override": override, "options": [*_VALID_MODES], **live}
+
+
+@router.put("/api/admin/generation-mode")
+async def set_generation_mode(
+    body: GenerationModeRequest,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    if user.role != "SUPER_ADMIN":
+        raise SdlcError("FORBIDDEN", "Only a super admin can change the generation mode")
+    if body.mode == "env":
+        await container.db.delete_setting(GENERATION_MODE_SETTING)
+        if container.redis is not None:
+            await container.redis.delete(GENERATION_MODE_REDIS_KEY)
+        override = None
+    else:
+        await container.db.set_setting(GENERATION_MODE_SETTING, body.mode, user.email)
+        if container.redis is not None:
+            await container.redis.set(GENERATION_MODE_REDIS_KEY, body.mode)
+        override = body.mode
+    container.audit.record(
+        project_id="_platform", phase=0, agent_role="Admin",
+        event="generation_mode.changed", human_reviewer=user.email,
+        detail={"mode": body.mode},
+    )
+    live = await _live_generation_state(container)
+    return {"override": override, "options": [*_VALID_MODES], **live}
 
 
 # ------------------------------------------------------------------ KB (RAG) & skills
@@ -1480,7 +1550,7 @@ async def skills(container: Container = Depends(get_container)) -> dict:
         return {"tools": [], "degraded": True}
 
 
-# ------------------------------------------------------------------ project skills
+# ------------------------------------------------------------------ project skills (D-26)
 @router.get("/api/projects/{project_id}/skills")
 async def project_skills(
     project_id: str, phase: int | None = None,
@@ -1506,7 +1576,7 @@ async def execute_skill(
     return await container.skills.execute(project_id, skill_id, user, user_input)
 
 
-# ------------------------------------------------------------------ GitHub webhook
+# ------------------------------------------------------------------ GitHub webhook (D-07)
 @router.post("/api/webhooks/github")
 async def github_webhook(request: Request, container: Container = Depends(get_container)):
     raw = await request.body()

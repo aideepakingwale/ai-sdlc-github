@@ -1,4 +1,4 @@
-"""AI-SDLC Orchestration Hub — Python/FastAPI/LangGraph.
+"""AI-SDLC Orchestration Hub — Python/FastAPI/LangGraph (D-18).
 Composition root: builds every layer once, exposes the REST + SSE API."""
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"
 
 def _external_mcp_servers(settings) -> list[McpServer]:  # noqa: ANN001
     """Build the list of external MCP servers to leverage alongside the in-house
-    tool-connector, from config. GitHub uses a PAT bearer token; Atlassian's
+    tool-connector (D-61), from config. GitHub uses a PAT bearer token; Atlassian's
     own container holds its Jira/Confluence credentials."""
     servers: list[McpServer] = []
     if settings.GITHUB_MCP_ENABLED:
@@ -89,16 +89,16 @@ async def lifespan(app: FastAPI):
     content = await build_content_store(settings)
     log.info("content-store tier: %s", content.mode)
     monitor = BuildMonitor(dynamo, redis, mcp, db, audit, settings)
-    telemetry = TelemetryService(db) # AI observability
+    telemetry = TelemetryService(db)  # AI observability (D-35)
     llm.telemetry = telemetry
-    canon = CanonService(db, authz, audit) #
+    canon = CanonService(db, authz, audit)                      # D-38
     formworks = FormworkService(db, authz, audit, content, canon)
     agent_deps = AgentDeps(
         llm=llm, mcp=mcp, db=db, audit=audit, rag=rag, content=content, monitor=monitor,
         settings=settings, telemetry=telemetry, canon=canon, formworks=formworks,
     )
     workflow = WorkflowService(db, dynamo, audit)
-    # Deferred external publication: external writes are queued during
+    # Deferred external publication (D-67): external writes are queued during
     # generation and replayed by this service only after the gate is approved.
     publisher = PublishService(db, content, mcp, audit) if settings.PUBLISH_ON_APPROVAL else None
     chat = ChatService(db, redis, dynamo, audit, authz, workflow, agent_deps, settings, publisher)
@@ -132,6 +132,18 @@ async def lifespan(app: FastAPI):
     container.telemetry = telemetry
     container.extras["publisher"] = publisher
     container.canon, container.formworks = canon, formworks
+
+    # D-91: mirror the persisted generation-mode override to Redis so ai-client
+    # picks it up after a restart (Redis is the cross-service channel).
+    try:
+        _gm = await db.get_setting("generation_mode")
+        if _gm:
+            await redis.set("sdlc:settings:generation_mode", _gm)
+            log.info("generation-mode override mirrored to Redis: %s", _gm)
+        else:
+            await redis.delete("sdlc:settings:generation_mode")
+    except Exception as err:  # table may not exist yet on a fresh DB pre-migrate
+        log.warning("generation-mode mirror skipped: %s", err)
 
     log.info("orchestrator (python/langgraph) ready on :%s", settings.ORCHESTRATOR_PORT)
     yield
