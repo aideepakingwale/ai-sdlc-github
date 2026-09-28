@@ -133,17 +133,22 @@ async def lifespan(app: FastAPI):
     container.extras["publisher"] = publisher
     container.canon, container.formworks = canon, formworks
 
-    # D-91: mirror the persisted generation-mode override to Redis so ai-client
-    # picks it up after a restart (Redis is the cross-service channel).
+    # D-91/D-92: mirror persisted LLM settings to Redis so ai-client picks them up
+    # after a restart (Redis is the cross-service channel).
     try:
-        _gm = await db.get_setting("generation_mode")
-        if _gm:
-            await redis.set("sdlc:settings:generation_mode", _gm)
-            log.info("generation-mode override mirrored to Redis: %s", _gm)
-        else:
-            await redis.delete("sdlc:settings:generation_mode")
+        from .api.project_routes import LLM_SETTING_KEYS  # single source of truth
+
+        stored = await db.list_settings(list(LLM_SETTING_KEYS))
+        for k in LLM_SETTING_KEYS:
+            rk = f"sdlc:settings:{k}"
+            if stored.get(k):
+                await redis.set(rk, stored[k])
+            else:
+                await redis.delete(rk)
+        if stored:
+            log.info("LLM settings mirrored to Redis: %s", sorted(stored.keys()))
     except Exception as err:  # table may not exist yet on a fresh DB pre-migrate
-        log.warning("generation-mode mirror skipped: %s", err)
+        log.warning("LLM settings mirror skipped: %s", err)
 
     log.info("orchestrator (python/langgraph) ready on :%s", settings.ORCHESTRATOR_PORT)
     yield

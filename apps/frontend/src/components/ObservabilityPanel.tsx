@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 
 /**
@@ -30,75 +30,219 @@ interface Trace {
   status: string; error: string | null; costUsd: number;
 }
 
-interface GenModeState {
-  override: string | null;    // 'auto' | 'llm' | 'mock' | null (= env default)
+interface LlmConfig {
+  generation_mode: string | null;
+  bedrock_model_id: string | null;
+  bedrock_region: string | null;
+  groq_model: string | null;
+  gemini_model: string | null;
+  xai_model: string | null;
+  groq_api_key_set: boolean;
+  gemini_api_key_set: boolean;
+  xai_api_key_set: boolean;
+}
+interface LlmConfigState {
+  config: LlmConfig;
   options: string[];
-  generationMode: string;     // live effective mode reported by ai-client
+  generationMode: string;   // live effective mode reported by ai-client
   effectiveMock: boolean;
   activeProviders: string[];
 }
 
-/** Super-Admin runtime control for the LLM generation mode (D-91). */
-function GenerationModeControl() {
+const TEXT_FIELDS: Array<{ key: keyof LlmConfig; label: string; placeholder: string }> = [
+  { key: 'bedrock_region', label: 'Bedrock region', placeholder: 'e.g. us-east-1' },
+  { key: 'bedrock_model_id', label: 'Bedrock model id', placeholder: 'e.g. us.anthropic.claude-sonnet-4-6' },
+  { key: 'groq_model', label: 'Groq model', placeholder: 'llama-3.3-70b-versatile' },
+  { key: 'gemini_model', label: 'Gemini model', placeholder: 'gemini-2.5-flash-lite' },
+  { key: 'xai_model', label: 'xAI model', placeholder: 'grok-2-latest' },
+];
+const SECRET_FIELDS: Array<{ key: string; setKey: keyof LlmConfig; label: string }> = [
+  { key: 'groq_api_key', setKey: 'groq_api_key_set', label: 'Groq API key' },
+  { key: 'gemini_api_key', setKey: 'gemini_api_key_set', label: 'Gemini API key' },
+  { key: 'xai_api_key', setKey: 'xai_api_key_set', label: 'xAI API key' },
+];
+
+/** Super-Admin runtime LLM configuration (D-91/D-92): generation mode + Bedrock
+ *  region/model + provider model names + write-only API keys. Applies live. */
+function LlmConfigControl() {
   const qc = useQueryClient();
   const state = useQuery({
-    queryKey: ['admin', 'generation-mode'],
-    queryFn: () => api.get<GenModeState>('/api/admin/generation-mode'),
+    queryKey: ['admin', 'llm-config'],
+    queryFn: () => api.get<LlmConfigState>('/api/admin/llm-config'),
     refetchInterval: 10_000,
   });
-  const setMode = useMutation({
-    mutationFn: (mode: string) => api.put<GenModeState>('/api/admin/generation-mode', { mode }),
-    onSuccess: (data) => qc.setQueryData(['admin', 'generation-mode'], data),
+  const save = useMutation({
+    mutationFn: (patch: Record<string, string>) => api.put<LlmConfigState>('/api/admin/llm-config', patch),
+    onSuccess: (data) => { qc.setQueryData(['admin', 'llm-config'], data); setSecrets({}); },
   });
+  // Editable drafts for text fields, seeded when data loads; secrets are write-only.
+  const [text, setText] = useState<Record<string, string>>({});
+  const [secrets, setSecrets] = useState<Record<string, string>>({});
+  const [seeded, setSeeded] = useState(false);
   const s = state.data;
-  const selected = s?.override ?? 'env'; // 'env' = use the deployment default
-  const choices: Array<{ id: string; label: string; hint: string }> = [
-    { id: 'env', label: 'Env default', hint: 'Use the deployment’s GENERATION_MODE' },
-    { id: 'auto', label: 'Auto', hint: 'Real providers if configured, else mock' },
-    { id: 'llm', label: 'LLM only', hint: 'Real providers only — never mock' },
-    { id: 'mock', label: 'Mock', hint: 'Deterministic mock — no LLM calls / cost' },
+  useEffect(() => {
+    if (s && !seeded) {
+      const t: Record<string, string> = {};
+      for (const f of TEXT_FIELDS) t[f.key] = (s.config[f.key] as string | null) ?? '';
+      setText(t);
+      setSeeded(true);
+    }
+  }, [s, seeded]);
+
+  const setMode = (mode: string) => save.mutate({ generation_mode: mode });
+  const selectedMode = s?.config.generation_mode ?? 'env';
+  const modeChoices = [
+    { id: 'env', label: 'Env default' }, { id: 'auto', label: 'Auto' },
+    { id: 'llm', label: 'LLM only' }, { id: 'mock', label: 'Mock' },
   ];
+  const dirtyText = s
+    ? TEXT_FIELDS.filter((f) => (text[f.key] ?? '') !== ((s.config[f.key] as string | null) ?? ''))
+    : [];
+  const dirtySecrets = Object.entries(secrets).filter(([, v]) => v.trim() !== '');
+  const canSave = dirtyText.length > 0 || dirtySecrets.length > 0;
+  const onSave = () => {
+    const patch: Record<string, string> = {};
+    for (const f of dirtyText) patch[f.key] = text[f.key] ?? '';
+    for (const [k, v] of dirtySecrets) patch[k] = v.trim();
+    save.mutate(patch);
+  };
+
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-          Generation mode <span className="normal-case text-slate-300">(super-admin runtime override)</span>
+          LLM configuration <span className="normal-case text-slate-300">(super-admin · applies live, no restart)</span>
         </div>
         {s && (
           <div className="text-[11px] text-slate-500">
-            live: <span className="font-semibold text-slate-700">{s.generationMode}</span>
-            {' · '}
+            live: <span className="font-semibold text-slate-700">{s.generationMode}</span>{' · '}
             <span className={s.effectiveMock ? 'font-semibold text-amber-600' : 'font-semibold text-emerald-600'}>
               {s.effectiveMock ? 'mock serving' : 'real LLM serving'}
-            </span>
-            {' · providers: '}
+            </span>{' · providers: '}
             <span className="font-mono">{s.activeProviders.length ? s.activeProviders.join(', ') : 'none'}</span>
           </div>
         )}
       </div>
-      <div className="inline-flex flex-wrap gap-1 rounded-lg bg-slate-100 p-1">
-        {choices.map((c) => {
-          const active = selected === c.id;
+
+      {/* generation mode — applies immediately on click */}
+      <div className="mb-3 inline-flex flex-wrap gap-1 rounded-lg bg-slate-100 p-1">
+        {modeChoices.map((c) => (
+          <button
+            key={c.id} type="button" disabled={save.isPending}
+            onClick={() => setMode(c.id)}
+            className={`rounded-md px-3 py-1 text-xs font-semibold transition disabled:opacity-50 ${
+              selectedMode === c.id ? 'bg-white text-brand-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+            }`}
+          >{c.label}</button>
+        ))}
+      </div>
+
+      {/* text config */}
+      <div className="grid gap-2 sm:grid-cols-2">
+        {TEXT_FIELDS.map((f) => (
+          <label key={f.key} className="block">
+            <span className="text-[10px] font-semibold uppercase text-slate-400">{f.label}</span>
+            <input
+              className="mt-0.5 w-full rounded-md border border-slate-300 px-2 py-1 font-mono text-[11px] focus:border-brand-400 focus:outline-none"
+              value={text[f.key] ?? ''}
+              onChange={(e) => setText((p) => ({ ...p, [f.key]: e.target.value }))}
+              placeholder={f.placeholder}
+            />
+          </label>
+        ))}
+      </div>
+
+      {/* write-only API keys */}
+      <div className="mt-2 grid gap-2 sm:grid-cols-3">
+        {SECRET_FIELDS.map((f) => {
+          const isSet = Boolean(s?.config[f.setKey]);
           return (
-            <button
-              key={c.id}
-              type="button"
-              disabled={setMode.isPending}
-              onClick={() => setMode.mutate(c.id)}
-              title={c.hint}
-              className={`rounded-md px-3 py-1 text-xs font-semibold transition disabled:opacity-50 ${
-                active ? 'bg-white text-brand-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              {c.label}
-            </button>
+            <label key={f.key} className="block">
+              <span className="text-[10px] font-semibold uppercase text-slate-400">
+                {f.label}{' '}
+                <span className={isSet ? 'text-emerald-600' : 'text-slate-300'}>
+                  {isSet ? '● set' : 'not set'}
+                </span>
+              </span>
+              <div className="mt-0.5 flex items-center gap-1">
+                <input
+                  type="password" autoComplete="new-password"
+                  className="w-full rounded-md border border-slate-300 px-2 py-1 text-[11px] focus:border-brand-400 focus:outline-none"
+                  value={secrets[f.key] ?? ''}
+                  onChange={(e) => setSecrets((p) => ({ ...p, [f.key]: e.target.value }))}
+                  placeholder={isSet ? '•••••••• (unchanged)' : 'paste key…'}
+                />
+                {isSet && (
+                  <button
+                    type="button" title="Remove this key"
+                    onClick={() => save.mutate({ [f.key]: '' })}
+                    className="shrink-0 rounded px-1.5 py-1 text-[11px] text-slate-400 hover:bg-red-50 hover:text-red-600"
+                  >✕</button>
+                )}
+              </div>
+            </label>
           );
         })}
       </div>
-      <div className="mt-1 text-[10px] text-slate-400">
-        Applies immediately to new generations (no redeploy). “LLM only” with no configured provider will
-        error rather than fall back to mock. {setMode.isError && <span className="text-red-600">Change failed.</span>}
+
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          type="button" disabled={!canSave || save.isPending}
+          onClick={onSave}
+          className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-40"
+        >{save.isPending ? 'Saving…' : 'Save configuration'}</button>
+        <span className="text-[10px] text-slate-400">
+          Blank field = clears the override (reverts to the deployment default). Keys are write-only and never shown.
+          {save.isError && <span className="text-red-600"> Save failed.</span>}
+        </span>
       </div>
+    </div>
+  );
+}
+
+/** Live container logs via the read-only docker-socket-proxy (D-92, SSE). */
+const LOG_SERVICES = ['orchestrator', 'ai-client', 'tool-connector', 'frontend', 'postgres', 'redis'];
+function LogsViewer() {
+  const [service, setService] = useState('ai-client');
+  const [tail, setTail] = useState(200);
+  const [lines, setLines] = useState<string[]>([]);
+  const [streaming, setStreaming] = useState(false);
+  const esRef = useRef<EventSource | null>(null);
+  const boxRef = useRef<HTMLPreElement | null>(null);
+
+  const stop = () => { esRef.current?.close(); esRef.current = null; setStreaming(false); };
+  const start = () => {
+    stop();
+    setLines([]);
+    const es = new EventSource(`/api/admin/logs?service=${encodeURIComponent(service)}&tail=${tail}`, { withCredentials: true });
+    es.onmessage = (e) => setLines((p) => (p.length > 3000 ? [...p.slice(-2500), e.data] : [...p, e.data]));
+    es.onerror = () => { setLines((p) => [...p, '[stream ended or unavailable — is DOCKER_PROXY_URL set?]']); stop(); };
+    esRef.current = es;
+    setStreaming(true);
+  };
+  useEffect(() => () => stop(), []); // cleanup on unmount
+  useEffect(() => { boxRef.current?.scrollTo(0, boxRef.current.scrollHeight); }, [lines]);
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-3">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Live container logs</div>
+        <select value={service} onChange={(e) => setService(e.target.value)}
+          className="rounded border border-slate-300 px-2 py-1 text-xs">
+          {LOG_SERVICES.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select value={tail} onChange={(e) => setTail(Number(e.target.value))}
+          className="rounded border border-slate-300 px-2 py-1 text-xs">
+          {[100, 200, 500, 1000].map((n) => <option key={n} value={n}>tail {n}</option>)}
+        </select>
+        {streaming
+          ? <button type="button" onClick={stop} className="rounded-md bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 hover:bg-red-100">Stop</button>
+          : <button type="button" onClick={start} className="rounded-md bg-brand-600 px-3 py-1 text-xs font-semibold text-white hover:bg-brand-700">Start</button>}
+        {streaming && <span className="animate-pulse rounded bg-emerald-100 px-1 text-[9px] text-emerald-700">live</span>}
+      </div>
+      <pre ref={boxRef} className="max-h-72 overflow-auto rounded-lg bg-slate-900 p-2 text-[10px] leading-relaxed text-slate-100">
+        {lines.length ? lines.join('\n') : 'Pick a service and press Start to tail its logs.'}
+      </pre>
     </div>
   );
 }
@@ -165,7 +309,8 @@ export default function ObservabilityPanel({ onClose }: { onClose: () => void })
         </div>
 
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
-          <GenerationModeControl />
+          <LlmConfigControl />
+          <LogsViewer />
 
           {t && (
             <div className="grid grid-cols-3 gap-2 md:grid-cols-6">

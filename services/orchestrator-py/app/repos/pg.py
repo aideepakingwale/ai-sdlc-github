@@ -112,6 +112,13 @@ class Database:
         assert self.pool
         await self.pool.execute("DELETE FROM platform_settings WHERE key=$1", key)
 
+    async def list_settings(self, keys: list[str]) -> dict[str, str]:
+        assert self.pool
+        rows = await self.pool.fetch(
+            "SELECT key, value FROM platform_settings WHERE key = ANY($1::text[])", keys
+        )
+        return {r["key"]: r["value"] for r in rows}
+
     # ------------------------------------------------------------ projects & sessions
     async def create_project(
         self, *, name: str, created_by: str, tech_stack: str = "Node.js + TypeScript",

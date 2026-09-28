@@ -1458,21 +1458,37 @@ async def provider_status(
     }
 
 
-# --------------------------------------------------- generation-mode toggle (D-91)
-# Super-Admin runtime override for the LLM generation mode. Stored durably as a
-# platform_settings row and mirrored to Redis so ai-client can read it without a
-# DB dependency. Absence of the override = ai-client uses its env GENERATION_MODE.
-GENERATION_MODE_SETTING = "generation_mode"
-GENERATION_MODE_REDIS_KEY = "sdlc:settings:generation_mode"
+# --------------------------------------------------- LLM runtime config (D-91/D-92)
+# Super-Admin runtime overrides for LLM config. Stored durably as platform_settings
+# rows and mirrored to Redis so ai-client reads them per request (no restart).
+# Absence of an override = ai-client uses its env value. Secrets are write-only:
+# the API returns a *_set boolean, never the value.
 _VALID_MODES = ("auto", "llm", "mock")
+_SECRET_KEYS = frozenset({"groq_api_key", "gemini_api_key", "xai_api_key"})
+# Single source of truth (also imported by main.py's startup mirror).
+LLM_SETTING_KEYS = (
+    "generation_mode",
+    "bedrock_model_id", "bedrock_region",
+    "groq_model", "gemini_model", "xai_model",
+    "groq_api_key", "gemini_api_key", "xai_api_key",
+)
 
 
-class GenerationModeRequest(BaseModel):
-    # 'env' clears the override and reverts to ai-client's environment default.
-    mode: Literal["auto", "llm", "mock", "env"]
+class LlmConfigRequest(BaseModel):
+    # All optional: only provided fields change. "" clears a value; for
+    # generation_mode, "env" also clears (reverts to the env default).
+    generation_mode: Literal["auto", "llm", "mock", "env"] | None = None
+    bedrock_model_id: str | None = None
+    bedrock_region: str | None = None
+    groq_model: str | None = None
+    gemini_model: str | None = None
+    xai_model: str | None = None
+    groq_api_key: str | None = None
+    gemini_api_key: str | None = None
+    xai_api_key: str | None = None
 
 
-async def _live_generation_state(container: Container) -> dict:
+async def _live_llm_state(container: Container) -> dict:
     """Proxy ai-client for the live effective mode / providers (best-effort)."""
     import httpx
 
@@ -1489,14 +1505,77 @@ async def _live_generation_state(container: Container) -> dict:
     return out
 
 
+async def _apply_setting(container: Container, key: str, value: str, actor: str) -> None:
+    """Upsert (or clear) one platform setting and mirror to Redis for ai-client."""
+    rk = f"sdlc:settings:{key}"
+    clear = value == "" or (key == "generation_mode" and value == "env")
+    if clear:
+        await container.db.delete_setting(key)
+        if container.redis is not None:
+            await container.redis.delete(rk)
+    else:
+        await container.db.set_setting(key, value, actor)
+        if container.redis is not None:
+            await container.redis.set(rk, value)
+
+
+async def _llm_config_view(container: Container) -> dict:
+    stored = await container.db.list_settings(list(LLM_SETTING_KEYS))
+    cfg: dict = {}
+    for k in LLM_SETTING_KEYS:
+        if k in _SECRET_KEYS:
+            cfg[f"{k}_set"] = bool(stored.get(k))   # never return the secret value
+        else:
+            cfg[k] = stored.get(k)                   # None = unset (uses env default)
+    live = await _live_llm_state(container)
+    return {"config": cfg, "options": [*_VALID_MODES], **live}
+
+
+@router.get("/api/admin/llm-config")
+async def get_llm_config(
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    if user.role != "SUPER_ADMIN":
+        raise SdlcError("FORBIDDEN", "Only a super admin can view LLM config")
+    return await _llm_config_view(container)
+
+
+@router.put("/api/admin/llm-config")
+async def set_llm_config(
+    body: LlmConfigRequest,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    if user.role != "SUPER_ADMIN":
+        raise SdlcError("FORBIDDEN", "Only a super admin can change LLM config")
+    provided = body.model_dump(exclude_unset=True)
+    changed: list[str] = []
+    for key, value in provided.items():
+        if value is None or key not in LLM_SETTING_KEYS:
+            continue
+        await _apply_setting(container, key, str(value), user.email)
+        changed.append(key)
+    if changed:
+        container.audit.record(
+            project_id="_platform", phase=0, agent_role="Admin",
+            event="llm_config.changed", human_reviewer=user.email,
+            detail={"changed": changed},  # values omitted (may be secrets)
+        )
+    return await _llm_config_view(container)
+
+
+# Back-compat aliases (the earlier generation-mode-only endpoints).
+class GenerationModeRequest(BaseModel):
+    mode: Literal["auto", "llm", "mock", "env"]
+
+
 @router.get("/api/admin/generation-mode")
 async def get_generation_mode(
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
     if user.role != "SUPER_ADMIN":
         raise SdlcError("FORBIDDEN", "Only a super admin can view the generation-mode override")
-    override = await container.db.get_setting(GENERATION_MODE_SETTING)
-    live = await _live_generation_state(container)
+    override = await container.db.get_setting("generation_mode")
+    live = await _live_llm_state(container)
     return {"override": override, "options": [*_VALID_MODES], **live}
 
 
@@ -1507,23 +1586,43 @@ async def set_generation_mode(
 ) -> dict:
     if user.role != "SUPER_ADMIN":
         raise SdlcError("FORBIDDEN", "Only a super admin can change the generation mode")
-    if body.mode == "env":
-        await container.db.delete_setting(GENERATION_MODE_SETTING)
-        if container.redis is not None:
-            await container.redis.delete(GENERATION_MODE_REDIS_KEY)
-        override = None
-    else:
-        await container.db.set_setting(GENERATION_MODE_SETTING, body.mode, user.email)
-        if container.redis is not None:
-            await container.redis.set(GENERATION_MODE_REDIS_KEY, body.mode)
-        override = body.mode
+    await _apply_setting(container, "generation_mode", body.mode, user.email)
     container.audit.record(
         project_id="_platform", phase=0, agent_role="Admin",
-        event="generation_mode.changed", human_reviewer=user.email,
-        detail={"mode": body.mode},
+        event="generation_mode.changed", human_reviewer=user.email, detail={"mode": body.mode},
     )
-    live = await _live_generation_state(container)
+    override = None if body.mode == "env" else body.mode
+    live = await _live_llm_state(container)
     return {"override": override, "options": [*_VALID_MODES], **live}
+
+
+# ------------------------------------------------------ live container logs (D-92)
+@router.get("/api/admin/logs")
+async def admin_logs(
+    service: str, tail: int = 200,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+):
+    """Stream a container's logs (SSE) via the read-only docker-socket-proxy.
+    SUPER_ADMIN only; service is validated against a fixed allowlist; the proxy
+    exposes GET /containers/* only (writes denied), so this can never mutate."""
+    from ..services import docker_logs
+
+    if user.role != "SUPER_ADMIN":
+        raise SdlcError("FORBIDDEN", "Only a super admin can view container logs")
+    if service not in docker_logs.ALLOWED_SERVICES:
+        raise SdlcError("VALIDATION_FAILED", f"unknown service '{service}'")
+    proxy = getattr(container.settings, "DOCKER_PROXY_URL", "") or ""
+    if not proxy:
+        return JSONResponse(status_code=501, content={"error": {
+            "code": "NOT_CONFIGURED",
+            "message": "Live logs require the docker-socket-proxy (set DOCKER_PROXY_URL).",
+        }})
+    tail = max(1, min(int(tail), 2000))
+    return StreamingResponse(
+        docker_logs.stream(proxy, service, tail),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ------------------------------------------------------------------ KB (RAG) & skills

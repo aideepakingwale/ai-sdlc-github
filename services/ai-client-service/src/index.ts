@@ -20,93 +20,134 @@ const log = pino({ level: env.LOG_LEVEL, name: 'ai-client' });
 const redis = new Redis(env.REDIS_URL, { maxRetriesPerRequest: 2 });
 const breaker = new CircuitBreaker(redisBreakerStore(redis));
 
-// Which real providers have credentials — the multimodel roster (D-40).
-const activeProviders = [
-  env.BEDROCK_MODEL_ID ? 'bedrock' : null,
-  env.GROQ_API_KEY ? 'groq' : null,
-  env.GEMINI_API_KEY ? 'gemini' : null,
-  env.XAI_API_KEY ? 'grok' : null,
-  env.LOCAL_LLM_BASE_URL ? 'local' : null,
-].filter((p): p is string => p !== null);
+// D-91/D-92: LLM config is resolved PER REQUEST from Super-Admin runtime overrides
+// (Redis, written by the orchestrator from durable platform_settings rows), falling
+// back to env per field. The router + provider roster are rebuilt live when the
+// effective provider config changes — so region/model/keys/model-names all apply
+// with no restart. `optsFor(mode)` supplies mock/fallback behaviour per request.
+type GenMode = 'mock' | 'llm' | 'auto';
+const K = (name: string) => `sdlc:settings:${name}`;
+const SETTING_KEYS = [
+  'generation_mode', 'bedrock_model_id', 'bedrock_region',
+  'groq_api_key', 'groq_model', 'gemini_api_key', 'gemini_model', 'xai_api_key', 'xai_model',
+] as const;
 
-// Resolve the effective mode: GENERATION_MODE is the master switch; the legacy
-// LLM_FORCE_MOCK still pins mock for back-compat.
-const mode: 'mock' | 'llm' | 'auto' = env.LLM_FORCE_MOCK ? 'mock' : env.GENERATION_MODE;
-
-if (mode === 'llm' && activeProviders.length === 0) {
-  log.error(
-    'GENERATION_MODE=llm but no LLM provider is configured. Set BEDROCK_MODEL_ID, GROQ_API_KEY, ' +
-      'GEMINI_API_KEY, XAI_API_KEY or LOCAL_LLM_BASE_URL — or use GENERATION_MODE=auto/mock.',
-  );
-  process.exit(1);
+interface EffCfg {
+  mode: GenMode;
+  bedrockModelId?: string;
+  bedrockRegion?: string;
+  groqApiKey?: string; groqModel: string;
+  geminiApiKey?: string; geminiModel: string;
+  xaiApiKey?: string; xaiModel: string;
 }
 
-const effectiveMock = mode === 'mock' || (mode === 'auto' && activeProviders.length === 0);
-log.info({ mode, effectiveMock, activeProviders }, 'generation mode resolved');
-
-// D-91: Super-Admin runtime override. The orchestrator writes this Redis key
-// (mirrored from a durable platform_settings row); when present it overrides the
-// env GENERATION_MODE per request. Absent/invalid => the env default above.
-const MODE_KEY = 'sdlc:settings:generation_mode';
-type GenMode = 'mock' | 'llm' | 'auto';
-function optsFor(requested: GenMode): { forceMock: boolean; allowMockFallback: boolean } {
+function cfgFromEnv(): EffCfg {
   return {
-    forceMock: requested === 'mock' || (requested === 'auto' && activeProviders.length === 0),
-    allowMockFallback: requested !== 'llm' && env.NODE_ENV !== 'production',
+    mode: env.LLM_FORCE_MOCK ? 'mock' : env.GENERATION_MODE,
+    bedrockModelId: env.BEDROCK_MODEL_ID,
+    bedrockRegion: env.BEDROCK_REGION ?? process.env.AWS_REGION,
+    groqApiKey: env.GROQ_API_KEY, groqModel: env.GROQ_MODEL,
+    geminiApiKey: env.GEMINI_API_KEY, geminiModel: env.GEMINI_MODEL,
+    xaiApiKey: env.XAI_API_KEY, xaiModel: env.XAI_MODEL,
   };
 }
-async function currentMode(): Promise<GenMode> {
-  if (env.LLM_FORCE_MOCK) return 'mock';
+
+async function readEffectiveConfig(): Promise<EffCfg> {
+  if (env.LLM_FORCE_MOCK) return { ...cfgFromEnv(), mode: 'mock' };
+  let ov: (string | null)[] = new Array(SETTING_KEYS.length).fill(null);
   try {
-    const v = await redis.get(MODE_KEY);
-    if (v === 'mock' || v === 'llm' || v === 'auto') return v;
+    ov = await redis.mget(...SETTING_KEYS.map(K));
   } catch {
-    /* Redis unreachable => fall back to the env default */
+    return cfgFromEnv(); // Redis down => env only
   }
-  return mode;
+  const o = Object.fromEntries(SETTING_KEYS.map((k, i) => [k, ov[i] || undefined])) as Record<string, string | undefined>;
+  const m = o.generation_mode;
+  return {
+    mode: m === 'mock' || m === 'llm' || m === 'auto' ? m : env.GENERATION_MODE,
+    bedrockModelId: o.bedrock_model_id ?? env.BEDROCK_MODEL_ID,
+    bedrockRegion: o.bedrock_region ?? env.BEDROCK_REGION ?? process.env.AWS_REGION,
+    groqApiKey: o.groq_api_key ?? env.GROQ_API_KEY,
+    groqModel: o.groq_model ?? env.GROQ_MODEL,
+    geminiApiKey: o.gemini_api_key ?? env.GEMINI_API_KEY,
+    geminiModel: o.gemini_model ?? env.GEMINI_MODEL,
+    xaiApiKey: o.xai_api_key ?? env.XAI_API_KEY,
+    xaiModel: o.xai_model ?? env.XAI_MODEL,
+  };
 }
 
-const router = new LlmRouter(
-  [
-    createBedrockProvider({
-      modelId: env.BEDROCK_MODEL_ID,
-      region: env.BEDROCK_REGION ?? process.env.AWS_REGION,
-    }),
-    createOpenAiCompatProvider({
-      id: 'groq',
-      baseUrl: 'https://api.groq.com/openai/v1',
-      apiKey: env.GROQ_API_KEY,
-      model: env.GROQ_MODEL,
-      requestTokenBudget: env.LLM_REQUEST_TOKEN_BUDGET,
-    }),
-    createGeminiProvider({ apiKey: env.GEMINI_API_KEY, model: env.GEMINI_MODEL }),
-    createOpenAiCompatProvider({
-      id: 'grok',
-      baseUrl: 'https://api.x.ai/v1',
-      apiKey: env.XAI_API_KEY,
-      model: env.XAI_MODEL,
-      requestTokenBudget: env.LLM_REQUEST_TOKEN_BUDGET,
-    }),
-    createOpenAiCompatProvider({
-      id: 'local',
-      baseUrl: (env.LOCAL_LLM_BASE_URL ?? 'http://local-llm:11434/v1').replace(/\/$/, ''),
-      apiKey: env.LOCAL_LLM_API_KEY,
-      model: env.LOCAL_LLM_MODEL,
-      configuredWhen: Boolean(env.LOCAL_LLM_BASE_URL),
-      timeoutMs: 90_000,
-    }),
-    createMockProvider(),
-  ],
-  breaker,
-  log,
-  {
-    forceMock: effectiveMock,
-    // In explicit `llm` mode the mock is never a silent fallback — a real
-    // provider must serve or the request fails. Otherwise mock backstops
-    // non-production so local runs never dead-end.
+function activeProvidersFor(cfg: EffCfg): string[] {
+  return [
+    cfg.bedrockModelId ? 'bedrock' : null,
+    cfg.groqApiKey ? 'groq' : null,
+    cfg.geminiApiKey ? 'gemini' : null,
+    cfg.xaiApiKey ? 'grok' : null,
+    env.LOCAL_LLM_BASE_URL ? 'local' : null,
+  ].filter((p): p is string => p !== null);
+}
+
+function buildRouter(cfg: EffCfg): LlmRouter {
+  return new LlmRouter(
+    [
+      createBedrockProvider({ modelId: cfg.bedrockModelId, region: cfg.bedrockRegion }),
+      createOpenAiCompatProvider({
+        id: 'groq', baseUrl: 'https://api.groq.com/openai/v1',
+        apiKey: cfg.groqApiKey, model: cfg.groqModel, requestTokenBudget: env.LLM_REQUEST_TOKEN_BUDGET,
+      }),
+      createGeminiProvider({ apiKey: cfg.geminiApiKey, model: cfg.geminiModel }),
+      createOpenAiCompatProvider({
+        id: 'grok', baseUrl: 'https://api.x.ai/v1',
+        apiKey: cfg.xaiApiKey, model: cfg.xaiModel, requestTokenBudget: env.LLM_REQUEST_TOKEN_BUDGET,
+      }),
+      createOpenAiCompatProvider({
+        id: 'local',
+        baseUrl: (env.LOCAL_LLM_BASE_URL ?? 'http://local-llm:11434/v1').replace(/\/$/, ''),
+        apiKey: env.LOCAL_LLM_API_KEY, model: env.LOCAL_LLM_MODEL,
+        configuredWhen: Boolean(env.LOCAL_LLM_BASE_URL), timeoutMs: 90_000,
+      }),
+      createMockProvider(),
+    ],
+    breaker,
+    log,
+    // Per-request opts (below) are the source of truth; these defaults are unused.
+    { forceMock: false, allowMockFallback: true },
+  );
+}
+
+function optsFor(mode: GenMode, active: string[]): { forceMock: boolean; allowMockFallback: boolean } {
+  return {
+    forceMock: mode === 'mock' || (mode === 'auto' && active.length === 0),
     allowMockFallback: mode !== 'llm' && env.NODE_ENV !== 'production',
-  },
-);
+  };
+}
+
+// Provider signature excludes `mode` (mode is applied via optsFor, not baked into
+// the router) so a mode toggle doesn't force a router rebuild.
+function providerSig(cfg: EffCfg): string {
+  const { mode: _mode, ...rest } = cfg;
+  return JSON.stringify(rest);
+}
+
+let current: { psig: string; router: LlmRouter; active: string[]; mode: GenMode };
+{
+  const cfg = cfgFromEnv();
+  current = { psig: providerSig(cfg), router: buildRouter(cfg), active: activeProvidersFor(cfg), mode: cfg.mode };
+  log.info({ mode: current.mode, activeProviders: current.active }, 'generation mode resolved');
+  if (current.mode === 'llm' && current.active.length === 0) {
+    log.warn('GENERATION_MODE=llm but no provider configured yet — set one in the admin panel or .env.');
+  }
+}
+
+async function ensureCurrent(): Promise<typeof current> {
+  const cfg = await readEffectiveConfig();
+  const psig = providerSig(cfg);
+  if (psig !== current.psig) {
+    current = { psig, router: buildRouter(cfg), active: activeProvidersFor(cfg), mode: cfg.mode };
+    log.info({ mode: cfg.mode, activeProviders: current.active }, 'llm config reloaded');
+  } else {
+    current.mode = cfg.mode;
+  }
+  return current;
+}
 
 const app = Fastify({ logger: false, bodyLimit: 4 * 1024 * 1024 });
 
@@ -122,12 +163,12 @@ app.get('/readyz', async (_req, reply) => {
 });
 
 app.get('/v1/providers', async () => {
-  const requested = await currentMode(); // env default OR Super-Admin override
+  const c = await ensureCurrent(); // env default OR Super-Admin overrides (live)
   return {
-    mode: requested, // mock | llm | auto (effective)
-    effectiveMock: optsFor(requested).forceMock, // true = the mock is serving
-    activeProviders, // real providers with credentials (multimodel roster)
-    providers: await router.health(),
+    mode: c.mode, // mock | llm | auto (effective)
+    effectiveMock: optsFor(c.mode, c.active).forceMock, // true = the mock is serving
+    activeProviders: c.active, // real providers with credentials (multimodel roster)
+    providers: await c.router.health(),
   };
 });
 
@@ -149,8 +190,9 @@ app.post('/v1/generate', async (req, reply) => {
   });
   try {
     const started = Date.now();
-    // D-91: resolve the effective mode per request (env default or runtime override).
-    const res = await router.generate(parsed.data, controller.signal, optsFor(await currentMode()));
+    // D-91/D-92: resolve effective config per request (rebuilds router live if it changed).
+    const c = await ensureCurrent();
+    const res = await c.router.generate(parsed.data, controller.signal, optsFor(c.mode, c.active));
     log.info(
       {
         provider: res.provider,

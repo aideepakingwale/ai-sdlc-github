@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     AI_CLIENT_URL: str
     TOOLS_MCP_URL: str
 
-    # Attachment image understanding. Uploaded images are turned into
+    # Attachment image understanding (D-66). Uploaded images are turned into
     # context two ways: a vision LLM (routed multi-model through ai-client:
     # Bedrock Claude → Gemini) transcribes + describes them, and deterministic
     # OCR (pytesseract) is the offline fallback.
@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     ATTACHMENT_VISION_MAX_EDGE: int = 1536
 
     # External MCP servers the platform can leverage in addition to the in-house
-    # tool-connector. Disabled by default; enable per server and supply
+    # tool-connector (D-61). Disabled by default; enable per server and supply
     # credentials in .env. Their tools are exposed namespaced (github.* / atlassian.*).
     #   GitHub — github/github-mcp-server (hosted remote by default; a PAT bearer token).
     #   Atlassian — sooperset/mcp-atlassian (Jira + Confluence), run with streamable-http.
@@ -57,13 +57,13 @@ class Settings(BaseSettings):
     # free-tier provider's per-request token ceiling (e.g. Groq's 12k TPM) and
     # real generation succeeds instead of 413-ing into the mock fallback. Raise
     # it when using a higher-tier key (Bedrock/paid) to feed agents more context.
-    # Governance: external side-effecting writes — Jira tickets, Confluence
+    # Governance (D-67): external side-effecting writes — Jira tickets, Confluence
     # pages, GitHub doc/design/config commits — are DEFERRED during generation and
     # executed only after the phase's HITL gate is APPROVED, by the approver. Set
     # False to revert to the legacy publish-during-generation behaviour.
     PUBLISH_ON_APPROVAL: bool = True
 
-    # Workflow engine ( fork): v2 adds the data-driven custom phase type and
+    # Workflow engine (D-73 fork): v2 adds the data-driven custom phase type and
     # is a backward-compatible superset of v1; set v1 to roll back to the original.
     WORKFLOW_ENGINE: Literal["v1", "v2"] = "v2"
 
@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     BUILD_LOOP_MAX_ITERATIONS: int = 5
     BUILD_POLL_INTERVAL_MS: int = 30_000
     GITHUB_WEBHOOK_SECRET: str = "dev-webhook-secret"
+
+    # Live container-log viewer (D-92): URL of the read-only docker-socket-proxy
+    # (tecnativa/docker-socket-proxy, CONTAINERS=1/POST=0). Empty = logs disabled.
+    # The orchestrator never mounts the raw Docker socket — only the proxy does.
+    DOCKER_PROXY_URL: str = ""
 
     AUTH_MODE: Literal["keycloak", "local"] = "local"
     KEYCLOAK_INTERNAL_URL: str | None = None
@@ -80,16 +85,16 @@ class Settings(BaseSettings):
     KEYCLOAK_CLIENT_SECRET: str | None = None
     APP_PUBLIC_URL: str = "http://localhost:3000"
 
-    # RAG: top-k snippets retrieved into every phase-agent prompt.
+    # RAG (D-19): top-k snippets retrieved into every phase-agent prompt.
     RAG_TOP_K: int = 4
     RAG_EMBED_DIM: int = 256
 
-    # Content-store tier for stage artifacts:
+    # Content-store tier for stage artifacts (D-23):
     #   filesystem = folder tree on a mounted volume (local); s3 = S3/MinIO (prod).
     CONTENT_STORE_MODE: Literal["filesystem", "s3"] = "filesystem"
     CONTENT_STORE_PATH: str = "/data/content-store"
     CONTENT_BUCKET: str = "sdlc-content-store"
-    # Prod hardening. In prod the bucket is pre-provisioned by IaC with
+    # Prod hardening (D-59). In prod the bucket is pre-provisioned by IaC with
     # Block Public Access, default SSE-KMS, versioning and lifecycle rules, so
     # auto-create stays OFF (the workload role needs no s3:CreateBucket). Set it
     # true only for local/dev against MinIO/LocalStack.
@@ -98,13 +103,13 @@ class Settings(BaseSettings):
     # inherits the bucket's default encryption (recommended).
     CONTENT_KMS_KEY_ID: str | None = None
 
-    # Validation agent: after a phase generates, validate the output for
+    # Validation agent (D-52): after a phase generates, validate the output for
     # syntactic correctness (diagrams/structured content) and alignment with the
     # user's intent + amend feedback; on failure re-invoke the phase agent with
     # concrete modification instructions, up to VALIDATION_MAX_REPAIRS times.
     # Set VALIDATION_ENABLED=false to skip (e.g. to conserve free-tier tokens).
     VALIDATION_ENABLED: bool = True
-    # Ambiguity pre-check: when a stage is triggered with no curated plan and
+    # Ambiguity pre-check (#1): when a stage is triggered with no curated plan and
     # the inputs are ambiguous, ask clarifying questions (written into the plan
     # overlay for the reviewer to answer) instead of assuming and generating.
     CLARIFY_ENABLED: bool = True
@@ -130,7 +135,7 @@ class Settings(BaseSettings):
 
 
 def _load_secrets_manager() -> None:
-    """Secret-manager integration: when AWS_SECRETS_MANAGER_SECRET_ID is
+    """Secret-manager integration (D-22): when AWS_SECRETS_MANAGER_SECRET_ID is
     set, fetch that secret (a JSON object of env overrides) and inject any keys
     not already present in the environment BEFORE settings parse. In EKS/ECS
     pair this with an IAM task/pod role — no static AWS keys required."""

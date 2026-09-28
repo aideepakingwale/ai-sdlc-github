@@ -118,7 +118,7 @@ services:
         condition: service_completed_successfully
     networks: [sdlc-net]
 
-  # Official Atlassian MCP server (Jira + Confluence) — opt-in.
+  # Official Atlassian MCP server (Jira + Confluence) — opt-in (D-61).
   # Start with:  docker compose --profile mcp up -d mcp-atlassian
   # Then set ATLASSIAN_MCP_ENABLED=true in .env and restart the orchestrator.
   mcp-atlassian:
@@ -153,6 +153,20 @@ services:
     networks: [sdlc-net]
     restart: 'no'
 
+  # Read-only Docker API proxy (D-92) for the admin live-logs viewer. Exposes ONLY
+  # GET /containers/* (CONTAINERS=1) and denies all writes (POST=0), so the app can
+  # read logs but cannot start/stop/exec/create containers. The raw docker socket is
+  # mounted here (read-only), never into the orchestrator.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [sdlc-net]
+
   orchestrator:
     build:
       context: .
@@ -166,12 +180,15 @@ services:
       S3_ENDPOINT: ${S3_ENDPOINT:-http://localstack:4566}
       AI_CLIENT_URL: ${AI_CLIENT_URL:-http://ai-client:8081}
       TOOLS_MCP_URL: ${TOOLS_MCP_URL:-http://tool-connector:8082/mcp}
+      # Live container-log viewer (D-92): read-only Docker API via the socket-proxy.
+      # Empty disables the feature. The orchestrator NEVER mounts the raw socket.
+      DOCKER_PROXY_URL: ${DOCKER_PROXY_URL:-http://docker-proxy:2375}
       AUTH_MODE: ${AUTH_MODE:-keycloak}
       KEYCLOAK_INTERNAL_URL: ${KEYCLOAK_INTERNAL_URL:-http://keycloak:8080}
       KEYCLOAK_PUBLIC_URL: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8180}
       CONTENT_STORE_MODE: ${CONTENT_STORE_MODE:-filesystem}
       CONTENT_STORE_PATH: /data
-      # Live-tune prompts + skills without a rebuild: the dirs below are
+      # Live-tune prompts + skills without a rebuild (D-48): the dirs below are
       # bind-mounted from the host, so editing a template and restarting the
       # container applies it. Set PROMPTS_RELOAD=true to reload on every render.
       PROMPTS_DIR: /app/prompts
@@ -216,7 +233,7 @@ services:
       - '8080:8080'
     networks: [sdlc-net]
 
-  # Optional local lightweight model for the `local` tier.
+  # Optional local lightweight model for the `local` tier (D-25).
   # Enable with: docker compose --profile local-llm up -d
   # then set LOCAL_LLM_BASE_URL=http://local-llm:11434/v1 in .env.
   local-llm:
@@ -280,7 +297,7 @@ services:
       start_period: 10s
     networks: [sdlc-net]
 
-  # PlantUML render server: renders.puml/PLANTUML artifacts to SVG,
+  # PlantUML render server (D-49): renders .puml/PLANTUML artifacts to SVG,
   # proxied same-origin via nginx at /plantuml so it works offline and within
   # the strict CSP. Optional — the viewer degrades to source if it is absent.
   plantuml:
@@ -288,7 +305,7 @@ services:
     restart: unless-stopped
     networks: [sdlc-net]
 
-  # Self-hosted draw.io / diagrams.net webapp: the frontend embeds it
+  # Self-hosted draw.io / diagrams.net webapp (D-71): the frontend embeds it
   # same-origin at /drawio for the WYSIWYG diagram editor — no external egress,
   # keeping the offline/air-gapped posture. Apache-2.0.
   drawio:
