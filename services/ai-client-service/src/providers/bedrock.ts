@@ -1,9 +1,9 @@
-import { AnthropicBedrockMantle } from '@anthropic-ai/bedrock-sdk';
+import { AnthropicBedrock } from '@anthropic-ai/bedrock-sdk';
 import type { GenerateRequest } from '@sdlc/shared';
 import { classifyStatus, ProviderCallError, type LlmProvider, type ProviderResult } from './types.js';
 
 /**
- * AWS Bedrock provider: Claude via the Bedrock Mantle client — the
+ * AWS Bedrock provider (D-33): Claude via the Bedrock Mantle client — the
  * Messages-API Bedrock endpoint. This is the primary frontier provider for
  * the AWS cloud deployment: auth is the standard AWS credential chain (ECS
  * task role / EKS IRSA / env keys), no API key to manage, and billing goes
@@ -18,7 +18,7 @@ import { classifyStatus, ProviderCallError, type LlmProvider, type ProviderResul
  * behaviour is steered by the prompt, which is how the phase agents already
  * work.
  */
-/** Narrow an arbitrary image MIME to the set Claude accepts. The
+/** Narrow an arbitrary image MIME to the set Claude accepts (D-66). The
  *  orchestrator downscales to JPEG before sending, so this is a safety net. */
 function mediaType(mime: string): 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' {
   const m = mime.toLowerCase();
@@ -34,25 +34,30 @@ export function createBedrockProvider(opts: {
   timeoutMs?: number;
 }): LlmProvider {
   const configured = Boolean(opts.modelId && opts.region);
-  let client: AnthropicBedrockMantle | null = null;
+  let client: AnthropicBedrock | null = null;
 
   return {
     id: 'bedrock',
     configured,
     model: opts.modelId ?? 'anthropic.claude-opus-4-8',
-    vision: true, // Claude on Bedrock accepts image content blocks
+    vision: true, // Claude on Bedrock accepts image content blocks (D-66)
 
     async generate(req: GenerateRequest, signal: AbortSignal): Promise<ProviderResult> {
       if (!configured) throw new ProviderCallError('bedrock', 'transient', 'bedrock not configured');
-      client ??= new AnthropicBedrockMantle({ awsRegion: opts.region });
-      const modelId = req.model || opts.modelId!; // per-call model override
+      // Standard Bedrock client: authenticates via the AWS default credential
+      // chain (EC2 instance role / ECS task role / IRSA / env) and calls the
+      // InvokeModel path. NB: the `Mantle` variant uses a different endpoint that
+      // requires extra IAM authorization and 403s under a plain bedrock:InvokeModel
+      // role (D-93) — do not switch back without updating the role.
+      client ??= new AnthropicBedrock({ awsRegion: opts.region });
+      const modelId = req.model || opts.modelId!; // per-call model override (D-68)
 
       const system = req.messages
         .filter((m) => m.role === 'system')
         .map((m) => m.content)
         .join('\n\n');
       // Claude content is a string for text-only turns, or an array of typed
-      // blocks (text + image) when the message carries inline images.
+      // blocks (text + image) when the message carries inline images (D-66).
       const messages = req.messages
         .filter((m) => m.role !== 'system')
         .map((m) => {
