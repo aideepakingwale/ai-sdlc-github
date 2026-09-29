@@ -88,15 +88,22 @@ function activeProvidersFor(cfg: EffCfg): string[] {
 function buildRouter(cfg: EffCfg): LlmRouter {
   return new LlmRouter(
     [
-      createBedrockProvider({ modelId: cfg.bedrockModelId, region: cfg.bedrockRegion }),
+      // D-102: background workers generate with no live request waiting, so give
+      // each provider a generous streaming ceiling (LLM_STREAM_TIMEOUT_MS, 1h) —
+      // a large artifact must not be aborted mid-stream.
+      createBedrockProvider({
+        modelId: cfg.bedrockModelId, region: cfg.bedrockRegion, timeoutMs: env.LLM_STREAM_TIMEOUT_MS,
+      }),
       createOpenAiCompatProvider({
         id: 'groq', baseUrl: 'https://api.groq.com/openai/v1',
         apiKey: cfg.groqApiKey, model: cfg.groqModel, requestTokenBudget: env.LLM_REQUEST_TOKEN_BUDGET,
+        timeoutMs: env.LLM_STREAM_TIMEOUT_MS,
       }),
       createGeminiProvider({ apiKey: cfg.geminiApiKey, model: cfg.geminiModel }),
       createOpenAiCompatProvider({
         id: 'grok', baseUrl: 'https://api.x.ai/v1',
         apiKey: cfg.xaiApiKey, model: cfg.xaiModel, requestTokenBudget: env.LLM_REQUEST_TOKEN_BUDGET,
+        timeoutMs: env.LLM_STREAM_TIMEOUT_MS,
       }),
       createOpenAiCompatProvider({
         id: 'local',

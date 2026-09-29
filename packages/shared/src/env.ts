@@ -30,7 +30,7 @@ export const OrchestratorEnvSchema = z.object({
   BUILD_LOOP_MAX_ITERATIONS: z.coerce.number().int().positive().default(5),
   BUILD_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(30_000),
   GITHUB_WEBHOOK_SECRET: z.string().default('dev-webhook-secret'),
-  // --- AuthN: keycloak = OIDC BFF against the Keycloak container;
+  // --- AuthN (D-14/D-16): keycloak = OIDC BFF against the Keycloak container;
   //     local = scrypt hashes in Postgres (offline dev / unit tests). ---
   AUTH_MODE: z.enum(['keycloak', 'local']).default('local'),
   /** Backchannel base URL (compose-internal), e.g. http://keycloak:8080 */
@@ -48,7 +48,7 @@ export type OrchestratorEnv = z.infer<typeof OrchestratorEnvSchema>;
 export const AiClientEnvSchema = z.object({
   ...common,
   AI_CLIENT_PORT: z.coerce.number().int().default(8081),
-  // Master generation-mode switch:
+  // Master generation-mode switch (D-40):
   //   mock — always the deterministic offline generator (demos, tests).
   //   llm  — real models only; boot FAILS if no provider is configured and
   //          the deterministic mock is NEVER used as a silent fallback.
@@ -62,6 +62,13 @@ export const AiClientEnvSchema = z.object({
   // silently degrades to mock. Default 12000 matches Groq's free tier; raise
   // it for paid tiers, or set 0 to disable capping.
   LLM_REQUEST_TOKEN_BUDGET: z.coerce.number().int().nonnegative().default(12_000),
+  // Overall streaming ceiling (ms) for ONE provider generation. Generation runs
+  // in decoupled background workers (D-99) with no user-facing request waiting on
+  // it, so this is a generous safety cap against a genuinely hung provider — not a
+  // UX deadline. Default 1h; a real large-artifact Bedrock/Groq call finishes well
+  // inside it. Raise for exceptionally large single artifacts, or enable the
+  // per-artifact split (PER_ARTIFACT_GENERATION) to parallelise into shorter calls.
+  LLM_STREAM_TIMEOUT_MS: z.coerce.number().int().positive().default(3_600_000),
   // AWS Bedrock (cloud deployment): opt-in via BEDROCK_MODEL_ID. Auth is the
   // standard AWS credential chain (task role / IRSA / env keys) — no API key.
   BEDROCK_MODEL_ID: z.string().optional(),
@@ -72,7 +79,7 @@ export const AiClientEnvSchema = z.object({
   GEMINI_MODEL: z.string().default('gemini-2.0-flash'),
   XAI_API_KEY: z.string().optional(),
   XAI_MODEL: z.string().default('grok-2-latest'),
-  // Local lightweight model: Ollama / vLLM OpenAI-compatible endpoint.
+  // Local lightweight model (D-25): Ollama / vLLM OpenAI-compatible endpoint.
   LOCAL_LLM_BASE_URL: z.string().optional(),
   LOCAL_LLM_MODEL: z.string().default('qwen2.5:3b-instruct'),
   LOCAL_LLM_API_KEY: z.string().default('ollama'),
@@ -94,7 +101,7 @@ export const ToolsEnvSchema = z.object({
   CONFLUENCE_SPACE_KEY: z.string().default('SDLC'),
   GITHUB_TOKEN: z.string().optional(),
   GITHUB_REPO: z.string().optional(),
-  // opt-in switch for LIVE AWS tools (S3 store + Secrets Manager check);
+  // D-36: opt-in switch for LIVE AWS tools (S3 store + Secrets Manager check);
   // unset = deterministic simulated engines. Auth via the AWS credential chain.
   TOOLS_AWS_S3_BUCKET: z.string().optional(),
 });

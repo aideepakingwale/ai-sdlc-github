@@ -35,7 +35,10 @@ _QUEUE_KEY = "genq"        # Redis list used as the FIFO job queue
 _PROGRESS_CAP = 1000       # keep the last N events per run
 _PROGRESS_TTL = 7200       # seconds the buffer lives after last write
 _LOCK_TTL = 7200           # dup-guard lock TTL (covers queue wait + run)
-_STREAM_MAX_SECONDS = 3600
+# A single generation can now stream for up to ~1h (LLM_STREAM_TIMEOUT_MS, D-102);
+# let one SSE viewer connection watch the whole run to completion with margin
+# before it self-closes (the browser reconnects anyway, and the job is durable).
+_STREAM_MAX_SECONDS = 4200
 
 # runner(project_id, phase, actor_email, emit) -> runs the stage pipeline.
 Emit = Callable[[dict[str, Any]], None]
