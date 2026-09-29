@@ -251,7 +251,10 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
     data, result = await deps.llm.generate_json(
         intent="architecture" if state.stage_template <= 3 else "generation",
         tag=f"stage{state.current_phase}_template{state.stage_template}_agent",
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+        # D-98: cache the (large, stable) system prompt so the repair retry — and,
+        # once the per-artifact split lands, every artifact call for this stage —
+        # reuses it as a cached prefix (~10% input cost) instead of re-billing it.
+        messages=[{"role": "system", "content": system, "cache": True}, {"role": "user", "content": user}],
         schema=PHASE_SCHEMAS[state.stage_template],
         # D-95: big multi-artifact phases truncated at the 8192 default -> invalid JSON
         # -> stage produced nothing. Use the configurable phase output budget.

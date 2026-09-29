@@ -52,25 +52,38 @@ export function createBedrockProvider(opts: {
       client ??= new AnthropicBedrock({ awsRegion: opts.region });
       const modelId = req.model || opts.modelId!; // per-call model override (D-68)
 
-      const system = req.messages
-        .filter((m) => m.role === 'system')
-        .map((m) => m.content)
-        .join('\n\n');
+      // D-98 prompt caching: mark stable prefixes with `cache_control: ephemeral`
+      // so Bedrock reuses them across calls (~10% read cost) — the key to making a
+      // per-artifact split affordable. Cache is prefix-based; only messages the
+      // caller flagged `cache` are turned into cached content blocks.
+      const CACHE = { type: 'ephemeral' as const };
+      const sysMsgs = req.messages.filter((m) => m.role === 'system');
+      const sysText = sysMsgs.map((m) => m.content).join('\n\n');
+      const sysCache = sysMsgs.some((m) => m.cache);
+      const system: string | Array<Record<string, unknown>> | undefined = !sysText
+        ? undefined
+        : sysCache
+          ? [{ type: 'text', text: sysText, cache_control: CACHE }]
+          : sysText;
+
       // Claude content is a string for text-only turns, or an array of typed
-      // blocks (text + image) when the message carries inline images (D-66).
+      // blocks (text + image, D-66; + cache_control, D-98) otherwise.
       const messages = req.messages
         .filter((m) => m.role !== 'system')
         .map((m) => {
           const role = m.role as 'user' | 'assistant';
           const images = m.images ?? [];
-          if (images.length === 0) return { role, content: m.content };
-          const blocks = [
-            ...(m.content ? [{ type: 'text' as const, text: m.content }] : []),
-            ...images.map((img) => ({
-              type: 'image' as const,
-              source: { type: 'base64' as const, media_type: mediaType(img.mimeType), data: img.dataBase64 },
-            })),
-          ];
+          if (images.length === 0 && !m.cache) return { role, content: m.content };
+          const blocks: Array<Record<string, unknown>> = [];
+          if (m.content) blocks.push({ type: 'text', text: m.content });
+          for (const img of images) {
+            blocks.push({
+              type: 'image',
+              source: { type: 'base64', media_type: mediaType(img.mimeType), data: img.dataBase64 },
+            });
+          }
+          if (blocks.length === 0) blocks.push({ type: 'text', text: '(no user input)' });
+          if (m.cache) blocks[blocks.length - 1]!.cache_control = CACHE;  // cache up to this block
           return { role, content: blocks };
         });
       if (messages.length === 0) messages.push({ role: 'user', content: '(no user input)' });
@@ -86,8 +99,10 @@ export function createBedrockProvider(opts: {
             {
               model: modelId,
               max_tokens: req.maxTokens,
-              ...(system ? { system } : {}),
-              messages,
+              // system/messages carry optional cache_control blocks (D-98) that this
+              // SDK version's param types don't model; cast at this adapter boundary.
+              ...(system ? { system: system as never } : {}),
+              messages: messages as never,
             },
             { signal: AbortSignal.any([signal, timeout]) },
           )
