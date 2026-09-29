@@ -12,12 +12,12 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
 
 from ..config import Settings
 from ..domain.errors import SdlcError
 from ..domain.models import AgentState, ArtifactRef, ContextArtifact, PhaseStatus, get_phase
-from ..integrations.llm import LlmClient
+from ..integrations.llm import LlmClient, LlmResult
 from ..integrations.mcp_client import McpToolClient
 from ..repos.pg import Database, new_id
 from ..services.audit import AuditService
@@ -52,6 +52,73 @@ from .schemas import (
 log = logging.getLogger("agents")
 
 Emit = Callable[[dict[str, Any]], None]
+
+
+async def _generate_phase_split(
+    *, deps: "AgentDeps", state: "AgentState", system: str, user: str,
+    schema: type[BaseModel], base_tag: str, intent: str, max_tokens: int,
+    model: str | None, emit: Emit,
+) -> tuple[BaseModel, LlmResult]:
+    """D-98 v1 — per-artifact PARALLEL generation.
+
+    Generate each top-level field of the combined `schema` in its own focused call:
+    the ANCHOR field first (this writes the cached system prefix), then the rest in
+    parallel (bounded by PER_ARTIFACT_MAX_PARALLEL, each reading the cached prefix).
+    Assemble the pieces back into the combined object the pipeline expects, with an
+    aggregated LlmResult. Raises on any field failure so the caller can fall back to
+    the single combined call (also the mock-mode path, keeping local runs working)."""
+    fields = list(schema.model_fields.keys())
+    if len(fields) <= 1:
+        raise ValueError("schema has nothing to split")
+
+    async def gen_field(field_name: str) -> tuple[str, Any, LlmResult]:
+        fi = schema.model_fields[field_name]
+        wrapper = create_model(f"{schema.__name__}__{field_name}", **{field_name: (fi.annotation, fi)})
+        instruction = (
+            f"{user}\n\n---\nProduce ONLY the `{field_name}` portion of the deliverable described "
+            f"above, to the same enterprise standard and consistent with the rest. Return JSON of "
+            f'exactly the form {{"{field_name}": ...}} conforming to the schema — nothing else.'
+        )
+        inst, res = await deps.llm.generate_json(
+            intent=intent, tag=f"{base_tag}:{field_name}",
+            messages=[{"role": "system", "content": system, "cache": True},
+                      {"role": "user", "content": instruction}],
+            schema=wrapper, max_tokens=max_tokens, model=model,
+        )
+        return field_name, getattr(inst, field_name), res
+
+    # Anchor first → warms the cached system prefix that the parallel calls reuse.
+    anchor = fields[0]
+    emit({"type": "node", "node": "agent", "label": f"Generating {anchor} (anchor)…"})
+    a_name, a_val, a_res = await gen_field(anchor)
+    values: dict[str, Any] = {a_name: a_val}
+    results: list[LlmResult] = [a_res]
+
+    rest = fields[1:]
+    if rest:
+        emit({"type": "node", "node": "agent", "label": f"Generating {len(rest)} more artifact(s) in parallel…"})
+        sem = asyncio.Semaphore(max(1, getattr(deps.settings, "PER_ARTIFACT_MAX_PARALLEL", 4)))
+
+        async def bounded(fn: str) -> tuple[str, Any, LlmResult]:
+            async with sem:
+                return await gen_field(fn)
+
+        for fn, val, res in await asyncio.gather(*(bounded(f) for f in rest)):
+            values[fn] = val
+            results.append(res)
+
+    data = schema.model_validate(values)  # raises if a piece is missing/invalid → caller falls back
+    combined = LlmResult(
+        provider=results[-1].provider, model=results[-1].model,
+        content=data.model_dump_json(),
+        usage={
+            "promptTokens": sum(r.usage.get("promptTokens", 0) for r in results),
+            "completionTokens": sum(r.usage.get("completionTokens", 0) for r in results),
+        },
+        attempts=[a for r in results for a in r.attempts],
+        tier=results[-1].tier,
+    )
+    return data, combined
 
 
 @dataclass
@@ -248,19 +315,34 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
     if state.extra_context:
         emit({"type": "node", "node": "agent",
               "label": "Using the context you attached (references + files) for this stage"})
-    data, result = await deps.llm.generate_json(
-        intent="architecture" if state.stage_template <= 3 else "generation",
-        tag=f"stage{state.current_phase}_template{state.stage_template}_agent",
-        # D-98: cache the (large, stable) system prompt so the repair retry — and,
-        # once the per-artifact split lands, every artifact call for this stage —
-        # reuses it as a cached prefix (~10% input cost) instead of re-billing it.
-        messages=[{"role": "system", "content": system, "cache": True}, {"role": "user", "content": user}],
-        schema=PHASE_SCHEMAS[state.stage_template],
-        # D-95: big multi-artifact phases truncated at the 8192 default -> invalid JSON
-        # -> stage produced nothing. Use the configurable phase output budget.
-        max_tokens=getattr(deps.settings, "PHASE_MAX_TOKENS", 16_000),
-        model=state.model_overrides.get("generate") or None,  # per-step model override (D-68)
-    )
+    _intent = "architecture" if state.stage_template <= 3 else "generation"
+    _tag = f"stage{state.current_phase}_template{state.stage_template}_agent"
+    _max_tokens = getattr(deps.settings, "PHASE_MAX_TOKENS", 16_000)  # D-95 output budget
+    _model = state.model_overrides.get("generate") or None  # per-step model override (D-68)
+    data: BaseModel | None = None
+    result: LlmResult | None = None
+    # D-98 v1: try per-artifact PARALLEL generation; fall back to one combined call on
+    # any failure (also the mock-mode path, so local runs keep working).
+    if getattr(deps.settings, "PER_ARTIFACT_GENERATION", False):
+        try:
+            data, result = await _generate_phase_split(
+                deps=deps, state=state, system=system, user=user,
+                schema=PHASE_SCHEMAS[state.stage_template], base_tag=_tag,
+                intent=_intent, max_tokens=_max_tokens, model=_model, emit=emit,
+            )
+        except Exception as err:  # noqa: BLE001
+            log.warning("per-artifact split failed (%s); falling back to combined generation", err)
+            data = result = None
+    if data is None or result is None:
+        # D-98: cache the (large, stable) system prompt so the repair retry reuses it
+        # as a cached prefix (~10% input cost) instead of re-billing the context.
+        data, result = await deps.llm.generate_json(
+            intent=_intent, tag=_tag,
+            messages=[{"role": "system", "content": system, "cache": True}, {"role": "user", "content": user}],
+            schema=PHASE_SCHEMAS[state.stage_template],
+            max_tokens=_max_tokens,
+            model=_model,
+        )
     deps.audit.record(
         project_id=state.project_id, phase=state.current_phase, agent_role=phase.agent_persona,
         event="ai.generation", provider=result.provider, model=result.model,

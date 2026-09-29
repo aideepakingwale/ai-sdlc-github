@@ -74,6 +74,13 @@ class Settings(BaseSettings):
     # JSON failed to parse and the stage produced nothing. Sonnet 4.x supports far
     # more — raise this if a phase still truncates (watch cost/latency).
     PHASE_MAX_TOKENS: int = 16_000
+    # Per-artifact parallel generation (D-98 v1): generate each top-level output of a
+    # phase in its own call — anchor first (warms the cached prefix), the rest in
+    # parallel — then assemble. Focused prompts + no shared truncation + per-field
+    # repair. Falls back to the single combined call on any failure. Opt-in: validate
+    # output quality on real Bedrock before enabling in production.
+    PER_ARTIFACT_GENERATION: bool = False
+    PER_ARTIFACT_MAX_PARALLEL: int = 4
     # Number of background workers consuming the stage-generation queue (D-99).
     # Bounds how many stage runs execute concurrently across the platform.
     GENERATION_WORKERS: int = 2
