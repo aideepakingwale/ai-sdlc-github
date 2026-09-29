@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from ..domain.errors import SdlcError
 from ..services import guardrails as guardrails_svc
 from ..services import prompt_library
-from ..services.chat import sse_stream
+from ..services.chat import is_stage_running, sse_stream, sse_stream_bg
 from ..domain.models import (
     AddMemberRequest,
     ArtefactUpdate,
@@ -401,12 +401,24 @@ async def trigger_stage_plan(
     if not 1 <= phase_id <= 12:
         raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
 
+    sse_headers = {"cache-control": "no-cache, no-transform", "x-accel-buffering": "no"}
+    key = f"{project_id}:{phase_id}"
+
+    # D-97: reject a duplicate trigger while this stage is already generating in the
+    # background (e.g. double-click, or a re-open after navigating away).
+    if is_stage_running(key):
+        async def busy(emit):  # noqa: ANN001
+            emit({"type": "error", "code": "ALREADY_RUNNING",
+                  "message": "This stage is already generating in the background — "
+                             "it will finish on its own; refresh to see the result."})
+        return StreamingResponse(sse_stream(busy), media_type="text/event-stream", headers=sse_headers)
+
     async def handler(emit):  # noqa: ANN001
         await container.chat.trigger_stage(project_id=project_id, phase=phase_id, user=user, emit=emit)
 
+    # Detached run: navigating away / closing the tab no longer cancels generation.
     return StreamingResponse(
-        sse_stream(handler), media_type="text/event-stream",
-        headers={"cache-control": "no-cache, no-transform", "x-accel-buffering": "no"},
+        sse_stream_bg(handler, key), media_type="text/event-stream", headers=sse_headers,
     )
 
 

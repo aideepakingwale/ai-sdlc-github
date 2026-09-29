@@ -860,3 +860,55 @@ async def sse_stream(handler: Any) -> AsyncIterator[str]:
             yield f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
     finally:
         task.cancel()
+
+
+# --- Background stage generation (D-97, Level 1) -----------------------------
+# A stage run must NOT die because the browser navigated away. We run the pipeline
+# as a DETACHED task that is not cancelled when the SSE connection closes; the run
+# finishes server-side and its persisted status/artifacts reflect the result. A
+# concurrency guard rejects a second trigger for the same stage while one is live.
+# (Level 2 will make this durable across restarts with a jobs table + Redis progress.)
+_bg_runs: dict[str, Any] = {}
+
+
+def is_stage_running(key: str) -> bool:
+    task = _bg_runs.get(key)
+    return task is not None and not task.done()
+
+
+async def sse_stream_bg(handler: Any, key: str) -> AsyncIterator[str]:
+    """Like sse_stream, but the run is detached: closing the client stream does NOT
+    cancel generation. Events emitted after a disconnect are simply dropped."""
+    import asyncio
+
+    queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+
+    def emit(event: dict[str, Any]) -> None:
+        queue.put_nowait(event)
+
+    async def _run() -> None:
+        try:
+            await handler(emit)
+        except SdlcError as err:
+            queue.put_nowait({"type": "error", "code": err.code, "message": err.message})
+        except Exception as err:
+            log.exception("chat pipeline error (background)")
+            queue.put_nowait({"type": "error", "code": "INTERNAL", "message": f"Pipeline failed: {err}"})
+        finally:
+            queue.put_nowait(None)
+            _bg_runs.pop(key, None)
+
+    task = asyncio.get_running_loop().create_task(_run())
+    _bg_runs[key] = task
+    yield ":ok\n\n"
+    try:
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            yield f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
+    finally:
+        # D-97: deliberately DO NOT cancel `task` — let generation run to completion
+        # server-side even though this viewer disconnected. The task de-registers
+        # itself on finish; the stage's persisted state is the source of truth.
+        pass
