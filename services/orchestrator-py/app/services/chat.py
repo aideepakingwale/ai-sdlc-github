@@ -3,6 +3,7 @@ LangGraph invocation → output guardrail → persistence → audit → SSE stre
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from typing import Any, AsyncIterator, Callable
@@ -497,6 +498,96 @@ class ChatService:
                 out[step_id] = model
         return out
 
+    def _configured_tools(self, tools: list[str]) -> list[str]:
+        """Filter a stage's candidate tools to those whose integration is actually
+        configured (D-105), so the plan never proposes a tool that cannot run. Jira/
+        Confluence need Atlassian MCP; github_* needs GitHub MCP; the rest are the
+        in-house tool-connector tools (always available)."""
+        s = self._settings
+
+        def available(t: str) -> bool:
+            if t.startswith("jira_") or t.startswith("confluence_"):
+                return bool(getattr(s, "ATLASSIAN_MCP_ENABLED", False))
+            if t.startswith("github_"):
+                return bool(getattr(s, "GITHUB_MCP_ENABLED", False))
+            return True
+
+        return [t for t in tools if available(t)]
+
+    async def _intelligent_plan(
+        self, *, project: dict, phase: int, stage: dict, overlay: dict,
+        available_tools: list[str], skills: list[dict], prior_arts: list[dict], canon_applied: bool,
+    ) -> dict[str, Any] | None:
+        """LLM-built, context-aware plan for a stage (D-105). Fed the input, tech
+        stack, project profile, prior artifacts, configured tools/skills/outputs and
+        persona; returns a tailored approach with per-step rationale + tier and
+        tool/skill recommendations. Cached in Redis until the inputs change. Returns
+        None on any failure (incl. mock mode) so the caller falls back to the
+        deterministic plan and Review never breaks."""
+        if not getattr(self._settings, "INTELLIGENT_PLANNING", True):
+            return None
+        from ..agents.schemas import StagePlanIntel
+
+        stack = project.get("tech_stack") or "Node.js + TypeScript"
+        profile = self._project_profile(project)
+        art_digest = "; ".join(f"{a['type']}:{a['title']}" for a in prior_arts[:20]) or "none"
+        # Cache signature: recompute only when something that shapes the plan changes.
+        sig_src = json.dumps({
+            "t": stage["template"], "ov": overlay.get("promptOverlay", ""),
+            "ref": overlay.get("referencedArtifactIds", []), "att": overlay.get("attachmentIds", []),
+            "fw": overlay.get("formworkIds", []), "stack": stack, "profile": profile,
+            "tools": sorted(available_tools), "outputs": sorted(stage.get("outputs") or []),
+            "arts": art_digest, "canon": canon_applied, "persona": stage.get("persona"),
+        }, sort_keys=True)
+        sig = hashlib.sha256(sig_src.encode()).hexdigest()[:16]
+        ckey = f"sdlc:planintel:{project['id']}:{phase}"
+        try:
+            cached = await self._redis.get(ckey)
+            if cached:
+                obj = json.loads(cached.decode() if isinstance(cached, (bytes, bytearray)) else cached)
+                if obj.get("sig") == sig:
+                    return {**obj["plan"], "cached": True}
+        except Exception:
+            pass
+
+        sys_p = (
+            "You are the planning brain for one stage of an enterprise AI-SDLC pipeline. "
+            "You do NOT produce the artifacts — you produce a concise, tailored PLAN for how this "
+            "stage should run, given the specific input, technology stack, prior artifacts and "
+            "configuration. Be specific to the inputs; never generic. Only recommend tools from the "
+            "AVAILABLE list. Keep every rationale to one sentence."
+        )
+        usr_p = (
+            f"STAGE: {stage['name']} (persona: {stage.get('persona')}, template {stage['template']}).\n"
+            f"OUTPUT ARTIFACTS this stage produces: {', '.join(stage.get('outputs') or []) or '—'}.\n"
+            f"AVAILABLE TOOLS (configured — recommend only these): {', '.join(available_tools) or 'none'}.\n"
+            f"AVAILABLE SKILLS: {', '.join(s['name'] for s in skills) or 'none'}.\n"
+            f"TECH STACK: {stack}.\n{profile}\n"
+            f"PRIOR-STAGE ARTIFACTS: {art_digest}.\n"
+            f"CANON RULES APPLIED: {'yes' if canon_applied else 'no'}.\n\n"
+            f"USER INPUT / INSTRUCTIONS for this stage:\n"
+            f"{(overlay.get('promptOverlay') or '(none — infer from the stage and context)')[:4000]}\n\n"
+            "Produce a plan: a 1-3 sentence tailored summary; the ordered steps (generate, validate if "
+            "useful, one per recommended tool, gate) each with a one-sentence rationale and a model tier "
+            "for llm steps; tool recommendations (use/skip + why) covering the available tools; skills to "
+            "emphasise; assumptions; and risks the reviewer should see before running."
+        )
+        try:
+            data, _ = await self._deps.llm.generate_json(
+                intent="standard", tag=f"stage_planner_t{stage['template']}", temperature=0.1,
+                max_tokens=2000, schema=StagePlanIntel,
+                messages=[{"role": "system", "content": sys_p}, {"role": "user", "content": usr_p}],
+            )
+            plan = data.model_dump()
+        except Exception as err:  # noqa: BLE001 — planning is best-effort; never break Review
+            log.info("intelligent planner unavailable (%s); using deterministic plan", err)
+            return None
+        try:
+            await self._redis.set(ckey, json.dumps({"sig": sig, "plan": plan}), ex=3600)
+        except Exception:
+            pass
+        return {**plan, "cached": False}
+
     async def build_plan(self, *, project_id: str, phase: int, user: UserPublic) -> dict[str, Any]:
         """The full, editable execution plan for a stage BEFORE generation: the
         typed multi-model steps (each with its resolved model + rationale), the
@@ -525,10 +616,13 @@ class ChatService:
         # step's model (auto by tier, or the writer's saved override) from the live roster.
         roster = await self._deps.llm.providers()
         skills = [{"id": s.id, "name": s.name, "tier": s.tier} for s in SKILLS if s.phase in (None, stage["template"])]
+        # D-105: only offer tools whose integration is actually configured, so the plan
+        # never proposes a tool that can't run.
+        available_tools = self._configured_tools(TEMPLATE_TOOLS.get(stage["template"], []))
         steps = derive_plan_steps(
             template=stage["template"], roster=roster, step_overrides=step_overrides,
             outputs=list(stage.get("outputs") or []), skills=skills,
-            tools=TEMPLATE_TOOLS.get(stage["template"], []),
+            tools=available_tools,
             external_write_tools=set(EXTERNAL_WRITE_TOOLS),
             gen_prompt_tokens=(len(system) + len(user_prompt)) // 4,
             validation_enabled=getattr(self._settings, "VALIDATION_ENABLED", True),
@@ -541,6 +635,20 @@ class ChatService:
         prior_arts = [a for a in await self._db.list_artefacts(project_id) if a["phase"] < phase]
         formworks = await self._deps.formworks.list(project_id, user) if self._deps.formworks else []
         attachments = await self._db.list_attachments(project_id, phase)
+        canon_applied = bool(await self._deps.canon.render_block(project_id, stage["template"])) if self._deps.canon else False
+
+        # D-105: intelligent, context-aware plan (advisory). None on any failure or in
+        # mock mode → the deterministic plan above stands unchanged.
+        intel = await self._intelligent_plan(
+            project=project, phase=phase, stage=stage, overlay=overlay,
+            available_tools=available_tools, skills=skills, prior_arts=prior_arts, canon_applied=canon_applied,
+        )
+        if intel:
+            # Fold the planner's per-step rationale onto the matching deterministic steps.
+            rationale_by_id = {s.get("id"): s.get("rationale") for s in intel.get("steps", [])}
+            for st_ in steps:
+                if rationale_by_id.get(st_["id"]):
+                    st_["rationale"] = rationale_by_id[st_["id"]]
 
         return {
             "projectId": project_id, "phase": phase, "status": status,
@@ -557,13 +665,17 @@ class ChatService:
                 "nodes": PIPELINE_NODES,
             },
             "skills": skills,
-            "expectedTools": TEMPLATE_TOOLS.get(stage["template"], []),
+            "expectedTools": available_tools,
             # Multi-model plan (D-68): the typed step list + selectable catalog.
             "steps": steps,
+            # Intelligent, context-aware plan (D-105): tailored summary, per-step
+            # rationale/tier, tool/skill recommendations, assumptions & risks. Null
+            # when disabled or unavailable (deterministic plan stands).
+            "intel": intel,
             "catalog": build_model_catalog(roster),
             "context": {
                 "priorArtifacts": [{"id": a["id"], "phase": a["phase"], "type": a["type"], "title": a["title"]} for a in prior_arts],
-                "canonApplied": bool(await self._deps.canon.render_block(project_id, stage["template"])) if self._deps.canon else False,
+                "canonApplied": canon_applied,
                 "formworks": [{"id": f["id"], "name": f["name"], "artefactType": f["artefactType"], "scope": f["scope"]} for f in formworks],
                 "attachments": [{"id": a["id"], "filename": a["filename"], "isText": a["is_text"]} for a in attachments],
                 "ragSnippets": len(snippets),

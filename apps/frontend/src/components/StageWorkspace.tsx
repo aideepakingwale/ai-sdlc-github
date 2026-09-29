@@ -30,6 +30,16 @@ interface StagePlan {
   agent: { persona: string; tier: string; nodes: string[] };
   skills: Array<{ id: string; name: string; tier: string }>;
   expectedTools: string[];
+  // Intelligent, context-aware plan (D-105); null when disabled/unavailable.
+  intel?: {
+    summary: string;
+    steps: Array<{ id: string; label: string; kind: string; tier: string; rationale: string }>;
+    toolRecommendations: Array<{ tool: string; use: boolean; rationale: string }>;
+    skillRecommendations: string[];
+    assumptions: string[];
+    risks: string[];
+    cached: boolean;
+  } | null;
   context: {
     priorArtifacts: Array<{ id: string; phase: number; type: string; title: string }>;
     canonApplied: boolean;
@@ -574,7 +584,66 @@ export default function StageWorkspace({
                   {plan.overlay.origin !== 'new' && (
                     <span className="rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold text-orange-700">{plan.overlay.origin}</span>
                   )}
+                  {plan.intel && (
+                    <span className="rounded-full bg-brand-100 px-2 py-0.5 text-[10px] font-semibold text-brand-700" title="Plan tailored to your input, stack, prior artifacts & config">
+                      ✨ AI-planned{plan.intel.cached ? ' · cached' : ''}
+                    </span>
+                  )}
                 </div>
+
+                {/* ---- Intelligent, context-aware plan (D-105) ---- */}
+                {plan.intel && (
+                  <div className="mb-3 rounded-lg border border-brand-200 bg-white p-3">
+                    <p className="text-[12px] leading-snug text-slate-700">{plan.intel.summary}</p>
+                    {plan.intel.steps.length > 0 && (
+                      <ol className="mt-2 space-y-1">
+                        {plan.intel.steps.map((st, i) => (
+                          <li key={`${st.id}-${i}`} className="flex items-start gap-1.5 text-[11px] text-slate-600">
+                            <span className="mt-0.5 text-slate-400">{st.kind === 'gate' ? '⛔' : st.kind === 'tool' ? '🔌' : '🧠'}</span>
+                            <span>
+                              <span className="font-semibold text-slate-700">{st.label}</span>
+                              {st.tier && <span className="ml-1 rounded bg-slate-100 px-1 text-[9px] text-slate-500">{st.tier}</span>}
+                              {st.rationale && <span className="text-slate-500"> — {st.rationale}</span>}
+                            </span>
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                    {plan.intel.toolRecommendations.length > 0 && (
+                      <div className="mt-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Tool decisions</div>
+                        <div className="mt-1 flex flex-col gap-0.5">
+                          {plan.intel.toolRecommendations.map((t) => (
+                            <div key={t.tool} className="text-[11px]">
+                              <span className={t.use ? 'text-emerald-700' : 'text-slate-400'}>{t.use ? '✓' : '✕'} <span className="font-mono">{t.tool}</span></span>
+                              <span className="text-slate-500"> — {t.rationale}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {(plan.intel.assumptions.length > 0 || plan.intel.risks.length > 0) && (
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                        {plan.intel.assumptions.length > 0 && (
+                          <div>
+                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Assumptions</div>
+                            <ul className="mt-0.5 list-disc pl-4 text-[11px] text-slate-600">
+                              {plan.intel.assumptions.map((a, i) => <li key={i}>{a}</li>)}
+                            </ul>
+                          </div>
+                        )}
+                        {plan.intel.risks.length > 0 && (
+                          <div>
+                            <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">Risks to review</div>
+                            <ul className="mt-0.5 list-disc pl-4 text-[11px] text-amber-800">
+                              {plan.intel.risks.map((r, i) => <li key={i}>{r}</li>)}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <div className="grid gap-3 md:grid-cols-2">
                   <div>

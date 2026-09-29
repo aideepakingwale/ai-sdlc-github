@@ -1,4 +1,4 @@
-"""Structured outputs each phase agent must produce (pydantic-enforced)."""
+"""Structured outputs each phase agent must produce (pydantic-enforced, D-08)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 Priority = Literal["Highest", "High", "Medium", "Low"]
 
 
-# ---------------------------------------------------------------- Custom phase
+# ---------------------------------------------------------------- Custom phase (D-74/D-77)
 class CustomDeliverable(BaseModel):
     """One Markdown deliverable a custom phase produces for a declared output type."""
     output: str
@@ -18,7 +18,7 @@ class CustomDeliverable(BaseModel):
 
 
 class CustomToolCall(BaseModel):
-    """A tool the custom phase intends to run. Executed via the deferral —
+    """A tool the custom phase intends to run. Executed via the D-67 deferral —
     queued during generation, replayed on gate approval by the approver. `args`
     is a free-form object the model fills for the tool."""
     tool: str
@@ -83,7 +83,7 @@ class Phase1Output(BaseModel):
     prdMarkdown: str
     definitionOfReady: list[str] = Field(default_factory=list)
     definitionOfDone: list[str] = Field(default_factory=list)
-    # Jira project identifier for the created epics/stories. A 2–6 char
+    # Jira project identifier for the created epics/stories (D-47). A 2–6 char
     # uppercase key derived from the product name (e.g. AQDP), and CHANGEABLE via
     # reviewer amend feedback ("change the identifier from SDLC to AQDP"). Empty
     # falls back to the connector default.
@@ -95,7 +95,7 @@ class Adr(BaseModel):
     context: str
     decision: str
     consequences: str
-    # a decision without rejected alternatives is an assertion, not a decision.
+    # D-39: a decision without rejected alternatives is an assertion, not a decision.
     optionsConsidered: list[str] = Field(default_factory=list)
     status: str = "Accepted"
 
@@ -125,7 +125,7 @@ class DiagramEdge(BaseModel):
 
 
 class CloudArchitecture(BaseModel):
-    """A professional architecture diagram spec, rendered server-side to
+    """A professional architecture diagram spec (D-51), rendered server-side to
     an SVG with real AWS icons and nested clusters."""
     title: str = "Architecture"
     direction: Literal["TB", "LR"] = "TB"
@@ -159,7 +159,7 @@ class QualityAttribute(BaseModel):
 
 class Phase2Output(BaseModel):
     hldNarrative: str
-    # Structured architecture content: first-class, not buried in prose,
+    # Structured architecture content (D-45): first-class, not buried in prose,
     # so the HLD reliably carries principles, a component catalogue, the design
     # patterns applied and quantified quality attributes. Optional-with-default
     # keeps real-model output robust; the quality bar requires them.
@@ -167,10 +167,10 @@ class Phase2Output(BaseModel):
     components: list[Component] = Field(default_factory=list)
     designPatterns: list[DesignPattern] = Field(default_factory=list)
     qualityAttributes: list[QualityAttribute] = Field(default_factory=list)
-    # Professional AWS deployment diagram, rendered server-side to SVG.
+    # Professional AWS deployment diagram (D-51), rendered server-side to SVG.
     deploymentArchitecture: CloudArchitecture | None = None
     structurizrDsl: str
-    # Mermaid architecture diagram (rendered in the artifact viewer).
+    # Mermaid architecture diagram (rendered in the artifact viewer, D-20).
     mermaidArchitecture: str
     adrs: list[Adr] = Field(min_length=1)
 
@@ -200,16 +200,16 @@ class Resilience(BaseModel):
 
 class Phase3Output(BaseModel):
     lldMarkdown: str
-    # Structured detailed-design content: component responsibilities, a
+    # Structured detailed-design content (D-45): component responsibilities, a
     # complete error taxonomy and concrete resilience settings as first-class
     # fields so the LLD is implementable without guesswork.
     components: list[LldComponent] = Field(default_factory=list)
     errorTaxonomy: list[ErrorCode] = Field(default_factory=list)
     resilience: Resilience | None = None
-    # Professional component/deployment diagram, rendered server-side.
+    # Professional component/deployment diagram (D-51), rendered server-side.
     componentDiagram: CloudArchitecture | None = None
     plantumlDiagrams: list[str] = Field(min_length=1)
-    # Mermaid sequence diagram of the primary flow (rendered viewer).
+    # Mermaid sequence diagram of the primary flow (rendered viewer, D-20).
     mermaidSequence: str
     openapiYaml: str
     dbmlSchema: str
@@ -228,7 +228,7 @@ class TestStep(BaseModel):
 class XrayTest(BaseModel):
     title: str
     steps: list[TestStep] = Field(min_length=1)
-    # executable, prioritised and traceable test cases.
+    # D-39: executable, prioritised and traceable test cases.
     priority: str = "Medium"
     preconditions: str = ""
     tracesTo: str = ""
@@ -260,7 +260,7 @@ class DefectSla(BaseModel):
 
 class Phase4Output(BaseModel):
     testStrategyMarkdown: str
-    # Structured test-strategy content: the pyramid, risk-based priorities,
+    # Structured test-strategy content (D-50): the pyramid, risk-based priorities,
     # entry/exit criteria and defect SLAs as first-class fields, not prose.
     testLevels: list[TestLevel] = Field(default_factory=list)
     riskAreas: list[TestRisk] = Field(default_factory=list)
@@ -297,7 +297,7 @@ class Phase5Output(BaseModel):
     workflowYaml: str
     dockerfiles: list[FileEntry] = Field(min_length=1)
     grafanaDashboardJson: str
-    # Structured CI/CD & operations design: the pipeline stages and their
+    # Structured CI/CD & operations design (D-50): the pipeline stages and their
     # gates, the security gates enforced, the observability SLOs/alerts and the
     # rollout/rollback strategy — rendered as a PIPELINE_DESIGN artifact.
     pipelineStages: list[PipelineStage] = Field(default_factory=list)
@@ -311,7 +311,7 @@ class Phase6Output(BaseModel):
     branch: str
     commitMessage: str
     files: list[FileEntry] = Field(min_length=2)
-    # Engineering-standards surface: the patterns/standards applied and
+    # Engineering-standards surface (D-45): the patterns/standards applied and
     # the security controls considered, so a reviewer sees the reasoning behind
     # the code, not just the diff. Folded into the PR body.
     designNotes: str = ""
@@ -328,7 +328,7 @@ class FactCheck(BaseModel):
 
 
 class ValidationIssue(BaseModel):
-    """One problem the validation agent found in generated content."""
+    """One problem the validation agent found in generated content (D-52)."""
     severity: Literal["error", "warning"] = "error"
     area: str = ""          # e.g. "intent", "completeness", "correctness", a field name
     problem: str            # what is wrong
@@ -337,7 +337,7 @@ class ValidationIssue(BaseModel):
 
 class ValidationVerdict(BaseModel):
     """The validation agent's judgement of a phase's generated output against the
-    user's intent, the upstream context and the phase quality bar. `ok=false`
+    user's intent, the upstream context and the phase quality bar (D-52). `ok=false`
     with error-severity issues triggers a bounded rework with `reworkInstructions`;
     `score` (0-100) below the quality floor is flagged for the human reviewer."""
     ok: bool
@@ -361,6 +361,34 @@ class PlannerOutput(BaseModel):
     steps: list[PlannerStep] = Field(min_length=1)
 
 
+# --- Intelligent stage planning (D-105) ------------------------------------
+# An LLM-built, context-aware plan for a stage: what to produce, which tools to
+# use, which skills to emphasise, and why — tailored to the input, tech stack,
+# prior artifacts and configuration. Advisory (shown in Review-plan); it does not
+# change the generated schema in this scope.
+class PlanStepIntel(BaseModel):
+    id: str = Field(description="Step id: 'generate', 'validate', 'tool:<name>', or 'gate'.")
+    label: str = Field(description="Short human label for the step.")
+    kind: str = Field(description="One of: llm | tool | gate.")
+    tier: str = Field(default="", description="Recommended model tier for llm steps (frontier|balanced|light|local), else ''.")
+    rationale: str = Field(description="Why this step is needed for THIS input/stack/context (one sentence).")
+
+
+class PlanToolRec(BaseModel):
+    tool: str = Field(description="Tool name from the available (configured) set.")
+    use: bool = Field(description="Whether to invoke this tool for this run.")
+    rationale: str = Field(description="Why use it (or why skip it).")
+
+
+class StagePlanIntel(BaseModel):
+    summary: str = Field(description="1-3 sentences: the tailored approach for this stage given the input, stack, prior artifacts and config.")
+    steps: list[PlanStepIntel] = Field(default_factory=list)
+    toolRecommendations: list[PlanToolRec] = Field(default_factory=list)
+    skillRecommendations: list[str] = Field(default_factory=list, description="Skill ids to emphasise for this run.")
+    assumptions: list[str] = Field(default_factory=list, description="Assumptions the planner made from the given context.")
+    risks: list[str] = Field(default_factory=list, description="Risks/gaps worth the reviewer's attention before running.")
+
+
 PHASE_SCHEMAS: dict[int, type[BaseModel]] = {
     1: Phase1Output,
     2: Phase2Output,
@@ -372,7 +400,7 @@ PHASE_SCHEMAS: dict[int, type[BaseModel]] = {
 
 
 class ClarificationOutput(BaseModel):
-    """Ambiguity pre-check: whether the stage's inputs are clear enough to
+    """Ambiguity pre-check (#1): whether the stage's inputs are clear enough to
     generate without assuming, and the concrete questions to ask if not."""
     needs_clarification: bool = False
     questions: list[str] = Field(default_factory=list)

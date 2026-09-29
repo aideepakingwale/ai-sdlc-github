@@ -144,6 +144,14 @@ class Settings(BaseSettings):
     # Ambiguity pre-check (#1): when a stage is triggered with no curated plan and
     # the inputs are ambiguous, ask clarifying questions (written into the plan
     # overlay for the reviewer to answer) instead of assuming and generating.
+    # Intelligent stage planning (D-105): when on, the Review-plan preview is built
+    # by an LLM planner from the full context (input, tech stack, project profile,
+    # canon, prior artifacts, available+configured tools/skills/outputs, persona) —
+    # producing a tailored approach, per-step rationale + tier, and tool/skill
+    # recommendations. Advisory (doesn't change the generated schema). Cached until
+    # the inputs change; falls back to the deterministic plan on any planner failure
+    # (incl. mock mode). Set False to force the deterministic plan.
+    INTELLIGENT_PLANNING: bool = True
     CLARIFY_ENABLED: bool = True
     CLARIFY_MAX_QUESTIONS: int = 6
     # Requirement analysis is the most crucial stage; allow a deeper holistic
