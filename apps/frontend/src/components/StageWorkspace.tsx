@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { api, streamStageTrigger } from '../api/client';
+import { api, streamStageProgress, streamStageTrigger } from '../api/client';
 import type { ProjectFlow } from '../api/flow';
 import type { ChatMessage, PhaseStateView, User } from '../api/types';
 import { useApp, type ActivityItem } from '../store';
@@ -20,7 +20,7 @@ const STATUS_META: Record<string, { label: string; cls: string; icon: string }> 
 
 const ACTIVITY_ICON: Record<ActivityItem['kind'], string> = { node: '⚙️', tool: '🔌', artifact: '📄', gate: '⛔' };
 
-// Plan Review & Edit gate
+// D-56 Plan Review & Edit gate
 interface StagePlan {
   phase: number;
   status: string;
@@ -54,7 +54,7 @@ function isRunnable(stage: ProjectFlow['stages'][number], byKey: Map<string, Pro
 }
 
 /**
- * Stage Workspace: the stage-centric working surface — the primary
+ * Stage Workspace (D-44): the stage-centric working surface — the primary
  * interaction area. For the selected stage it shows status, a compose/run area
  * (when the stage is runnable), the gate review decision bar (when pending),
  * the produced output files, and the stage's own conversation thread. Upstream
@@ -89,15 +89,16 @@ export default function StageWorkspace({
   const [plan, setPlan] = useState<StagePlan | null>(null);
   const [planBusy, setPlanBusy] = useState(false);
   const [showSystemPrompt, setShowSystemPrompt] = useState(false);
-  // Inline "@" mention autosuggest.
+  // Inline "@" mention autosuggest (D-56).
   const [mention, setMention] = useState<{ open: boolean; query: string; at: number }>({
     open: false, query: '', at: 0,
   });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
+  const reconnectKeyRef = useRef<string | null>(null); // guards double-attach (D-97 L2)
 
-  // files the user attached to THIS stage, and the prior-stage outputs
+  // D-54: files the user attached to THIS stage, and the prior-stage outputs
   // they can hand-pick as @references (in addition to auto-included upstream).
   const attachmentsQ = useQuery({
     queryKey: ['attachments', projectId, selectedSeq],
@@ -109,7 +110,7 @@ export default function StageWorkspace({
   });
   const attachments = attachmentsQ.data?.attachments ?? [];
 
-  // templates (formworks) available to @-reference — project + platform.
+  // D-56: templates (formworks) available to @-reference — project + platform.
   const formworksQ = useQuery({
     queryKey: ['formworks', projectId],
     queryFn: () =>
@@ -183,7 +184,7 @@ export default function StageWorkspace({
     formworkIds,
   });
 
-  // save the overlay and (re-)render the full plan — "Review / Update plan".
+  // D-56: save the overlay and (re-)render the full plan — "Review / Update plan".
   async function reviewPlan(e?: FormEvent) {
     e?.preventDefault();
     if (planBusy || streaming || promptError) return;
@@ -199,7 +200,7 @@ export default function StageWorkspace({
     }
   }
 
-  // trigger generation from the reviewed plan (nothing runs until here).
+  // D-56: trigger generation from the reviewed plan (nothing runs until here).
   async function triggerPlan() {
     if (streaming || !plan?.canEdit) return;
     // persist the latest overlay first, then run the reviewed plan
@@ -217,6 +218,40 @@ export default function StageWorkspace({
       void qc.invalidateQueries({ queryKey: ['phase', projectId] });
     }
   }
+
+  // D-97 L2: if this stage has a generation job running (e.g. it was triggered then
+  // the tab/project was switched), auto-attach to its live progress on open so the
+  // "Generating…" view resumes instead of looking idle. The server run is durable;
+  // this stream is just a viewer — aborting it (navigating away) never cancels the run.
+  useEffect(() => {
+    if (!selectedSeq || streaming) return;
+    const attachKey = `${projectId}:${selectedSeq}`;
+    if (reconnectKeyRef.current === attachKey) return;
+    const ctrl = new AbortController();
+    let cancelled = false;
+    (async () => {
+      try {
+        const job = await api.get<{ running: boolean }>(`/api/projects/${projectId}/phase/${selectedSeq}/job`);
+        if (cancelled || !job.running || streaming) return;
+        reconnectKeyRef.current = attachKey;
+        beginStream();
+        try {
+          await streamStageProgress(projectId, selectedSeq, pushEvent, ctrl.signal);
+        } finally {
+          endStream();
+          reconnectKeyRef.current = null;
+          void qc.invalidateQueries({ queryKey: ['flow', projectId] });
+          void qc.invalidateQueries({ queryKey: ['artefacts', projectId] });
+          void qc.invalidateQueries({ queryKey: ['project', projectId] });
+          void qc.invalidateQueries({ queryKey: ['phase', projectId] });
+        }
+      } catch {
+        /* no running job / not reachable — nothing to resume */
+      }
+    })();
+    return () => { cancelled = true; ctrl.abort(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, selectedSeq]);
 
   async function onAttach(files: FileList | null) {
     if (!files?.length) return;
@@ -241,7 +276,7 @@ export default function StageWorkspace({
   // Prior-stage outputs the user can pin as @references (upstream of this stage).
   const priorArtefacts = artefacts.filter((a) => a.phase < selectedSeq);
 
-  // --- inline "@" mention autosuggest ---
+  // --- inline "@" mention autosuggest (D-56) ---
   // Every referenceable thing, in one list: prior generated content, templates,
   // and already-uploaded files. Selecting one pins it into the next run.
   type Mention =
@@ -430,7 +465,7 @@ export default function StageWorkspace({
                   }}
                   disabled={streaming}
                 />
-                {/* inline @ autosuggest */}
+                {/* inline @ autosuggest (D-56) */}
                 {mention.open && mentionMatches.length > 0 && (
                   <div className="absolute left-2 top-full z-30 mt-1 max-h-64 w-80 overflow-auto rounded-lg border border-slate-200 bg-white shadow-xl">
                     <div className="border-b border-slate-100 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
@@ -457,7 +492,7 @@ export default function StageWorkspace({
                 )}
               </div>
 
-              {/* ---- attach + selected-context chips ---- */}
+              {/* ---- attach + selected-context chips (D-54/D-56) ---- */}
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => onAttach(e.target.files)} />
                 <button
@@ -513,7 +548,7 @@ export default function StageWorkspace({
               </div>
             </form>
 
-            {/* ---- Plan Review & Edit ---- */}
+            {/* ---- Plan Review & Edit (D-56) ---- */}
             {plan && (
               <div className="mt-3 rounded-xl border border-brand-200 bg-brand-50/40 p-4">
                 <div className="mb-2 flex items-center gap-2">
@@ -624,7 +659,7 @@ export default function StageWorkspace({
           />
         )}
 
-        {/* ---- quality signals & feedback ---- */}
+        {/* ---- quality signals & feedback (D-57) ---- */}
         {(stageArtefacts.length > 0 || ['PENDING_REVIEW', 'APPROVED', 'AMEND_REQUESTED'].includes(stage.status)) && (
           <FeedbackPanel
             projectId={projectId}

@@ -41,14 +41,17 @@ export const api = {
   },
 };
 
-/** Shared SSE POST reader — invokes onEvent per StreamEvent frame. */
+/** Shared SSE reader — invokes onEvent per StreamEvent frame. POST by default; pass
+ *  method 'GET' for reconnect/progress streams (no body). */
 async function streamSse(
   url: string, body: unknown, onEvent: (e: StreamEvent) => void, signal?: AbortSignal,
+  method: 'GET' | 'POST' = 'POST',
 ): Promise<void> {
+  const sendBody = method === 'POST' && body !== undefined;
   const res = await fetch(url, {
-    method: 'POST', credentials: 'include',
-    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    method, credentials: 'include',
+    headers: sendBody ? { 'content-type': 'application/json' } : undefined,
+    body: sendBody ? JSON.stringify(body) : undefined,
     signal,
   });
   if (!res.ok || !res.body) {
@@ -73,11 +76,20 @@ async function streamSse(
   }
 }
 
-/** POST a stage's reviewed plan trigger (SSE); invokes onEvent per StreamEvent. */
+/** POST a stage's reviewed plan trigger (SSE); invokes onEvent per StreamEvent (D-56). */
 export function streamStageTrigger(
   projectId: string, phase: number, onEvent: (e: StreamEvent) => void, signal?: AbortSignal,
 ): Promise<void> {
   return streamSse(`/api/projects/${projectId}/phase/${phase}/plan/trigger`, undefined, onEvent, signal);
+}
+
+/** Reconnect to a running stage's live progress (SSE, GET) — replays buffered
+ *  events then live-tails. Used to resume the "Generating…" view after navigating
+ *  away/refresh (D-97 L2). */
+export function streamStageProgress(
+  projectId: string, phase: number, onEvent: (e: StreamEvent) => void, signal?: AbortSignal,
+): Promise<void> {
+  return streamSse(`/api/projects/${projectId}/phase/${phase}/stream`, undefined, onEvent, signal, 'GET');
 }
 
 /** POST /api/chat with SSE response; invokes onEvent per StreamEvent. */
