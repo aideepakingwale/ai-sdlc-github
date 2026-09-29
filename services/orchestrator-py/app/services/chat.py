@@ -173,6 +173,7 @@ class ChatService:
                 project_profile=self._project_profile(project),
                 has_codebase=has_codebase, extra_context=extra_context,
                 model_overrides=self._model_overrides_from(self._step_overrides(sp_row)),  # per-step model (D-68)
+                per_artifact=await self._per_artifact_enabled(),  # runtime split toggle (D-106)
                 **self._custom_fields(stage),  # custom phase config (D-74)
             )
             prev_status = (st or {}).get("status", "NOT_STARTED") if st else "NOT_STARTED"
@@ -498,6 +499,20 @@ class ChatService:
                 out[step_id] = model
         return out
 
+    async def _per_artifact_enabled(self) -> bool:
+        """Effective per-artifact split flag for a run (D-106): the runtime setting
+        `per_artifact_generation` (Super-Admin toggle, mirrored to Redis) OR the env
+        default. Read once per run when the state is built; never raises."""
+        if getattr(self._settings, "PER_ARTIFACT_GENERATION", False):
+            return True
+        try:
+            raw = await self._redis.get("sdlc:settings:per_artifact_generation")
+            if isinstance(raw, (bytes, bytearray)):
+                raw = raw.decode()
+            return str(raw).strip().lower() == "true"
+        except Exception:
+            return False
+
     def _configured_tools(self, tools: list[str]) -> list[str]:
         """Filter a stage's candidate tools to those whose integration is actually
         configured (D-105), so the plan never proposes a tool that cannot run. Jira/
@@ -787,6 +802,7 @@ class ChatService:
             project_profile=self._project_profile(project),
             has_codebase=(await self._db.count_codebase_files(project_id)) > 0, extra_context=extra_context,
             model_overrides=self._model_overrides_from(self._step_overrides(row)),  # per-step model (D-68)
+            per_artifact=await self._per_artifact_enabled(),  # runtime split toggle (D-106)
             **self._custom_fields(stage),  # custom phase config (D-74)
         )
         await self._dynamo.put_phase_state(project_id=project_id, phase=phase, status="IN_PROGRESS", reviewer_role=stage["reviewerRole"])

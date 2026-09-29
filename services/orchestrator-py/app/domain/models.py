@@ -11,7 +11,7 @@ from typing_extensions import Annotated
 # match the previous zod contract with a pragmatic pattern instead.
 Email = Annotated[str, StringConstraints(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", max_length=254)]
 
-# ---------------------------------------------------------------- roles
+# ---------------------------------------------------------------- roles (D-15)
 Role = Literal["SUPER_ADMIN", "PROJECT_MANAGER", "PO", "SA", "TA", "QA", "DEVOPS", "DEV"]
 PhaseRole = Literal["PO", "SA", "TA", "QA", "DEVOPS", "DEV"]
 PhaseStatus = Literal[
@@ -67,7 +67,7 @@ PHASES: list[PhaseDefinition] = [
 MAX_PHASE = 6
 
 
-# The data-driven custom phase type (, workflow v2 template 7). Kept OUT of
+# The data-driven custom phase type (D-74, workflow v2 template 7). Kept OUT of
 # PHASES (which is the 1..6 built-in set the default workflow is built from); the
 # concrete persona/reviewer/outputs come from the stage's own config at runtime,
 # so this is only a safe generic fallback for display/labelling code paths.
@@ -87,7 +87,7 @@ def get_phase(phase_id: int) -> PhaseDefinition:
     raise ValueError(f"Unknown phase id {phase_id}; expected 1..{MAX_PHASE}")
 
 
-# ---------------------------------------------------------------- agent state
+# ---------------------------------------------------------------- agent state (D-08)
 class ArtifactRef(BaseModel):
     url: str | None = None
     key: str | None = None
@@ -114,10 +114,10 @@ class PlanStep(BaseModel):
 class AgentState(BaseModel):
     project_id: str
     session_id: str
-    # Runtime stage slot (seq in the workflow's derived order; up to 12).
+    # Runtime stage slot (seq in the workflow's derived order; up to 12, D-30).
     current_phase: int = Field(ge=1, le=12)
     # Which agent template drives this stage's generation: 1..6 built-in engines,
-    # or 7 = the data-driven custom phase.
+    # or 7 = the data-driven custom phase (D-74).
     stage_template: int = Field(default=1, ge=1, le=7)
     stage_name: str = ""
     stage_reviewer: str = "PO"
@@ -131,20 +131,24 @@ class AgentState(BaseModel):
     amend_comments: str | None = None
     tech_stack: str = "Node.js + TypeScript"
     # Compact project profile (name, stack, integrations) threaded into every
-    # stage so the whole run stays in sync with the project configuration.
+    # stage so the whole run stays in sync with the project configuration (#4).
     project_profile: str = ""
     # Provider/model that served the most recent generation — lets the validator
     # flag deterministic-mock output (which reads as hard-coded/drifted).
     last_provider: str = ""
     last_model: str = ""
     has_codebase: bool = False
-    # User-curated context for THIS run: resolved @references + attachment
+    # User-curated context for THIS run (D-54): resolved @references + attachment
     # text, rendered into a labelled block injected into the phase prompt.
     extra_context: str = ""
-    # Per-step model overrides for THIS run: { stepId: "provider/model" }.
+    # Per-step model overrides for THIS run (D-68): { stepId: "provider/model" }.
     # Read by the phase agent's LLM steps (generate/validate); empty = tier routing.
     model_overrides: dict[str, str] = Field(default_factory=dict)
-    # Custom phase (, workflow v2 template 7): the PM-defined phase config the
+    # Per-artifact PARALLEL generation for THIS run (D-98/D-106): generate each
+    # top-level artifact in its own call. Resolved per run from the runtime setting
+    # (admin toggle) or the env default, so it can be flipped without a restart.
+    per_artifact: bool = False
+    # Custom phase (D-74, workflow v2 template 7): the PM-defined phase config the
     # generic runner uses. Ignored by the six built-in engines.
     custom_persona: str = ""
     custom_prompt_id: str = ""
@@ -167,19 +171,19 @@ class LoginRequest(BaseModel):
 
 # ---------------------------------------------------------------- API DTOs (camelCase parity)
 class StagePlanUpdate(BaseModel):
-    """Writer's editable overlay for a stage's Plan Review."""
+    """Writer's editable overlay for a stage's Plan Review (D-56/D-68)."""
     promptOverlay: str = Field(default="", max_length=32_000)
     referencedArtifactIds: list[str] = Field(default_factory=list)
     attachmentIds: list[str] = Field(default_factory=list)
     formworkIds: list[str] = Field(default_factory=list)
-    # Per-step model overrides: { "<stepId>": { "model": "<provider>/<id>" } }.
+    # Per-step model overrides (D-68): { "<stepId>": { "model": "<provider>/<id>" } }.
     stepOverrides: dict[str, dict[str, str]] = Field(default_factory=dict)
 
 
 class ChatRequest(BaseModel):
     projectId: str | None = None
     message: str = Field(min_length=1, max_length=32_000)
-    # Rich compose context: specific prior-stage artifacts to pin
+    # Rich compose context (D-54/D-56): specific prior-stage artifacts to pin
     # verbatim, uploaded attachments to inline, and templates (formworks) to
     # reference — all in addition to the auto-included upstream outputs.
     referencedArtifactIds: list[str] = Field(default_factory=list)
@@ -193,7 +197,7 @@ class GateReviewRequest(BaseModel):
 
 
 class DiagramRepairRequest(BaseModel):
-    """Repair a broken generated diagram from the viewer. 'fix' preserves
+    """Repair a broken generated diagram from the viewer (D-58). 'fix' preserves
     the diagram's content and only corrects syntax; 'regenerate' lets the model
     redraw it from the same intent."""
     mode: Literal["fix", "regenerate"] = "fix"
@@ -201,13 +205,13 @@ class DiagramRepairRequest(BaseModel):
 
 class ArtefactUpdate(BaseModel):
     """In-place manual edit of an artefact's content by an authorised stage
-    writer — documents (markdown/text/code) and diagram source
+    writer (D-70) — documents (markdown/text/code) and diagram source
     (mermaid/PlantUML/draw.io). Persisted instantly with a version bump."""
     content: str = Field(max_length=2_000_000)
 
 
 class FeedbackRequest(BaseModel):
-    """A human quality signal on a stage generation or a specific artifact."""
+    """A human quality signal on a stage generation or a specific artifact (D-57)."""
     category: Literal[
         "quality", "accuracy", "completeness", "hallucination", "syntax", "intent", "other"
     ] = "quality"
@@ -227,7 +231,7 @@ TECH_STACKS = [
 
 
 class ProjectIntegrations(BaseModel):
-    """Per-project targets the agents act against. The enterprise has many
+    """Per-project targets the agents act against (D-62). The enterprise has many
     repos and Atlassian workspaces, so each project pins where its GitHub and
     Atlassian (Jira + Confluence) operations land. All optional (mock/dev without)."""
     githubRepo: str | None = Field(default=None, max_length=200)         # "owner/name"
@@ -248,9 +252,9 @@ class CreateProjectRequest(BaseModel):
     languageVersion: str | None = Field(default=None, max_length=40)
     frameworks: list[str] = Field(default_factory=list, max_length=12)
     # System asks for the GitHub repo + Atlassian (Jira + Confluence) endpoints at
-    # creation so the project's operations target the right places.
+    # creation so the project's operations target the right places (D-62).
     integrations: ProjectIntegrations = Field(default_factory=ProjectIntegrations)
-    # Optional workflow config chosen/planned at creation. Raw dict to keep
+    # Optional workflow config chosen/planned at creation (D-76). Raw dict to keep
     # the domain model decoupled from the workflow engine; validated in the route.
     # Omitted → the project starts on the default workflow, editable in the designer.
     workflow: dict | None = None

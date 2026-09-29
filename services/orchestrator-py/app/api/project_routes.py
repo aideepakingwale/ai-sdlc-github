@@ -1516,6 +1516,7 @@ LLM_SETTING_KEYS = (
     "groq_model", "gemini_model", "xai_model",
     "groq_api_key", "gemini_api_key", "xai_api_key",
     "llm_debug_trace",  # D-104: capture request/response bodies into llm_traces
+    "per_artifact_generation",  # D-106: split each stage artifact into its own parallel call
 )
 
 
@@ -1532,6 +1533,7 @@ class LlmConfigRequest(BaseModel):
     gemini_api_key: str | None = None
     xai_api_key: str | None = None
     llm_debug_trace: bool | None = None  # D-104: runtime debug-capture toggle
+    per_artifact_generation: bool | None = None  # D-106: runtime per-artifact split toggle
 
 
 async def _live_llm_state(container: Container) -> dict:

@@ -47,6 +47,7 @@ interface LlmConfig {
   gemini_api_key_set: boolean;
   xai_api_key_set: boolean;
   llm_debug_trace: string | null;  // "true" when debug capture is on (D-104)
+  per_artifact_generation: string | null;  // "true" when per-artifact split is on (D-106)
 }
 interface LlmConfigState {
   config: LlmConfig;
@@ -157,6 +158,24 @@ function LlmConfigControl() {
           <span className="font-semibold text-slate-700">Debug: capture request &amp; response</span>{' '}
           <span className="text-slate-400">
             — stores the full prompt + output on every LLM span (expand a trace below to view). Leave off in normal use.
+          </span>
+        </span>
+      </label>
+
+      {/* per-artifact split toggle (D-106) — applies live to the next run */}
+      <label className="mb-3 flex items-start gap-2 text-[11px] text-slate-600">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={s?.config.per_artifact_generation === 'true'}
+          disabled={save.isPending}
+          onChange={(e) => save.mutate({ per_artifact_generation: e.target.checked ? 'true' : 'false' })}
+        />
+        <span>
+          <span className="font-semibold text-slate-700">Per-artifact parallel generation</span>{' '}
+          <span className="text-slate-400">
+            — generate each stage artifact in its own parallel call instead of one combined call. Recommended for heavy
+            stages (e.g. Solution Architecture) that otherwise truncate or time out.
           </span>
         </span>
       </label>

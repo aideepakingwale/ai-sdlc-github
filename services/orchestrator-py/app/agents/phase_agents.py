@@ -322,8 +322,9 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
     data: BaseModel | None = None
     result: LlmResult | None = None
     # D-98 v1: try per-artifact PARALLEL generation; fall back to one combined call on
-    # any failure (also the mock-mode path, so local runs keep working).
-    if getattr(deps.settings, "PER_ARTIFACT_GENERATION", False):
+    # any failure (also the mock-mode path, so local runs keep working). The flag is
+    # resolved per-run onto the state (D-106): runtime admin toggle OR env default.
+    if getattr(state, "per_artifact", False) or getattr(deps.settings, "PER_ARTIFACT_GENERATION", False):
         try:
             data, result = await _generate_phase_split(
                 deps=deps, state=state, system=system, user=user,
