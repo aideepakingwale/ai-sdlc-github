@@ -1,4 +1,4 @@
-"""AI observability: every LLM call and MCP tool execution is traced.
+"""AI observability (D-35): every LLM call and MCP tool execution is traced.
 
 Design:
   - A contextvar carries the run context (project, stage slot) so the
@@ -55,7 +55,10 @@ class TelemetryService:
         tier: str | None = None, tag: str | None = None,
         prompt_tokens: int = 0, completion_tokens: int = 0,
         latency_ms: int = 0, status: str = "ok", error: str | None = None,
+        request_body: str | None = None, response_body: str | None = None,
     ) -> None:
+        # request_body/response_body are populated only when debug capture is on
+        # (D-104); the caller has already size-capped them.
         ctx = _run_context.get() or {}
         try:
             await self._db.insert_trace(
@@ -64,6 +67,7 @@ class TelemetryService:
                 prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
                 latency_ms=latency_ms, status=status, error=(error or "")[:500] or None,
                 cost_usd=estimate_cost_usd(provider, prompt_tokens, completion_tokens),
+                request_body=request_body, response_body=response_body,
             )
         except Exception:  # observability must never take the pipeline down
             log.warning("trace insert failed", exc_info=True)
@@ -73,6 +77,10 @@ class TelemetryService:
 
     async def traces(self, limit: int = 100, project_id: str | None = None) -> list[dict[str, Any]]:
         return await self._db.obs_recent(limit, project_id)
+
+    async def trace_detail(self, trace_id: str) -> dict[str, Any] | None:
+        """Full trace incl. captured request/response bodies (debug drill-down, D-104)."""
+        return await self._db.get_trace(trace_id)
 
 
 class Stopwatch:

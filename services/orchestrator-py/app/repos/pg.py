@@ -816,17 +816,26 @@ class Database:
         provider: str | None, model: str | None, tier: str | None, tag: str | None,
         prompt_tokens: int, completion_tokens: int, latency_ms: int,
         status: str, error: str | None, cost_usd: float,
+        request_body: str | None = None, response_body: str | None = None,
     ) -> None:
         assert self.pool
         await self.pool.execute(
             """
             INSERT INTO llm_traces (id, project_id, stage, kind, provider, model, tier, tag,
-                                    prompt_tokens, completion_tokens, latency_ms, status, error, cost_usd)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                                    prompt_tokens, completion_tokens, latency_ms, status, error, cost_usd,
+                                    request_body, response_body)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
             """,
             new_id(), project_id, stage, kind, provider, model, tier, tag,
             prompt_tokens, completion_tokens, latency_ms, status, error, cost_usd,
+            request_body, response_body,
         )
+
+    async def get_trace(self, trace_id: str) -> dict | None:
+        """One trace row with the full request/response bodies (debug drill-down, D-104)."""
+        assert self.pool
+        row = await self.pool.fetchrow("SELECT * FROM llm_traces WHERE id=$1", trace_id)
+        return dict(row) if row else None
 
     async def obs_summary(self, days: int) -> dict:
         assert self.pool
@@ -889,13 +898,21 @@ class Database:
 
     async def obs_recent(self, limit: int, project_id: str | None) -> list[dict]:
         assert self.pool
+        # Explicit columns (NOT request_body/response_body): the debug bodies can be
+        # large, so the list stays light and exposes only a has_bodies flag; the full
+        # bodies are fetched per-row via get_trace (D-104).
+        cols = (
+            "id, ts, project_id, stage, kind, provider, model, tier, tag, "
+            "prompt_tokens, completion_tokens, latency_ms, status, error, cost_usd, "
+            "(request_body IS NOT NULL OR response_body IS NOT NULL) AS has_bodies"
+        )
         if project_id:
             rows = await self.pool.fetch(
-                "SELECT * FROM llm_traces WHERE project_id=$1 ORDER BY ts DESC LIMIT $2",
+                f"SELECT {cols} FROM llm_traces WHERE project_id=$1 ORDER BY ts DESC LIMIT $2",
                 project_id, limit,
             )
         else:
-            rows = await self.pool.fetch("SELECT * FROM llm_traces ORDER BY ts DESC LIMIT $1", limit)
+            rows = await self.pool.fetch(f"SELECT {cols} FROM llm_traces ORDER BY ts DESC LIMIT $1", limit)
         return [dict(r) for r in rows]
 
     async def upsert_workflow(self, project_id: str, config: dict, user_id: str) -> int:

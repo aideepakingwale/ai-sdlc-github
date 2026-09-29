@@ -113,6 +113,14 @@ class Settings(BaseSettings):
     RAG_TOP_K: int = 4
     RAG_EMBED_DIM: int = 256
 
+    # Debug tracing (D-104): when enabled, every LLM span also stores the actual
+    # request (assembled messages) and response (content) in llm_traces, viewable
+    # in the Observability panel. Off by default; the effective switch is the
+    # runtime `llm_debug_trace` setting (Super-Admin toggle, mirrored via Redis) OR
+    # this env baseline. Bodies are capped to keep the DB/table light.
+    LLM_DEBUG_TRACE: bool = False
+    LLM_DEBUG_TRACE_MAX_CHARS: int = 200_000
+
     # Content-store tier for stage artifacts (D-23):
     #   filesystem = folder tree on a mounted volume (local); s3 = S3/MinIO (prod).
     CONTENT_STORE_MODE: Literal["filesystem", "s3"] = "filesystem"

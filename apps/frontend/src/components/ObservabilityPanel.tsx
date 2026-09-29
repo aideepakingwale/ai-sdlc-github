@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 
 /**
@@ -24,10 +24,16 @@ interface Summary {
 }
 
 interface Trace {
+  id: string;
   ts: string; projectId: string | null; stage: number | null; kind: string;
   provider: string | null; model: string | null; tier: string | null; tag: string | null;
   promptTokens: number; completionTokens: number; latencyMs: number;
   status: string; error: string | null; costUsd: number;
+  hasBodies?: boolean;
+}
+interface TraceDetail {
+  id: string; ts: string; provider: string | null; model: string | null; tag: string | null;
+  requestBody: string | null; responseBody: string | null;
 }
 
 interface LlmConfig {
@@ -40,6 +46,7 @@ interface LlmConfig {
   groq_api_key_set: boolean;
   gemini_api_key_set: boolean;
   xai_api_key_set: boolean;
+  llm_debug_trace: string | null;  // "true" when debug capture is on (D-104)
 }
 interface LlmConfigState {
   config: LlmConfig;
@@ -136,6 +143,23 @@ function LlmConfigControl() {
           >{c.label}</button>
         ))}
       </div>
+
+      {/* debug capture toggle (D-104) — applies live */}
+      <label className="mb-3 flex items-start gap-2 text-[11px] text-slate-600">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={s?.config.llm_debug_trace === 'true'}
+          disabled={save.isPending}
+          onChange={(e) => save.mutate({ llm_debug_trace: e.target.checked ? 'true' : 'false' })}
+        />
+        <span>
+          <span className="font-semibold text-slate-700">Debug: capture request &amp; response</span>{' '}
+          <span className="text-slate-400">
+            — stores the full prompt + output on every LLM span (expand a trace below to view). Leave off in normal use.
+          </span>
+        </span>
+      </label>
 
       {/* text config */}
       <div className="grid gap-2 sm:grid-cols-2">
@@ -259,6 +283,8 @@ function Kpi({ label, value, sub }: { label: string; value: string; sub?: string
 
 export default function ObservabilityPanel({ onClose }: { onClose: () => void }) {
   const [days, setDays] = useState(7);
+  // D-104: which trace's captured request/response is expanded.
+  const [openTrace, setOpenTrace] = useState<string | null>(null);
 
   const summary = useQuery({
     queryKey: ['obs', 'summary', days],
@@ -269,6 +295,11 @@ export default function ObservabilityPanel({ onClose }: { onClose: () => void })
     queryKey: ['obs', 'traces'],
     queryFn: () => api.get<{ traces: Trace[] }>('/api/observability/traces?limit=50'),
     refetchInterval: 5_000,
+  });
+  const traceDetail = useQuery({
+    queryKey: ['obs', 'trace', openTrace],
+    queryFn: () => api.get<TraceDetail>(`/api/observability/traces/${openTrace}`),
+    enabled: Boolean(openTrace),
   });
 
   useEffect(() => {
@@ -422,9 +453,19 @@ export default function ObservabilityPanel({ onClose }: { onClose: () => void })
                   </tr>
                 </thead>
                 <tbody>
-                  {(traces.data?.traces ?? []).map((tr, i) => (
-                    <tr key={i} className="border-t border-slate-100">
-                      <td className="py-1 text-slate-400">{tr.ts.slice(11, 19)}</td>
+                  {(traces.data?.traces ?? []).map((tr, i) => {
+                    const open = openTrace === tr.id;
+                    return (
+                    <Fragment key={tr.id || i}>
+                    <tr
+                      className={`border-t border-slate-100 ${tr.hasBodies ? 'cursor-pointer hover:bg-slate-50' : ''}`}
+                      onClick={tr.hasBodies ? () => setOpenTrace(open ? null : tr.id) : undefined}
+                      title={tr.hasBodies ? 'Show captured request/response' : ''}
+                    >
+                      <td className="py-1 text-slate-400">
+                        {tr.hasBodies && <span className="mr-0.5 text-slate-400">{open ? '▾' : '▸'}</span>}
+                        {tr.ts.slice(11, 19)}
+                      </td>
                       <td>{tr.kind === 'llm' ? '🧠' : '🔌'}</td>
                       <td className="font-mono text-[10px]">{tr.kind === 'llm' ? `${tr.provider ?? '—'} / ${tr.model ?? ''}` : tr.tag}</td>
                       <td>{tr.tier ?? ''}</td>
@@ -439,7 +480,28 @@ export default function ObservabilityPanel({ onClose }: { onClose: () => void })
                         </span>
                       </td>
                     </tr>
-                  ))}
+                    {open && (
+                      <tr className="bg-slate-50">
+                        <td colSpan={8} className="px-2 py-2">
+                          {traceDetail.isLoading && <div className="text-[10px] text-slate-400">Loading captured bodies…</div>}
+                          {traceDetail.data && (
+                            <div className="space-y-2">
+                              <div>
+                                <div className="mb-0.5 text-[9px] font-semibold uppercase text-slate-400">Request (prompt)</div>
+                                <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded border border-slate-200 bg-white p-2 font-mono text-[10px] leading-snug text-slate-700">{traceDetail.data.requestBody ?? '—'}</pre>
+                              </div>
+                              <div>
+                                <div className="mb-0.5 text-[9px] font-semibold uppercase text-slate-400">Response (output)</div>
+                                <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded border border-slate-200 bg-white p-2 font-mono text-[10px] leading-snug text-slate-700">{traceDetail.data.responseBody ?? '—'}</pre>
+                              </div>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

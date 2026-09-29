@@ -29,6 +29,19 @@ def _looks_truncated(raw: str) -> bool:
     return bool(s) and s[-1] not in ("}", "]")
 
 
+def _sanitize_for_trace(messages: list[dict[str, Any]]) -> str:
+    """Render the request messages for debug capture (D-104). Inline image blobs
+    (base64) are dropped — they'd dwarf the actual prompt and aren't useful text."""
+    safe: list[dict[str, Any]] = []
+    for m in messages:
+        mm = {k: v for k, v in m.items() if k != "images"}
+        imgs = m.get("images")
+        if imgs:
+            mm["images"] = f"<{len(imgs)} image(s) omitted>"
+        safe.append(mm)
+    return json.dumps(safe, ensure_ascii=False, indent=2)
+
+
 def parse_json_loose(raw: str) -> Any:
     """Direct parse → fenced ```json block → outermost-braces slice."""
     try:
@@ -63,7 +76,14 @@ class LlmResult(BaseModel):
 
 
 class LlmClient:
-    def __init__(self, base_url: str, generate_timeout_seconds: float = 660.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        generate_timeout_seconds: float = 660.0,
+        redis: Any = None,
+        debug_env_default: bool = False,
+        debug_max_chars: int = 200_000,
+    ) -> None:
         self._base = base_url.rstrip("/")
         # The gateway streams real provider calls (Bedrock) that can run for
         # minutes on a large artifact; the generate POST must therefore outlast
@@ -74,9 +94,41 @@ class LlmClient:
         # the long ceiling is applied per-request on generate() only.
         self._http = httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0))
         self._generate_timeout = httpx.Timeout(generate_timeout_seconds, connect=10.0)
+        # Debug tracing (D-104): capture request/response bodies when enabled. The
+        # effective switch is the runtime `llm_debug_trace` setting (read from Redis,
+        # cached briefly) OR the env baseline. Bodies are capped at debug_max_chars.
+        self._redis = redis
+        self._debug_env = bool(debug_env_default)
+        self._debug_max = max(1_000, int(debug_max_chars))
+        self._debug_cache: tuple[bool, float] = (False, 0.0)
         # Observability hook (D-35): set post-construction; every generate()
         # records a span. Telemetry failures never propagate.
         self.telemetry: Any = None
+
+    async def _debug_enabled(self) -> bool:
+        """Is request/response capture on? Env baseline OR the runtime setting in
+        Redis (`sdlc:settings:llm_debug_trace`), cached 5s to keep the hot path off
+        Redis. Never raises — defaults to off."""
+        if self._debug_env:
+            return True
+        if self._redis is None:
+            return False
+        val, at = self._debug_cache
+        if time.perf_counter() - at < 5.0:
+            return val
+        enabled = False
+        try:
+            raw = await self._redis.get("sdlc:settings:llm_debug_trace")
+            if isinstance(raw, (bytes, bytearray)):
+                raw = raw.decode()
+            enabled = str(raw).strip().lower() == "true"
+        except Exception:
+            enabled = False
+        self._debug_cache = (enabled, time.perf_counter())
+        return enabled
+
+    def _cap(self, s: str) -> str:
+        return s if len(s) <= self._debug_max else s[: self._debug_max] + " …[truncated]"
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -108,10 +160,16 @@ class LlmClient:
     ) -> LlmResult:
         started = time.perf_counter()
 
+        # Debug capture (D-104): sanitise + cap the request once; images are dropped
+        # (base64 would dwarf the prompt). Populated only when debug is enabled.
+        debug = await self._debug_enabled()
+        req_body = self._cap(_sanitize_for_trace(messages)) if debug else None
+
         async def _trace(**kw: Any) -> None:
             if self.telemetry is not None:
                 await self.telemetry.record(
-                    kind="llm", tag=tag, latency_ms=int((time.perf_counter() - started) * 1000), **kw
+                    kind="llm", tag=tag, latency_ms=int((time.perf_counter() - started) * 1000),
+                    request_body=req_body, **kw,
                 )
 
         try:
@@ -154,6 +212,7 @@ class LlmClient:
             provider=result.provider, model=result.model, tier=result.tier,
             prompt_tokens=result.usage["promptTokens"],
             completion_tokens=result.usage["completionTokens"],
+            response_body=self._cap(result.content) if debug else None,
         )
         return result
 

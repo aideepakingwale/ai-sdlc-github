@@ -1392,15 +1392,39 @@ async def observability_traces(
     return {
         "traces": [
             {
+                "id": r["id"],
                 "ts": r["ts"].isoformat(), "projectId": r["project_id"], "stage": r["stage"],
                 "kind": r["kind"], "provider": r["provider"], "model": r["model"],
                 "tier": r["tier"], "tag": r["tag"],
                 "promptTokens": r["prompt_tokens"], "completionTokens": r["completion_tokens"],
                 "latencyMs": r["latency_ms"], "status": r["status"], "error": r["error"],
                 "costUsd": float(r["cost_usd"]),
+                # D-104: true when debug capture stored request/response bodies for
+                # this span — the UI shows an expander that fetches them on demand.
+                "hasBodies": bool(r.get("has_bodies")),
             }
             for r in rows
         ]
+    }
+
+
+@router.get("/api/observability/traces/{trace_id}")
+async def observability_trace_detail(
+    trace_id: str,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """The captured request + response bodies for one span (debug mode, D-104).
+    Bodies exist only for spans recorded while `llm_debug_trace` was enabled."""
+    _require_admin(user)
+    row = await container.telemetry.trace_detail(trace_id)
+    if not row:
+        raise SdlcError("NOT_FOUND", "trace not found")
+    return {
+        "id": row["id"],
+        "ts": row["ts"].isoformat(),
+        "provider": row["provider"], "model": row["model"], "tag": row["tag"],
+        "requestBody": row.get("request_body"),
+        "responseBody": row.get("response_body"),
     }
 
 
@@ -1491,6 +1515,7 @@ LLM_SETTING_KEYS = (
     "bedrock_model_id", "bedrock_region",
     "groq_model", "gemini_model", "xai_model",
     "groq_api_key", "gemini_api_key", "xai_api_key",
+    "llm_debug_trace",  # D-104: capture request/response bodies into llm_traces
 )
 
 
@@ -1506,6 +1531,7 @@ class LlmConfigRequest(BaseModel):
     groq_api_key: str | None = None
     gemini_api_key: str | None = None
     xai_api_key: str | None = None
+    llm_debug_trace: bool | None = None  # D-104: runtime debug-capture toggle
 
 
 async def _live_llm_state(container: Container) -> dict:
@@ -1572,7 +1598,10 @@ async def set_llm_config(
     for key, value in provided.items():
         if value is None or key not in LLM_SETTING_KEYS:
             continue
-        await _apply_setting(container, key, str(value), user.email)
+        # Booleans (llm_debug_trace) persist as lowercase "true"/"false" so the
+        # readers compare against "true" (D-104).
+        sval = ("true" if value else "false") if isinstance(value, bool) else str(value)
+        await _apply_setting(container, key, sval, user.email)
         changed.append(key)
     if changed:
         container.audit.record(
