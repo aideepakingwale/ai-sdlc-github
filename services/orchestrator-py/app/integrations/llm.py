@@ -1,6 +1,6 @@
 """Client for the LLM-gateway microservice (ai-client-service): intent routing +
 circuit breaking live there; here we add pydantic-validated JSON generation with
-one repair retry."""
+one repair retry (D-08)."""
 
 from __future__ import annotations
 
@@ -49,10 +49,18 @@ class LlmResult(BaseModel):
 
 
 class LlmClient:
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, generate_timeout_seconds: float = 660.0) -> None:
         self._base = base_url.rstrip("/")
+        # The gateway streams real provider calls (Bedrock) that can run for
+        # minutes on a large artifact; the generate POST must therefore outlast
+        # the gateway's own provider ceiling (600s, D-96). If httpx gives up first
+        # it drops the connection, which the gateway sees as a client abort and
+        # cancels the in-flight Bedrock stream ("Request was aborted") — tripping
+        # the breaker mid-generation (D-102). Short default for the quick GETs;
+        # the long ceiling is applied per-request on generate() only.
         self._http = httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0))
-        # Observability hook: set post-construction; every generate
+        self._generate_timeout = httpx.Timeout(generate_timeout_seconds, connect=10.0)
+        # Observability hook (D-35): set post-construction; every generate()
         # records a span. Telemetry failures never propagate.
         self.telemetry: Any = None
 
@@ -60,7 +68,7 @@ class LlmClient:
         await self._http.aclose()
 
     async def providers(self) -> dict[str, Any]:
-        """Fetch the gateway's live provider roster: mode, effectiveMock and
+        """Fetch the gateway's live provider roster (D-68): mode, effectiveMock and
         per-provider {model, vision, configured, breaker}. Used to build the
         selectable model catalog. Never raises — returns an empty roster on error
         so the UI degrades gracefully."""
@@ -103,8 +111,9 @@ class LlmClient:
                     "maxTokens": max_tokens,
                     "tier": tier,
                     **({"tag": tag} if tag else {}),
-                    **({"model": model} if model else {}), # per-step model override
+                    **({"model": model} if model else {}),  # per-step model override (D-68)
                 },
+                timeout=self._generate_timeout,  # outlast the gateway's provider ceiling (D-102)
             )
         except httpx.HTTPError as err:
             await _trace(tier=tier, status="error", error=f"ai-client unreachable: {err}")

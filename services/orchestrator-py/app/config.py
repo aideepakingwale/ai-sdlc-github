@@ -28,6 +28,12 @@ class Settings(BaseSettings):
 
     AI_CLIENT_URL: str
     TOOLS_MCP_URL: str
+    # Read timeout (seconds) for the orchestrator's generate call to the ai-client
+    # gateway. Must exceed the gateway's own provider streaming ceiling (600s for
+    # Bedrock, D-96) so a slow large-artifact generation isn't aborted by the
+    # orchestrator dropping the connection first (D-102). Raise both together if a
+    # single artifact legitimately needs longer than ~10 minutes.
+    LLM_HTTP_TIMEOUT_SECONDS: float = 660.0
 
     # Attachment image understanding (D-66). Uploaded images are turned into
     # context two ways: a vision LLM (routed multi-model through ai-client:

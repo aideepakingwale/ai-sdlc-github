@@ -80,7 +80,7 @@ async def lifespan(app: FastAPI):
     audit = AuditService(db, s3)
     authz = AuthzService(db)
     keycloak = KeycloakAuth(settings) if settings.AUTH_MODE == "keycloak" else None
-    llm = LlmClient(settings.AI_CLIENT_URL)
+    llm = LlmClient(settings.AI_CLIENT_URL, generate_timeout_seconds=settings.LLM_HTTP_TIMEOUT_SECONDS)
     mcp = McpToolClient(settings.TOOLS_MCP_URL, extra_servers=_external_mcp_servers(settings))
     for s in mcp._servers[1:]:
         log.info("external MCP server enabled: %s -> %s", s.prefix, s.url)
