@@ -120,12 +120,20 @@ class Database:
         return {r["key"]: r["value"] for r in rows}
 
     # ------------------------------------------------------------ generation jobs (D-97 L2)
-    async def create_generation_job(self, job_id: str, project_id: str, phase: int, started_by: str | None) -> None:
+    async def create_generation_job(
+        self, job_id: str, project_id: str, phase: int, started_by: str | None, status: str = "queued",
+    ) -> None:
         assert self.pool
         await self.pool.execute(
             "INSERT INTO generation_jobs (id, project_id, phase, status, started_by) "
-            "VALUES ($1, $2, $3, 'running', $4)",
-            job_id, project_id, phase, started_by,
+            "VALUES ($1, $2, $3, $4, $5)",
+            job_id, project_id, phase, status, started_by,
+        )
+
+    async def mark_generation_job_running(self, job_id: str) -> None:
+        assert self.pool
+        await self.pool.execute(
+            "UPDATE generation_jobs SET status='running', updated_at=now() WHERE id=$1", job_id
         )
 
     async def finish_generation_job(self, job_id: str, status: str, error: str | None = None) -> None:

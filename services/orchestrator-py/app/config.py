@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     # JSON failed to parse and the stage produced nothing. Sonnet 4.x supports far
     # more — raise this if a phase still truncates (watch cost/latency).
     PHASE_MAX_TOKENS: int = 16_000
+    # Number of background workers consuming the stage-generation queue (D-99).
+    # Bounds how many stage runs execute concurrently across the platform.
+    GENERATION_WORKERS: int = 2
     BUILD_LOOP_MAX_ITERATIONS: int = 5
     BUILD_POLL_INTERVAL_MS: int = 30_000
     GITHUB_WEBHOOK_SECRET: str = "dev-webhook-secret"

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { api, streamStageProgress, streamStageTrigger } from '../api/client';
+import { api, streamStageProgress } from '../api/client';
 import type { ProjectFlow } from '../api/flow';
 import type { ChatMessage, PhaseStateView, User } from '../api/types';
 import { useApp, type ActivityItem } from '../store';
@@ -200,18 +200,25 @@ export default function StageWorkspace({
     }
   }
 
-  // D-56: trigger generation from the reviewed plan (nothing runs until here).
+  // D-99: ENQUEUE the run (returns immediately) then watch its progress. The run is
+  // executed by a background worker — decoupled from this request — so navigating
+  // away never cancels it; the progress stream is just a viewer.
   async function triggerPlan() {
     if (streaming || !plan?.canEdit) return;
-    // persist the latest overlay first, then run the reviewed plan
+    // persist the latest overlay first, then enqueue the reviewed run
     try { await api.put(`/api/projects/${projectId}/phase/${selectedSeq}/plan`, overlayBody()); } catch { /* proceed */ }
+    try {
+      await api.post(`/api/projects/${projectId}/phase/${selectedSeq}/plan/trigger`, {});
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : 'Could not start generation');
+      return;
+    }
+    resetComposer(); // the run is queued; clear the composer
     beginStream();
     try {
-      await streamStageTrigger(projectId, selectedSeq, pushEvent);
+      await streamStageProgress(projectId, selectedSeq, pushEvent);
     } finally {
       endStream();
-      // Clear the composer so the just-submitted prompt/references don't linger.
-      resetComposer();
       void qc.invalidateQueries({ queryKey: ['project', projectId] });
       void qc.invalidateQueries({ queryKey: ['artefacts', projectId] });
       void qc.invalidateQueries({ queryKey: ['flow', projectId] });

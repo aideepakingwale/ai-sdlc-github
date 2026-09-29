@@ -13,7 +13,6 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from ..domain.errors import SdlcError
 from ..services import guardrails as guardrails_svc
 from ..services import prompt_library
-from ..services.chat import sse_stream
 from ..domain.models import (
     AddMemberRequest,
     ArtefactUpdate,
@@ -395,32 +394,14 @@ async def update_stage_plan(
 async def trigger_stage_plan(
     project_id: str, phase_id: int,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
-) -> StreamingResponse:
-    """Run the stage using its reviewed plan (SSE). Nothing generates until this is
-    invoked by a writer; the result goes straight to gate review (D-56)."""
+) -> dict:
+    """ENQUEUE the stage run and return immediately (D-99). Nothing runs in this
+    request: a background worker consumes the queue, and the UI watches progress via
+    GET /phase/{id}/stream. Returns {jobId, status:'queued'} (or the active job if one
+    is already queued/running). The result goes to gate review when it completes."""
     if not 1 <= phase_id <= 12:
         raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
-
-    sse_headers = {"cache-control": "no-cache, no-transform", "x-accel-buffering": "no"}
-
-    async def handler(emit):  # noqa: ANN001
-        await container.chat.trigger_stage(project_id=project_id, phase=phase_id, user=user, emit=emit)
-
-    # D-97 L2: start a DURABLE background job (Redis lock = atomic dup-guard, job row
-    # = restart-recoverable, progress buffered in Redis). None => already running.
-    job_id = await container.gen_jobs.start(
-        project_id=project_id, phase=phase_id, started_by=user.email, handler=handler,
-    )
-    if job_id is None:
-        async def busy(emit):  # noqa: ANN001
-            emit({"type": "error", "code": "ALREADY_RUNNING",
-                  "message": "This stage is already generating — refresh to watch it or see the result."})
-        return StreamingResponse(sse_stream(busy), media_type="text/event-stream", headers=sse_headers)
-
-    # Stream the run's progress from Redis; disconnecting never cancels the run.
-    return StreamingResponse(
-        container.gen_jobs.stream(project_id, phase_id), media_type="text/event-stream", headers=sse_headers,
-    )
+    return await container.gen_jobs.enqueue(project_id, phase_id, user.email)
 
 
 @router.get("/api/projects/{project_id}/phase/{phase_id}/stream")

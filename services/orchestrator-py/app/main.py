@@ -136,10 +136,18 @@ async def lifespan(app: FastAPI):
     # recorded across restarts, and stream reconnectable progress via Redis.
     from .services.generation_jobs import GenerationJobs
 
-    container.gen_jobs = GenerationJobs(db, redis)
+    async def _run_stage(project_id: str, phase: int, actor_email: str, emit) -> None:  # noqa: ANN001
+        urow = await db.get_user_by_email(actor_email)
+        if not urow:
+            raise SdlcError("NOT_FOUND", f"generation actor '{actor_email}' not found")
+        actor = UserPublic(id=urow["id"], email=urow["email"], displayName=urow["display_name"], role=urow["role"])
+        await chat.trigger_stage(project_id=project_id, phase=phase, user=actor, emit=emit)
+
+    container.gen_jobs = GenerationJobs(db, redis, runner=_run_stage)
     _reconciled = await container.gen_jobs.reconcile()
     if _reconciled:
         log.info("reconciled %s stale generation job(s) on boot", _reconciled)
+    container.gen_jobs.start_workers(getattr(settings, "GENERATION_WORKERS", 2))
 
     # D-91/D-92: mirror persisted LLM settings to Redis so ai-client picks them up
     # after a restart (Redis is the cross-service channel).
@@ -162,6 +170,8 @@ async def lifespan(app: FastAPI):
     yield
 
     monitor.stop_polling()
+    if container.gen_jobs is not None:
+        await container.gen_jobs.stop_workers()
     await audit.flush()
     await llm.close()
     if keycloak:
