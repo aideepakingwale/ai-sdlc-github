@@ -443,3 +443,64 @@ describe('mock provider directives', () => {
     expect(firstStory.subTasks.length).toBeGreaterThan(0);
   });
 });
+
+describe('cancellation & truncation (D-103)', () => {
+  it('a canceled provider call does NOT trip the breaker and propagates', async () => {
+    const store = fakeStore();
+    const breaker = new CircuitBreaker(store, 0);
+    const bedrock: LlmProvider = {
+      id: 'bedrock',
+      configured: true,
+      model: 'anthropic.claude-sonnet-4-6',
+      async generate() {
+        throw new ProviderCallError('bedrock', 'canceled', 'bedrock call canceled: Request was aborted.');
+      },
+    };
+    // No mock fallback (prod-like): a cancellation must surface, not degrade.
+    const router = new LlmRouter([bedrock], breaker, log, { forceMock: false, allowMockFallback: false });
+    await expect(router.generate(req, new AbortController().signal)).rejects.toMatchObject({
+      kind: 'canceled',
+    });
+    // The breaker MUST remain closed — a disconnect must never disable the provider.
+    expect(await breaker.state('bedrock')).toBe('closed');
+  });
+
+  it('a transient error DOES trip the breaker (contrast with canceled)', async () => {
+    const store = fakeStore();
+    const breaker = new CircuitBreaker(store, 0);
+    const bedrock: LlmProvider = {
+      id: 'bedrock',
+      configured: true,
+      model: 'anthropic.claude-sonnet-4-6',
+      async generate() {
+        throw new ProviderCallError('bedrock', 'transient', 'boom');
+      },
+    };
+    const router = new LlmRouter([bedrock, createMockProvider()], breaker, log, {
+      forceMock: false,
+      allowMockFallback: true,
+    });
+    await router.generate(req, new AbortController().signal); // falls over to mock
+    expect(await breaker.state('bedrock')).toBe('open');
+  });
+
+  it('propagates the provider truncation flag to the response', async () => {
+    const breaker = new CircuitBreaker(fakeStore(), 0);
+    const truncating: LlmProvider = {
+      id: 'bedrock',
+      configured: true,
+      model: 'anthropic.claude-sonnet-4-6',
+      async generate() {
+        return {
+          content: '{"partial": "cut off',
+          model: 'anthropic.claude-sonnet-4-6',
+          usage: { promptTokens: 1, completionTokens: 128 },
+          truncated: true,
+        };
+      },
+    };
+    const router = new LlmRouter([truncating], breaker, log, { forceMock: false, allowMockFallback: false });
+    const res = await router.generate(req, new AbortController().signal);
+    expect(res.truncated).toBe(true);
+  });
+});

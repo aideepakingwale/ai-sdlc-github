@@ -86,6 +86,10 @@ export const GenerateResponseSchema = z.object({
   attempts: z.array(z.string()).default([]),
   /** Tier actually served (D-25). */
   tier: ModelTierSchema.default('auto'),
+  /** True when the provider stopped at the output-token cap — the content is
+   *  incomplete (truncated). Lets the orchestrator retry with a larger budget
+   *  instead of failing to parse the cut-off JSON (D-103). */
+  truncated: z.boolean().default(false),
 });
 export type GenerateResponse = z.infer<typeof GenerateResponseSchema>;
 

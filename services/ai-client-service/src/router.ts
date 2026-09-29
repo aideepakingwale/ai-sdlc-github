@@ -170,10 +170,18 @@ export class LlmRouter {
           usage: result.usage,
           attempts,
           tier: req.tier,
+          truncated: result.truncated ?? false,
         };
       } catch (err) {
         if (!(err instanceof ProviderCallError)) throw err;
         attempts.push(`${provider.id}:${err.kind}`);
+        // D-103: a cancellation (caller disconnect or our own timeout) is not a
+        // provider fault — do NOT trip the breaker (a disconnect must never disable
+        // the provider for everyone) and stop here: the request is gone / over budget.
+        if (err.kind === 'canceled') {
+          this.log.info({ provider: provider.id, error: err.message }, 'provider call canceled — breaker untouched');
+          throw err;
+        }
         // D-94: log the RAW provider error (status + message) so failures are
         // diagnosable from the logs instead of being flattened to a kind.
         if (err.kind === 'auth_or_billing') {
@@ -206,6 +214,7 @@ export class LlmRouter {
       } catch (err) {
         if (!(err instanceof ProviderCallError)) throw err;
         lastErr = err;
+        if (err.kind === 'canceled') throw err; // D-103: never retry a cancellation
         if (err.kind === 'auth_or_billing') throw err;
         if (err.kind === 'transient' && attempt >= 1) throw err;
         if (err.kind === 'rate_limit' && attempt >= 3) throw err;

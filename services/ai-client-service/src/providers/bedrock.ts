@@ -1,6 +1,6 @@
 import { AnthropicBedrock } from '@anthropic-ai/bedrock-sdk';
 import type { GenerateRequest } from '@sdlc/shared';
-import { classifyStatus, ProviderCallError, type LlmProvider, type ProviderResult } from './types.js';
+import { classifyStatus, isAbortError, ProviderCallError, type LlmProvider, type ProviderResult } from './types.js';
 
 /**
  * AWS Bedrock provider (D-33): Claude via the Bedrock Mantle client — the
@@ -93,6 +93,7 @@ export function createBedrockProvider(opts: {
       // mid-generation) and allow a generous overall ceiling. `.finalMessage()`
       // still returns the complete assembled Message.
       const timeout = AbortSignal.timeout(opts.timeoutMs ?? 600_000);
+      const combined = AbortSignal.any([signal, timeout]);
       try {
         const res = await client.messages
           .stream(
@@ -104,7 +105,7 @@ export function createBedrockProvider(opts: {
               ...(system ? { system: system as never } : {}),
               messages: messages as never,
             },
-            { signal: AbortSignal.any([signal, timeout]) },
+            { signal: combined },
           )
           .finalMessage();
         const content = res.content
@@ -121,9 +122,16 @@ export function createBedrockProvider(opts: {
             promptTokens: res.usage?.input_tokens ?? 0,
             completionTokens: res.usage?.output_tokens ?? 0,
           },
+          // D-103: the model hit the output-token cap — content is incomplete.
+          truncated: res.stop_reason === 'max_tokens',
         };
       } catch (err) {
         if (err instanceof ProviderCallError) throw err;
+        // D-103: an abort (caller disconnect or our own timeout) is not a provider
+        // fault — raise `canceled` so the router doesn't trip the breaker.
+        if (isAbortError(err, combined)) {
+          throw new ProviderCallError('bedrock', 'canceled', `bedrock call canceled: ${(err as Error).message ?? String(err)}`);
+        }
         // The Anthropic SDK throws typed APIError subclasses carrying `status`;
         // duck-type so we don't depend on instanceof across package instances.
         const status = (err as { status?: unknown }).status;

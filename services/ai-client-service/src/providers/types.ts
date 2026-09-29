@@ -4,15 +4,21 @@ export interface ProviderResult {
   content: string;
   model: string;
   usage: LlmUsage;
+  /** True when the provider stopped at the output-token cap (max_tokens /
+   *  length / MAX_TOKENS) — the content is incomplete (D-103). */
+  truncated?: boolean;
 }
 
 /**
  * Provider failure classification drives the circuit breaker (Module 3 §2):
  * - `rate_limit` (429): exponential backoff retries, then trip breaker `open` (TTL)
- * - `auth_or_billing` (401/402/403): breaker `disabled` permanently
+ * - `auth_or_billing` (401/402/403): breaker `disabled` permanently (D-04)
  * - `transient` (5xx / network): one retry, then trip `open`
+ * - `canceled` (D-103): the request was aborted — caller disconnected or our own
+ *   timeout fired. NOT a provider fault: no retry, and the breaker is NOT tripped
+ *   (a client disconnect must never disable the provider for everyone else).
  */
-export type ProviderFailureKind = 'rate_limit' | 'auth_or_billing' | 'transient';
+export type ProviderFailureKind = 'rate_limit' | 'auth_or_billing' | 'transient' | 'canceled';
 
 export class ProviderCallError extends Error {
   constructor(
@@ -31,9 +37,20 @@ export interface LlmProvider {
   readonly configured: boolean;
   readonly model: string;
   /** Can this provider accept inline images (vision)? Requests carrying an
-   * image are only routed to providers where this is true. */
+   *  image are only routed to providers where this is true (D-66). */
   readonly vision?: boolean;
   generate(req: GenerateRequest, signal: AbortSignal): Promise<ProviderResult>;
+}
+
+/** True when an error is an abort/cancellation (the combined signal fired: caller
+ *  disconnect or our own timeout). Providers use this to raise `canceled` instead
+ *  of `transient`, so a disconnect never trips the breaker (D-103). */
+export function isAbortError(err: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true;
+  const name = (err as { name?: unknown })?.name;
+  if (name === 'AbortError' || name === 'TimeoutError' || name === 'APIUserAbortError') return true;
+  const msg = (err as { message?: unknown })?.message;
+  return typeof msg === 'string' && /\babort|\bcancel/i.test(msg);
 }
 
 /** Classify an HTTP status into a breaker action. */

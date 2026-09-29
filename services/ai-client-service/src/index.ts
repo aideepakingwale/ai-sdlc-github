@@ -99,7 +99,9 @@ function buildRouter(cfg: EffCfg): LlmRouter {
         apiKey: cfg.groqApiKey, model: cfg.groqModel, requestTokenBudget: env.LLM_REQUEST_TOKEN_BUDGET,
         timeoutMs: env.LLM_STREAM_TIMEOUT_MS,
       }),
-      createGeminiProvider({ apiKey: cfg.geminiApiKey, model: cfg.geminiModel }),
+      createGeminiProvider({
+        apiKey: cfg.geminiApiKey, model: cfg.geminiModel, timeoutMs: env.LLM_STREAM_TIMEOUT_MS,
+      }),
       createOpenAiCompatProvider({
         id: 'grok', baseUrl: 'https://api.x.ai/v1',
         apiKey: cfg.xaiApiKey, model: cfg.xaiModel, requestTokenBudget: env.LLM_REQUEST_TOKEN_BUDGET,

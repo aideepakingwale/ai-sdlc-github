@@ -5,6 +5,7 @@ one repair retry (D-08)."""
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from typing import Any, TypeVar
@@ -15,7 +16,17 @@ from pydantic import BaseModel, ValidationError
 from ..domain.errors import SdlcError
 from ..services.prompt_library import render as render_prompt
 
+log = logging.getLogger("llm")
+
 T = TypeVar("T", bound=BaseModel)
+
+
+def _looks_truncated(raw: str) -> bool:
+    """Heuristic for output cut off at the token cap when the provider didn't flag it:
+    non-empty content whose last non-space char isn't a JSON terminator (`}`/`]`).
+    A complete JSON document ends in one of those; a mid-stream cut-off does not."""
+    s = (raw or "").rstrip()
+    return bool(s) and s[-1] not in ("}", "]")
 
 
 def parse_json_loose(raw: str) -> Any:
@@ -46,6 +57,9 @@ class LlmResult(BaseModel):
     usage: dict[str, int]
     attempts: list[str] = []
     tier: str = "auto"
+    # D-103: the provider stopped at the output-token cap — `content` is truncated
+    # (incomplete JSON). generate_json uses this to retry with a larger budget.
+    truncated: bool = False
 
 
 class LlmClient:
@@ -134,6 +148,7 @@ class LlmClient:
             },
             attempts=data.get("attempts", []),
             tier=data.get("tier", tier),
+            truncated=bool(data.get("truncated", False)),
         )
         await _trace(
             provider=result.provider, model=result.model, tier=result.tier,
@@ -154,19 +169,39 @@ class LlmClient:
         tier: str = "auto",
         model: str | None = None,
     ) -> tuple[T, LlmResult]:
-        """JSON-mode generation validated against `schema`; one repair retry with the errors appended."""
+        """JSON-mode generation validated against `schema`, with truncation-aware retries.
+
+        D-103: a large artifact can hit the provider's output-token cap; the returned
+        JSON is then incomplete and unparseable, and a same-size repair just truncates
+        again. So when the provider reports truncation (or the parse fails on
+        cut-off-looking output) we ESCALATE `max_tokens` (up to HARD_MAX) before
+        retrying, instead of only appending the validation errors."""
+        HARD_MAX = 64_000  # Claude Sonnet's output ceiling — the growth limit
+        effective_max = max_tokens
         last_issues = ""
-        for attempt in range(2):
+        for attempt in range(3):
             msgs = messages if attempt == 0 else [
                 *messages,
                 {"role": "user", "content": render_prompt("json_repair.user", issues=last_issues[:500])},
             ]
             result = await self.generate(
                 intent=intent, messages=msgs, json_mode=True,
-                temperature=temperature, max_tokens=max_tokens, tag=tag, tier=tier, model=model,
+                temperature=temperature, max_tokens=effective_max, tag=tag, tier=tier, model=model,
             )
+            # Provider says it hit the cap → grow the budget and retry before parsing
+            # (parsing truncated JSON is pointless).
+            if result.truncated and effective_max < HARD_MAX:
+                effective_max = min(effective_max * 2, HARD_MAX)
+                last_issues = "previous output was truncated at the token cap — return a COMPLETE, valid JSON document"
+                log.warning("generate_json: output truncated (tag=%s); raising max_tokens to %s and retrying", tag, effective_max)
+                continue
             try:
                 return schema.model_validate(parse_json_loose(result.content)), result
             except (ValidationError, SdlcError) as err:
                 last_issues = str(err)
+                # Parse/validation failed on output that looks cut off (provider didn't
+                # flag it) → treat as truncation and grow the budget for the next try.
+                if _looks_truncated(result.content) and effective_max < HARD_MAX:
+                    effective_max = min(effective_max * 2, HARD_MAX)
+                    log.warning("generate_json: parse failed on truncated-looking output (tag=%s); raising max_tokens to %s", tag, effective_max)
         raise SdlcError("PROVIDER_ERROR", f"LLM failed to produce schema-valid JSON: {last_issues[:300]}")

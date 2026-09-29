@@ -3,6 +3,7 @@ import {
   classifyStatus,
   estimateTokens,
   fitMaxTokens,
+  isAbortError,
   ProviderCallError,
   type LlmProvider,
   type ProviderResult,
@@ -46,15 +47,16 @@ export function createOpenAiCompatProvider(opts: OpenAiCompatOpts): LlmProvider 
     model: opts.model,
 
     async generate(req: GenerateRequest, signal: AbortSignal): Promise<ProviderResult> {
-      const model = req.model || opts.model; // per-call model override
+      const model = req.model || opts.model; // per-call model override (D-68)
       const messages = req.json ? ensureJsonMention(req.messages) : req.messages;
       const promptTokens = messages.reduce((n, m) => n + estimateTokens(m.content), 0);
       const maxTokens = fitMaxTokens(promptTokens, req.maxTokens, opts.requestTokenBudget ?? 0);
 
       const timeout = AbortSignal.timeout(opts.timeoutMs ?? 60_000);
+      const combined = AbortSignal.any([signal, timeout]);
       const res = await fetch(`${opts.baseUrl}/chat/completions`, {
         method: 'POST',
-        signal: AbortSignal.any([signal, timeout]),
+        signal: combined,
         headers: {
           'content-type': 'application/json',
           authorization: `Bearer ${opts.apiKey}`,
@@ -67,13 +69,17 @@ export function createOpenAiCompatProvider(opts: OpenAiCompatOpts): LlmProvider 
           ...(req.json ? { response_format: { type: 'json_object' } } : {}),
         }),
       }).catch((err: unknown) => {
+        // D-103: abort (disconnect/timeout) → `canceled`, so the breaker isn't tripped.
+        if (isAbortError(err, combined)) {
+          throw new ProviderCallError(opts.id, 'canceled', `${opts.id} call canceled: ${String(err)}`);
+        }
         throw new ProviderCallError(opts.id, 'transient', `network error calling ${opts.id}: ${String(err)}`);
       });
 
       if (!res.ok) throw classifyStatus(opts.id, res.status, await res.text().catch(() => ''));
 
       const data = (await res.json()) as {
-        choices?: Array<{ message?: { content?: string } }>;
+        choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
         usage?: { prompt_tokens?: number; completion_tokens?: number };
         model?: string;
       };
@@ -88,6 +94,8 @@ export function createOpenAiCompatProvider(opts: OpenAiCompatOpts): LlmProvider 
           promptTokens: data.usage?.prompt_tokens ?? 0,
           completionTokens: data.usage?.completion_tokens ?? 0,
         },
+        // D-103: `length` finish_reason means the output hit the max_tokens cap.
+        truncated: data.choices?.[0]?.finish_reason === 'length',
       };
     },
   };
