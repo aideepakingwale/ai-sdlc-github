@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     WORKFLOW_ENGINE: Literal["v1", "v2"] = "v2"
 
     CONTEXT_TOKEN_THRESHOLD: int = 4_000
+    # Max OUTPUT tokens for a phase agent's structured generation (D-95). The
+    # built-in phases (esp. Solution Architect) emit several large artifacts in one
+    # schema (HLD/ADR/DSL/JSON/diagram); the old 8192 default truncated them, so the
+    # JSON failed to parse and the stage produced nothing. Sonnet 4.x supports far
+    # more — raise this if a phase still truncates (watch cost/latency).
+    PHASE_MAX_TOKENS: int = 16_000
     BUILD_LOOP_MAX_ITERATIONS: int = 5
     BUILD_POLL_INTERVAL_MS: int = 30_000
     GITHUB_WEBHOOK_SECRET: str = "dev-webhook-secret"

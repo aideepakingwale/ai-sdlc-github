@@ -64,9 +64,9 @@ class AgentDeps:
     content: ContentStore
     monitor: Any  # BuildMonitor (typed loosely to avoid a cycle)
     settings: Settings
-    telemetry: Any = None # TelemetryService; optional so tests stay lean
-    canon: Any = None # CanonService — binding project rules
-    formworks: Any = None # FormworkService — output templates
+    telemetry: Any = None  # TelemetryService (D-35); optional so tests stay lean
+    canon: Any = None      # CanonService (D-38) — binding project rules
+    formworks: Any = None  # FormworkService (D-38) — output templates
 
 
 @dataclass
@@ -74,13 +74,13 @@ class PhaseAgentResult:
     summary: str
     new_artifacts: list[ContextArtifact]
     gate_status: PhaseStatus
-    # Deferred external-write tool calls captured during generation: these
+    # Deferred external-write tool calls captured during generation (D-67): these
     # are NOT executed until the phase's HITL gate is approved. Empty when
     # publish-on-approval is disabled or the phase makes no external writes.
     publish_actions: list[dict[str, Any]] = field(default_factory=list)
 
 
-# External, side-effecting WRITE tools. A stage that would create Jira
+# External, side-effecting WRITE tools (D-67). A stage that would create Jira
 # tickets, publish Confluence pages, or commit design/config docs to GitHub must
 # NOT do so during generation — those actions are queued and replayed only after
 # the gate is approved, by the approver. Keyed by TOOL NAME so it is
@@ -106,7 +106,7 @@ PENDING_URL_PREFIX = "pending://"
 def _deferred_stub(tool: str, args: dict[str, Any], n: int) -> dict[str, Any]:
     """A deterministic stand-in result for a deferred external write, carrying the
     keys/URLs the phase agent reads downstream. The `pending://` URL is a sentinel
-    the publisher matches to back-patch the real URL after approval."""
+    the publisher matches to back-patch the real URL after approval (D-67)."""
     token = f"{PENDING_URL_PREFIX}{tool}-{n}"
     if tool == "jira_create_epic":
         key = re.sub(r"[^A-Z0-9]", "", str(args.get("projectKey") or "PROJ").upper()) or "PROJ"
@@ -125,7 +125,7 @@ def _deferred_stub(tool: str, args: dict[str, Any], n: int) -> dict[str, Any]:
 
 
 async def _publish(deps: AgentDeps, emit: Emit, name: str, args: dict[str, Any]) -> dict[str, Any]:
-    """Route an external WRITE through the deferral gate. When a publish
+    """Route an external WRITE through the deferral gate (D-67). When a publish
     sink is active (generation, pre-gate), the call is queued and a deterministic
     stub is returned so generation completes without touching Jira/Confluence/
     GitHub. When no sink is active, it executes immediately (legacy path)."""
@@ -145,7 +145,7 @@ async def _save_artifact(
     url: str | None = None, exact: bool = False, ref_key: str | None = None,
     source_path: str | None = None,
 ) -> ContextArtifact:
-    # Output guardrail: mask secrets/PII before the body is persisted
+    # Output guardrail (D-34): mask secrets/PII before the body is persisted
     # anywhere (content store, DB, RAG index) — masks are audited.
     content, masked = sanitise_output(content)
     if masked:
@@ -154,7 +154,7 @@ async def _save_artifact(
             event="guardrail.artifact_masked", detail={"rules": masked, "type": type_, "title": title},
         )
 
-    # Persist the body to the content-store tier; DB keeps a pointer.
+    # Persist the body to the content-store tier (D-23); DB keeps a pointer.
     artefact_id = new_id()
     key = (
         source_key(state.project_id, state.current_phase, source_path)
@@ -162,7 +162,7 @@ async def _save_artifact(
         else artifact_key(state.project_id, state.current_phase, type_, artefact_id)
     )
     await deps.content.put(key, content)
-    # Deferred publish: a `pending://` URL is a sentinel kept in the DB row
+    # Deferred publish (D-67): a `pending://` URL is a sentinel kept in the DB row
     # so publication can back-patch the real external URL after approval; it is
     # NOT surfaced as a clickable link until then.
     pending = bool(url and url.startswith(PENDING_URL_PREFIX))
@@ -184,13 +184,13 @@ async def _save_artifact(
         exact=exact, content=content if exact else None,
         ref=ArtifactRef(url=ref_url, key=ref_key),
     )
-    await deps.rag.index_artifact(state.project_id, artefact_id, artifact) #
+    await deps.rag.index_artifact(state.project_id, artefact_id, artifact)  # D-19
     emit({"type": "artifact", "artifact": {"type": type_, "title": title, "url": url, "key": ref_key}})
     return artifact
 
 
 async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: str | None = None) -> BaseModel:
-    # Generation is driven by the stage's TEMPLATE; the stage's own
+    # Generation is driven by the stage's TEMPLATE (D-30); the stage's own
     # name/seq come from the workflow config.
     phase = get_phase(state.stage_template)
     label_name = state.stage_name or phase.name
@@ -208,7 +208,7 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
         emit({"type": "node", "node": "agent",
               "label": f"RAG: retrieved {len(snippets)} knowledge snippet(s) for grounding"})
 
-    # Project Canon + Output Formworks: human-authored, binding context.
+    # Project Canon + Output Formworks (D-38): human-authored, binding context.
     canon_block = ""
     if deps.canon is not None:
         canon_block = await deps.canon.render_block(state.project_id, state.stage_template)
@@ -222,7 +222,7 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
             emit({"type": "node", "node": "agent",
                   "label": "Formwork: shaping output to the project's approved templates"})
 
-    # Validation rework: the validation agent's modification instructions
+    # Validation rework (D-52): the validation agent's modification instructions
     # ride the same amend channel as reviewer feedback, so the phase agent fixes
     # the flagged defects while preserving what was already correct.
     amend_comments = state.amend_comments
@@ -253,7 +253,10 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
         tag=f"stage{state.current_phase}_template{state.stage_template}_agent",
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         schema=PHASE_SCHEMAS[state.stage_template],
-        model=state.model_overrides.get("generate") or None, # per-step model override
+        # D-95: big multi-artifact phases truncated at the 8192 default -> invalid JSON
+        # -> stage produced nothing. Use the configurable phase output budget.
+        max_tokens=getattr(deps.settings, "PHASE_MAX_TOKENS", 16_000),
+        model=state.model_overrides.get("generate") or None,  # per-step model override (D-68)
     )
     deps.audit.record(
         project_id=state.project_id, phase=state.current_phase, agent_role=phase.agent_persona,
@@ -273,7 +276,7 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
     return data
 
 
-# ---------------------------------------------------------------- Validation agent
+# ---------------------------------------------------------------- Validation agent (D-52)
 def _output_digest(out: BaseModel, *, limit: int = 3_000) -> str:
     """A compact, token-frugal digest of a generated phase output so the
     validation agent can judge it without re-sending the whole payload. Strings
@@ -356,7 +359,7 @@ async def _validate_output(
     deps: AgentDeps, state: AgentState, emit: Emit, out: BaseModel,
 ) -> ValidationVerdict:
     """The validation agent: deterministic syntax checks + an LLM judgement of the
-    output against the user's intent and the phase quality bar. Returns a
+    output against the user's intent and the phase quality bar (D-52). Returns a
     verdict; the caller decides whether to trigger a rework."""
     phase = get_phase(state.stage_template)
     syntactic = syntactic_issues(out.model_dump())
@@ -375,7 +378,7 @@ async def _validate_output(
         data, _ = await deps.llm.generate_json(
             intent="standard", tag=f"validation_stage{state.current_phase}",
             temperature=0, max_tokens=1024, schema=ValidationVerdict,
-            model=state.model_overrides.get("validate") or None, # per-step model override
+            model=state.model_overrides.get("validate") or None,  # per-step model override (D-68)
             messages=[
                 {"role": "system", "content": render_prompt("validate.system")},
                 {"role": "user", "content": render_prompt(
@@ -457,7 +460,7 @@ async def _persist_validation_feedback(
     deps: AgentDeps, state: AgentState, verdict: ValidationVerdict,
 ) -> None:
     """Surface the validation agent's verdict as quality signals on the stage so a
-    human sees what the auto-checker caught before sign-off. Best-effort:
+    human sees what the auto-checker caught before sign-off (D-57). Best-effort:
     the DB may not carry the table in lean test setups."""
     repl = getattr(deps.db, "replace_validation_feedback", None)
     if repl is None:
@@ -488,7 +491,7 @@ async def _generate_validated(deps: AgentDeps, state: AgentState, emit: Emit) ->
     """Generate a phase's output, then validate it against the user's intent and
     for syntactic correctness, re-invoking the phase agent with concrete
     modification instructions on failure — bounded by VALIDATION_MAX_REPAIRS so a
-    stubborn model can't loop. Best-effort: never blocks delivery."""
+    stubborn model can't loop (D-52). Best-effort: never blocks delivery."""
     out = await _generate(deps, state, emit)
     if not getattr(deps.settings, "VALIDATION_ENABLED", True):
         return out
@@ -522,7 +525,7 @@ async def _generate_validated(deps: AgentDeps, state: AgentState, emit: Emit) ->
     return out
 
 
-# ---------------------------------------------------------------- diagram synth fallback (/52)
+# ---------------------------------------------------------------- diagram synth fallback (D-51/52)
 def _diag_slug(name: str, taken: set[str]) -> str:
     base = re.sub(r"[^a-z0-9]+", "_", name.strip().lower()).strip("_") or "n"
     if base[0].isdigit():
@@ -560,7 +563,7 @@ def _guess_service(*hints: str) -> str:
 
 def _synth_architecture(components: list[Any], *, title: str, direction: str, deps_attr: str) -> CloudArchitecture | None:
     """Build a CloudArchitecture from a phase's component catalogue when the LLM
-    omits the explicit diagram spec ( robustness): one node per component,
+    omits the explicit diagram spec (D-51 robustness): one node per component,
     edges from each component's declared dependencies/collaborators. Returns None
     if there is nothing to draw."""
     if not components:
@@ -633,7 +636,7 @@ async def _tool(deps: AgentDeps, emit: Emit, name: str, args: dict[str, Any]) ->
     try:
         result = await deps.mcp.call(name, args)
     except Exception as err:
-        if deps.telemetry is not None: # tool span
+        if deps.telemetry is not None:  # tool span (D-35)
             await deps.telemetry.record(
                 kind="tool", tag=name, status="error", error=str(err),
                 latency_ms=int((time.perf_counter() - started) * 1000),
@@ -690,7 +693,7 @@ async def _save_architecture_svg(
     deps: AgentDeps, state: AgentState, emit: Emit, *, spec: Any, type_: str, title: str, summary: str,
 ) -> ContextArtifact | None:
     """Render a CloudArchitecture spec to a self-contained SVG (real AWS icons +
-    nested clusters) and save it as an artifact. Returns None when the spec
+    nested clusters, D-51) and save it as an artifact. Returns None when the spec
     is absent or the renderer is unavailable — generation continues either way."""
     if spec is None:
         return None
@@ -705,7 +708,7 @@ async def _save_architecture_svg(
 async def _save_architecture_drawio(
     deps: AgentDeps, state: AgentState, emit: Emit, *, spec: Any, title: str, summary: str,
 ) -> ContextArtifact | None:
-    """Editable draw.io derived DETERMINISTICALLY from the same
+    """Editable draw.io (D-69) derived DETERMINISTICALLY from the same
     CloudArchitecture spec that produced the SVG — so the architect gets a
     professional, fully editable diagram at NO extra model cost. Validated before
     saving; a spec-less or invalid result is skipped, generation continues."""
@@ -727,7 +730,7 @@ async def _save_architecture_drawio(
 
 
 def _hld_structured(out: Any) -> str:
-    """Append first-class architecture structure to the HLD narrative:
+    """Append first-class architecture structure to the HLD narrative (D-45):
     principles, component catalogue, design patterns and quantified NFRs."""
     parts: list[str] = []
     if out.architecturePrinciples:
@@ -750,7 +753,7 @@ def _hld_structured(out: Any) -> str:
 
 def _lld_structured(out: Any) -> str:
     """Append component responsibilities, the error taxonomy and concrete
-    resilience settings to the LLD narrative."""
+    resilience settings to the LLD narrative (D-45)."""
     parts: list[str] = []
     if out.components:
         parts += ["", "## Component responsibilities", "", "| Component | Responsibility | Collaborators |",
@@ -772,7 +775,7 @@ def _lld_structured(out: Any) -> str:
 
 def _test_strategy_structured(out: Any) -> str:
     """Append the test pyramid, risk-based priorities, entry/exit criteria and
-    defect SLAs to the test strategy."""
+    defect SLAs to the test strategy (D-50)."""
     parts: list[str] = []
     if out.testLevels:
         parts += ["", "## Test levels (pyramid)", "", "| Level | Scope | Coverage target | Tools |",
@@ -796,7 +799,7 @@ def _test_strategy_structured(out: Any) -> str:
 
 
 def _pipeline_design_markdown(out: Any) -> str:
-    """A CI/CD & operations design doc from the structured pipeline fields."""
+    """A CI/CD & operations design doc from the structured pipeline fields (D-50)."""
     parts = ["# CI/CD & Operations design", ""]
     if out.pipelineStages:
         parts += ["## Pipeline stages", "", "| Stage | Purpose | Gate | Tools |", "|---|---|---|---|"]
@@ -823,7 +826,7 @@ async def _run_phase1(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     story_count = 0
     feature_count = 0
 
-    # Project-specific Jira key: sanitise the model's choice (uppercase
+    # Project-specific Jira key (D-47): sanitise the model's choice (uppercase
     # alphanumerics, 2–6 chars); empty/invalid falls back to the connector
     # default. When the reviewer explicitly names a new identifier in their amend
     # feedback, honour it DETERMINISTICALLY — don't rely on the model to echo the
@@ -950,7 +953,7 @@ async def _run_phase2(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         deps, state, emit, type_="HLD_DIAGRAM", title="Architecture diagram (Mermaid)",
         content=out.mermaidArchitecture, summary="Rendered architecture diagram", exact=True,
     ))
-    # Professional AWS deployment diagram: real icons + nested clusters.
+    # Professional AWS deployment diagram (D-51): real icons + nested clusters.
     # If the model omitted the explicit spec, synthesise one from the component
     # catalogue so the HLD always carries a rendered architecture diagram.
     arch_spec = out.deploymentArchitecture or _synth_architecture(
@@ -962,7 +965,7 @@ async def _run_phase2(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     )
     if svg:
         artifacts.append(svg)
-    # Editable draw.io of the same topology — professional + fully editable.
+    # Editable draw.io of the same topology (D-69) — professional + fully editable.
     dio = await _save_architecture_drawio(
         deps, state, emit, spec=arch_spec, title="Deployment architecture (draw.io)",
         summary="Editable draw.io AWS deployment diagram",
@@ -974,7 +977,7 @@ async def _run_phase2(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         content=cloudcraft["cloudcraftJson"], url=commit["htmlUrl"], summary="Cloudcraft AWS topology JSON",
     ))
     for adr in out.adrs:
-        # Full ADR form: the rejected alternatives are what make it a
+        # Full ADR form (D-39): the rejected alternatives are what make it a
         # decision record rather than an assertion.
         options = (
             "\n\n## Options considered\n"
@@ -1037,7 +1040,7 @@ async def _run_phase3(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         content=out.lldMarkdown + _lld_structured(out),
         url=page["url"], summary=out.lldMarkdown[:300], exact=True,
     ))
-    # Professional component/deployment diagram. Fall back to synthesising
+    # Professional component/deployment diagram (D-51). Fall back to synthesising
     # from the component catalogue + collaborators when the model omits the spec,
     # so the LLD reliably ships a rendered component diagram.
     comp_spec = out.componentDiagram or _synth_architecture(
@@ -1049,7 +1052,7 @@ async def _run_phase3(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     )
     if svg:
         artifacts.append(svg)
-    # Editable draw.io of the component view — zero extra model cost.
+    # Editable draw.io of the component view (D-69) — zero extra model cost.
     dio = await _save_architecture_drawio(
         deps, state, emit, spec=comp_spec, title="Component diagram (draw.io)",
         summary="Editable draw.io component diagram",
@@ -1109,7 +1112,7 @@ async def _run_phase4(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
          "\n\n".join(t.model_dump_json(indent=2) for t in out.xrayTests),
          f"{len(xray_keys)} Xray tests: {', '.join(xray_keys)}", False),
         ("K6_SCRIPT", "k6 performance script", out.k6Script, "k6 load profile with thresholds", True),
-        # exact=True: the raw collection JSON must reach phase 6 for the newman run
+        # exact=True: the raw collection JSON must reach phase 6 for the newman run (D-36)
         ("POSTMAN_COLLECTION", "Postman collection", out.postmanCollection, "Postman API collection", True),
         ("RTM", "Requirements Traceability Matrix", out.rtmMarkdown, "RTM linking stories to tests", False),
     ]
@@ -1118,7 +1121,7 @@ async def _run_phase4(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
             deps, state, emit, type_=type_, title=title, content=content, summary=summary, exact=exact,
         ))
 
-    # SDLC toolchain: derive executable suites for every testing layer
+    # SDLC toolchain (D-36): derive executable suites for every testing layer
     # from the approved contract + stories — REST Assured (API), Playwright
     # (UI), JMeter + Locust (performance). k6 is already generated above.
     service = state.user_input[:60] or "Service"
@@ -1194,7 +1197,7 @@ async def _run_phase5(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         deps, state, emit, type_="GRAFANA_DASHBOARD", title="Grafana dashboard",
         content=out.grafanaDashboardJson, url=commit["htmlUrl"], summary="Service health dashboard JSON",
     ))
-    # Structured CI/CD & operations design: pipeline stages + gates,
+    # Structured CI/CD & operations design (D-50): pipeline stages + gates,
     # security gates, observability SLOs and rollout/rollback as a review doc.
     pipeline_design = _pipeline_design_markdown(out)
     if pipeline_design.strip() and pipeline_design != "# CI/CD & Operations design\n":
@@ -1208,9 +1211,9 @@ async def _run_phase5(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
             content=dockerfile.content, url=commit["htmlUrl"], summary=f"Container build for {dockerfile.path}",
         ))
 
-    # SDLC toolchain: shift-left security — Trivy scans the container
+    # SDLC toolchain (D-36): shift-left security — Trivy scans the container
     # image and Secrets Manager is verified to hold the pipeline's secrets
-    # (existence only; values never enter the pipeline).
+    # (existence only; values never enter the pipeline, D-34).
     trivy = await _tool(deps, emit, "trivy_scan_image", {
         "dockerfile": out.dockerfiles[0].content if out.dockerfiles else "FROM scratch",
         "imageTag": "app:candidate",
@@ -1242,7 +1245,7 @@ async def _run_phase6(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     out: Phase6Output = await _generate_validated(deps, state, emit)  # type: ignore[assignment]
     artifacts: list[ContextArtifact] = []
 
-    # Deterministic quality-gate config: the coverage + linter/formatter
+    # Deterministic quality-gate config (#3): the coverage + linter/formatter
     # config files are pure boilerplate parameterised by (stack, threshold), so
     # the platform writes them in code rather than spending model tokens on them —
     # and the coverage threshold is guaranteed to equal the configured gate. These
@@ -1288,7 +1291,7 @@ async def _run_phase6(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     emit({"type": "node", "node": "agent",
           "label": f"CI pipeline triggered (run {push['runId']}) — Build Recovery Loop engaged"})
 
-    # Surface the engineering reasoning in the PR body: the design/
+    # Surface the engineering reasoning in the PR body (D-45): the design/
     # patterns applied, the coding standards followed and the security controls
     # considered — so the reviewer sees the WHY, not just the diff.
     pr_body = out.prBody
@@ -1308,7 +1311,7 @@ async def _run_phase6(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         recovered = (f"recovered after {loop['iterations']} AI fix iteration(s)"
                      if loop["iterations"] > 0 else "passed first time")
 
-        # SDLC toolchain: post-CI verification battery — API tests
+        # SDLC toolchain (D-36): post-CI verification battery — API tests
         # (Postman/newman), UI tests (Playwright), performance (k6), security
         # (OWASP ZAP) and code quality (SonarQube) — folded into two reports.
         sections: list[str] = []
@@ -1371,7 +1374,7 @@ async def _run_phase6(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     )
 
 
-# ---------------------------------------------------------------- Custom phase (, template 7)
+# ---------------------------------------------------------------- Custom phase (D-74, template 7)
 async def _run_custom(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAgentResult:
     """Generic, PM-configured phase engine (workflow v2). Generates a professional
     Markdown deliverable for a phase type defined entirely by config — persona,
@@ -1390,7 +1393,7 @@ async def _run_custom(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         emit({"type": "node", "node": "compressor", "label": "Context compressed to fit token budget"})
 
     tools = state.custom_tools or []
-    # Dynamic persona/domain steering — applies to custom stages too.
+    # Dynamic persona/domain steering (#5) — applies to custom stages too.
     steering = resolve_steering(persona)
     profile = f"## Project profile\n{state.project_profile}\n\n" if state.project_profile else ""
     system = render_prompt("policy.responsible_ai") + "\n\n" + (f"{steering}\n\n" if steering else "") + profile + render_prompt(
@@ -1423,7 +1426,7 @@ async def _run_custom(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
                                               "toolCalls": [c.tool for c in data.toolCalls]},
     )
 
-    # One artifact PER declared output type: use the model's matching
+    # One artifact PER declared output type (D-77): use the model's matching
     # deliverable, falling back to the first produced (or a placeholder) so every
     # declared output is materialised and typed for downstream stages.
     by_output = {d.output: d.content for d in data.deliverables if d.content.strip()}
@@ -1437,7 +1440,7 @@ async def _run_custom(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
             content=body, summary=body[:300], exact=True,
         ))
 
-    # Tool plan: schedule ONLY declared tools, routed through the
+    # Tool plan (D-77): schedule ONLY declared tools, routed through the D-67
     # deferral — queued now, executed on gate approval by the approver (safe: no
     # external side-effects before sign-off). Undeclared/hallucinated tools ignored.
     declared = set(tools)
@@ -1459,7 +1462,7 @@ async def _run_custom(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
 
 _RUNNERS: dict[int, Callable[[AgentDeps, AgentState, Emit], Awaitable[PhaseAgentResult]]] = {
     1: _run_phase1, 2: _run_phase2, 3: _run_phase3, 4: _run_phase4, 5: _run_phase5, 6: _run_phase6,
-    7: _run_custom, # data-driven custom phase
+    7: _run_custom,  # data-driven custom phase (D-74)
 }
 
 # MCP tools each template drives, in call order — the run visualizer shows these
@@ -1477,13 +1480,13 @@ TEMPLATE_TOOLS: dict[int, list[str]] = {
 
 
 async def run_phase_agent(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAgentResult:
-    # The stage's TEMPLATE picks the generation engine; the runtime slot
+    # The stage's TEMPLATE picks the generation engine (D-30); the runtime slot
     # (current_phase = workflow seq) only labels where results are recorded.
     runner = _RUNNERS.get(state.stage_template)
     if not runner:
         raise SdlcError("VALIDATION_FAILED", f"No generation engine for template {state.stage_template}")
 
-    # Governance: when publish-on-approval is enabled, activate a per-run
+    # Governance (D-67): when publish-on-approval is enabled, activate a per-run
     # sink so external writes are QUEUED, not executed. The collected actions ride
     # back on the result for the caller to persist against the phase; they replay
     # only after the gate is approved. Disabled → sink stays None → legacy path.
