@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from ..domain.errors import SdlcError
 from ..services import guardrails as guardrails_svc
 from ..services import prompt_library
-from ..services.chat import is_stage_running, sse_stream, sse_stream_bg
+from ..services.chat import sse_stream
 from ..domain.models import (
     AddMemberRequest,
     ArtefactUpdate,
@@ -402,24 +402,51 @@ async def trigger_stage_plan(
         raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
 
     sse_headers = {"cache-control": "no-cache, no-transform", "x-accel-buffering": "no"}
-    key = f"{project_id}:{phase_id}"
-
-    # D-97: reject a duplicate trigger while this stage is already generating in the
-    # background (e.g. double-click, or a re-open after navigating away).
-    if is_stage_running(key):
-        async def busy(emit):  # noqa: ANN001
-            emit({"type": "error", "code": "ALREADY_RUNNING",
-                  "message": "This stage is already generating in the background — "
-                             "it will finish on its own; refresh to see the result."})
-        return StreamingResponse(sse_stream(busy), media_type="text/event-stream", headers=sse_headers)
 
     async def handler(emit):  # noqa: ANN001
         await container.chat.trigger_stage(project_id=project_id, phase=phase_id, user=user, emit=emit)
 
-    # Detached run: navigating away / closing the tab no longer cancels generation.
-    return StreamingResponse(
-        sse_stream_bg(handler, key), media_type="text/event-stream", headers=sse_headers,
+    # D-97 L2: start a DURABLE background job (Redis lock = atomic dup-guard, job row
+    # = restart-recoverable, progress buffered in Redis). None => already running.
+    job_id = await container.gen_jobs.start(
+        project_id=project_id, phase=phase_id, started_by=user.email, handler=handler,
     )
+    if job_id is None:
+        async def busy(emit):  # noqa: ANN001
+            emit({"type": "error", "code": "ALREADY_RUNNING",
+                  "message": "This stage is already generating — refresh to watch it or see the result."})
+        return StreamingResponse(sse_stream(busy), media_type="text/event-stream", headers=sse_headers)
+
+    # Stream the run's progress from Redis; disconnecting never cancels the run.
+    return StreamingResponse(
+        container.gen_jobs.stream(project_id, phase_id), media_type="text/event-stream", headers=sse_headers,
+    )
+
+
+@router.get("/api/projects/{project_id}/phase/{phase_id}/stream")
+async def stream_stage_progress(
+    project_id: str, phase_id: int,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> StreamingResponse:
+    """Reconnect to a running (or just-finished) stage's live progress (D-97 L2).
+    Replays buffered events then live-tails — lets the UI resume after a refresh or
+    navigating away, and lets a second viewer watch."""
+    await container.authz.assert_project_access(project_id, user)
+    return StreamingResponse(
+        container.gen_jobs.stream(project_id, phase_id), media_type="text/event-stream",
+        headers={"cache-control": "no-cache, no-transform", "x-accel-buffering": "no"},
+    )
+
+
+@router.get("/api/projects/{project_id}/phase/{phase_id}/job")
+async def stage_job_status(
+    project_id: str, phase_id: int,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Whether a generation job is running for this stage (so the UI can auto-attach
+    to the live stream on open) plus the latest job's status (D-97 L2)."""
+    await container.authz.assert_project_access(project_id, user)
+    return await container.gen_jobs.latest(project_id, phase_id)
 
 
 # ------------------------------------------------------------------ gates

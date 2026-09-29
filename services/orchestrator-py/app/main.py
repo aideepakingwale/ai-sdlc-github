@@ -132,6 +132,14 @@ async def lifespan(app: FastAPI):
     container.telemetry = telemetry
     container.extras["publisher"] = publisher
     container.canon, container.formworks = canon, formworks
+    # Durable background stage generation (D-97 L2): jobs survive disconnects, are
+    # recorded across restarts, and stream reconnectable progress via Redis.
+    from .services.generation_jobs import GenerationJobs
+
+    container.gen_jobs = GenerationJobs(db, redis)
+    _reconciled = await container.gen_jobs.reconcile()
+    if _reconciled:
+        log.info("reconciled %s stale generation job(s) on boot", _reconciled)
 
     # D-91/D-92: mirror persisted LLM settings to Redis so ai-client picks them up
     # after a restart (Redis is the cross-service channel).

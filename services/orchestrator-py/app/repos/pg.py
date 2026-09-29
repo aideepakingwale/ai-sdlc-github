@@ -119,6 +119,40 @@ class Database:
         )
         return {r["key"]: r["value"] for r in rows}
 
+    # ------------------------------------------------------------ generation jobs (D-97 L2)
+    async def create_generation_job(self, job_id: str, project_id: str, phase: int, started_by: str | None) -> None:
+        assert self.pool
+        await self.pool.execute(
+            "INSERT INTO generation_jobs (id, project_id, phase, status, started_by) "
+            "VALUES ($1, $2, $3, 'running', $4)",
+            job_id, project_id, phase, started_by,
+        )
+
+    async def finish_generation_job(self, job_id: str, status: str, error: str | None = None) -> None:
+        assert self.pool
+        await self.pool.execute(
+            "UPDATE generation_jobs SET status=$2, error=$3, updated_at=now() WHERE id=$1",
+            job_id, status, error,
+        )
+
+    async def latest_generation_job(self, project_id: str, phase: int) -> asyncpg.Record | None:
+        assert self.pool
+        return await self.pool.fetchrow(
+            "SELECT * FROM generation_jobs WHERE project_id=$1 AND phase=$2 "
+            "ORDER BY created_at DESC LIMIT 1",
+            project_id, phase,
+        )
+
+    async def fail_stale_generation_jobs(self) -> int:
+        """On boot, any job still 'running' belongs to a dead process — fail it."""
+        assert self.pool
+        rows = await self.pool.fetch(
+            "UPDATE generation_jobs SET status='failed', "
+            "error=COALESCE(error, 'orchestrator restarted mid-run'), updated_at=now() "
+            "WHERE status='running' RETURNING id"
+        )
+        return len(rows)
+
     # ------------------------------------------------------------ projects & sessions
     async def create_project(
         self, *, name: str, created_by: str, tech_stack: str = "Node.js + TypeScript",
