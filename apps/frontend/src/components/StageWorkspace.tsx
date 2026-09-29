@@ -205,23 +205,32 @@ export default function StageWorkspace({
   // away never cancels it; the progress stream is just a viewer.
   async function triggerPlan() {
     if (streaming || !plan?.canEdit) return;
+    // D-100: flip to the "Generating…" view SYNCHRONOUSLY, before the enqueue
+    // round-trips, so the click is never a dead no-op. Without this the two awaits
+    // below (save overlay + enqueue) leave the plan sitting unchanged for a beat,
+    // then a flash of the empty "not started" composer — which reads as "nothing
+    // happened / no artifacts". beginStream() also guards re-clicks (streaming=true).
+    beginStream();
+    pushEvent({ type: 'node', node: 'queue', label: 'Starting the run…' } as never);
     // persist the latest overlay first, then enqueue the reviewed run
     try { await api.put(`/api/projects/${projectId}/phase/${selectedSeq}/plan`, overlayBody()); } catch { /* proceed */ }
     try {
       await api.post(`/api/projects/${projectId}/phase/${selectedSeq}/plan/trigger`, {});
     } catch (err) {
+      endStream();
       window.alert(err instanceof Error ? err.message : 'Could not start generation');
       return;
     }
     resetComposer(); // the run is queued; clear the composer
-    beginStream();
     try {
       await streamStageProgress(projectId, selectedSeq, pushEvent);
     } finally {
+      // Refresh the stage status BEFORE dropping the streaming view, so it flips
+      // straight from "Generating…" to "pending review" with no not-started flash.
+      try { await qc.refetchQueries({ queryKey: ['flow', projectId] }); } catch { /* ignore */ }
       endStream();
       void qc.invalidateQueries({ queryKey: ['project', projectId] });
       void qc.invalidateQueries({ queryKey: ['artefacts', projectId] });
-      void qc.invalidateQueries({ queryKey: ['flow', projectId] });
       void qc.invalidateQueries({ queryKey: ['phase', projectId] });
     }
   }
