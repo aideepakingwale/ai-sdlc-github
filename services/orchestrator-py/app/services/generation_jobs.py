@@ -25,6 +25,8 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any, Awaitable, Callable
 
+from redis import exceptions as redis_exceptions
+
 from ..domain.errors import SdlcError
 
 log = logging.getLogger("generation_jobs")
@@ -138,7 +140,14 @@ class GenerationJobs:
                 item = await self._redis.blpop(_QUEUE_KEY, timeout=5)
             except asyncio.CancelledError:
                 raise
-            except Exception as err:  # noqa: BLE001 — transient Redis hiccup
+            except redis_exceptions.TimeoutError:
+                # Benign: the socket read timed out at the blocking window with no
+                # job queued (redis-py raises rather than returning nil when the
+                # client has a socket_timeout). Not an error — just loop and wait
+                # again. An actually-queued item returns immediately, well within
+                # the window, so this never delays real pickups.
+                continue
+            except Exception as err:  # noqa: BLE001 — real Redis hiccup (down/conn reset)
                 log.warning("worker %s blpop error: %s", wid, err)
                 await asyncio.sleep(1)
                 continue
