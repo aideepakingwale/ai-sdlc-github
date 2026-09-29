@@ -75,17 +75,23 @@ export function createBedrockProvider(opts: {
         });
       if (messages.length === 0) messages.push({ role: 'user', content: '(no user input)' });
 
-      const timeout = AbortSignal.timeout(opts.timeoutMs ?? 120_000);
+      // D-96: large enterprise artifacts can take minutes to generate. Stream the
+      // response so tokens flow continuously (no idle-timeout resets, no aborts
+      // mid-generation) and allow a generous overall ceiling. `.finalMessage()`
+      // still returns the complete assembled Message.
+      const timeout = AbortSignal.timeout(opts.timeoutMs ?? 600_000);
       try {
-        const res = await client.messages.create(
-          {
-            model: modelId,
-            max_tokens: req.maxTokens,
-            ...(system ? { system } : {}),
-            messages,
-          },
-          { signal: AbortSignal.any([signal, timeout]) },
-        );
+        const res = await client.messages
+          .stream(
+            {
+              model: modelId,
+              max_tokens: req.maxTokens,
+              ...(system ? { system } : {}),
+              messages,
+            },
+            { signal: AbortSignal.any([signal, timeout]) },
+          )
+          .finalMessage();
         const content = res.content
           .filter((b): b is Extract<(typeof res.content)[number], { type: 'text' }> => b.type === 'text')
           .map((b) => b.text)
