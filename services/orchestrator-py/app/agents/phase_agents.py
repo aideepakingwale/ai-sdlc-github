@@ -12,7 +12,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal, Union, get_args, get_origin
 
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, TypeAdapter, create_model
 
 from ..config import Settings
 from ..domain.errors import SdlcError
@@ -52,6 +52,9 @@ from .schemas import (
 log = logging.getLogger("agents")
 
 Emit = Callable[[dict[str, Any]], None]
+
+# Sentinel: "no cached value to reuse for this part" (D-107 step 2 retrigger).
+_NO_REUSE = object()
 
 
 async def _generate_phase_split(
@@ -94,45 +97,85 @@ async def _generate_phase_split(
     results: list[LlmResult] = []
     failures: dict[str, str] = {}
 
+    # Per-part RETRIGGER (D-107 step 2): when retrigger_fields is set, only those
+    # fields are (re)generated; every other field is REUSED from its cached value
+    # (generation_parts), so a failed part can be retried as its own cheap request
+    # while the rest are untouched. On a normal run every field is generated.
+    retrigger = set(getattr(state, "retrigger_fields", []) or [])
+    cache: dict[str, dict] = {}
+    if retrigger:
+        try:
+            cache = {p["field"]: p for p in await deps.db.list_generation_parts(state.project_id, state.current_phase)}
+        except Exception:  # noqa: BLE001 — no cache → just regenerate
+            cache = {}
+
+    def reuse_value(fn: str) -> Any:
+        """Cached value to reuse for `fn` (retrigger of a DIFFERENT field), or _NO_REUSE."""
+        if not retrigger or fn in retrigger:
+            return _NO_REUSE
+        p = cache.get(fn)
+        if not p or not p.get("value_json"):
+            return _NO_REUSE
+        try:
+            return TypeAdapter(schema.model_fields[fn].annotation).validate_json(p["value_json"])
+        except Exception:  # noqa: BLE001
+            return _NO_REUSE
+
+    reused_status: dict[str, str] = {}
+    to_gen: list[str] = []
+    for fn in fields:
+        rv = reuse_value(fn)
+        if rv is _NO_REUSE:
+            to_gen.append(fn)
+        else:
+            values[fn] = rv
+            reused_status[fn] = cache[fn].get("status", "done")
+            if reused_status[fn] == "failed":
+                failures[fn] = cache[fn].get("error") or "still failed (not retriggered)"
+            emit({"type": "node", "node": "agent", "label": f"↺ {fn} reused from last run"})
+
     # Anchor first → warms the cached system prefix the parallel calls reuse. A failed
     # anchor is non-fatal (the rest just don't get the cache benefit).
-    anchor = fields[0]
-    emit({"type": "node", "node": "agent", "label": f"Generating {anchor} (anchor)…"})
-    try:
-        n, v, r = await gen_field(anchor)
-        values[n] = v
-        results.append(r)
-        emit({"type": "node", "node": "agent", "label": f"✓ {anchor} generated"})
-    except Exception as err:  # noqa: BLE001
-        failures[anchor] = str(err)
-        emit({"type": "node", "node": "guardrail", "status": "error", "label": f"✗ {anchor} failed — {str(err)[:160]}"})
+    if to_gen:
+        anchor = to_gen[0]
+        emit({"type": "node", "node": "agent", "label": f"Generating {anchor} (anchor)…"})
+        try:
+            n, v, r = await gen_field(anchor)
+            values[n] = v
+            results.append(r)
+            emit({"type": "node", "node": "agent", "label": f"✓ {anchor} generated"})
+        except Exception as err:  # noqa: BLE001
+            failures[anchor] = str(err)
+            emit({"type": "node", "node": "guardrail", "status": "error", "label": f"✗ {anchor} failed — {str(err)[:160]}"})
 
-    rest = fields[1:]
-    if rest:
-        emit({"type": "node", "node": "agent", "label": f"Generating {len(rest)} more artifact(s) in parallel…"})
-        sem = asyncio.Semaphore(max(1, getattr(deps.settings, "PER_ARTIFACT_MAX_PARALLEL", 4)))
+        rest = to_gen[1:]
+        if rest:
+            emit({"type": "node", "node": "agent", "label": f"Generating {len(rest)} more artifact(s) in parallel…"})
+            sem = asyncio.Semaphore(max(1, getattr(deps.settings, "PER_ARTIFACT_MAX_PARALLEL", 4)))
 
-        async def bounded(fn: str) -> tuple[str, str, Any]:
-            async with sem:
-                try:
-                    n, v, r = await gen_field(fn)
-                    emit({"type": "node", "node": "agent", "label": f"✓ {fn} generated"})
-                    return ("ok", fn, (v, r))
-                except Exception as err:  # noqa: BLE001 — one part's failure must not sink the rest
-                    emit({"type": "node", "node": "guardrail", "status": "error",
-                          "label": f"✗ {fn} failed — {str(err)[:160]}"})
-                    return ("err", fn, err)
+            async def bounded(fn: str) -> tuple[str, str, Any]:
+                async with sem:
+                    try:
+                        n, v, r = await gen_field(fn)
+                        emit({"type": "node", "node": "agent", "label": f"✓ {fn} generated"})
+                        return ("ok", fn, (v, r))
+                    except Exception as err:  # noqa: BLE001 — one part's failure must not sink the rest
+                        emit({"type": "node", "node": "guardrail", "status": "error",
+                              "label": f"✗ {fn} failed — {str(err)[:160]}"})
+                        return ("err", fn, err)
 
-        for outcome, fn, payload in await asyncio.gather(*(bounded(f) for f in rest)):
-            if outcome == "ok":
-                val, res = payload
-                values[fn] = val
-                results.append(res)
-            else:
-                failures[fn] = str(payload)
+            for outcome, fn, payload in await asyncio.gather(*(bounded(f) for f in rest)):
+                if outcome == "ok":
+                    val, res = payload
+                    values[fn] = val
+                    results.append(res)
+                else:
+                    failures[fn] = str(payload)
 
-    if not values:
-        # Nothing succeeded → let the caller fall back to the combined call.
+    # Success = a field that has a value AND is not a (reused-still-failed / just-failed) one.
+    succeeded = {fn for fn in values if fn not in failures}
+    if not succeeded:
+        # Nothing usable → let the caller fall back to the combined call.
         raise SdlcError("PROVIDER_ERROR", f"per-artifact split produced no parts ({len(failures)} failed)")
 
     # Fill each failed/missing field with a typed, failure-marked placeholder so the
@@ -143,6 +186,22 @@ async def _generate_phase_split(
             values[fn] = _failed_placeholder(schema, fn, failures.get(fn, "not generated"))
 
     data = schema.model_validate(values)
+
+    # Persist per-part status + cached value (D-107 step 2): drives the UI checklist
+    # and lets a later retrigger reuse the parts. Best-effort — never fails the run.
+    for fn in fields:
+        status = "failed" if fn in failures else "done"
+        try:
+            vj = TypeAdapter(schema.model_fields[fn].annotation).dump_json(values[fn]).decode()
+        except Exception:  # noqa: BLE001
+            vj = None
+        try:
+            await deps.db.upsert_generation_part(
+                project_id=state.project_id, phase=state.current_phase, field=fn,
+                status=status, error=failures.get(fn), value_json=vj,
+            )
+        except Exception:  # noqa: BLE001 — status is best-effort
+            log.warning("generation part upsert failed for %s", fn, exc_info=True)
     if failures:
         emit({"type": "node", "node": "guardrail", "status": "error",
               "label": f"⚠ {len(failures)} part(s) failed: {', '.join(failures)}. "

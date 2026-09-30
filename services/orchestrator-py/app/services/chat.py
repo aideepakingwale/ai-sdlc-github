@@ -735,9 +735,23 @@ class ChatService:
         if not session:
             raise SdlcError("NOT_FOUND", "Project has no session")
 
+        # Per-part RETRIGGER target (D-107 step 2): the retrigger endpoint stashes the
+        # field(s) to regenerate in Redis; consume it here. A retrigger regenerates only
+        # those parts (reusing the rest) and is allowed while the stage is PENDING_REVIEW
+        # (that is exactly when a reviewer retries a failed part).
+        retrigger_fields: list[str] = []
+        try:
+            _rk = f"sdlc:retrigger:{project_id}:{phase}"
+            _raw = await self._redis.get(_rk)
+            if _raw:
+                await self._redis.delete(_rk)
+                retrigger_fields = list(json.loads(_raw.decode() if isinstance(_raw, (bytes, bytearray)) else _raw))
+        except Exception:  # noqa: BLE001
+            retrigger_fields = []
+
         states = {s["SK"]: s for s in await self._dynamo.list_phase_states(project_id)}
         status = (states.get(f"PHASE#{phase}") or {}).get("status", "NOT_STARTED")
-        if status in ("APPROVED", "PENDING_REVIEW"):
+        if status == "APPROVED" or (status == "PENDING_REVIEW" and not retrigger_fields):
             raise SdlcError("GATE_CONFLICT", f"Stage '{stage['name']}' is {status}; review the current generation before re-triggering")
         by_key = {s["key"]: s for s in wf["stages"]}
         # A stage runs once its declared dependencies are approved. An entry stage
@@ -802,7 +816,9 @@ class ChatService:
             project_profile=self._project_profile(project),
             has_codebase=(await self._db.count_codebase_files(project_id)) > 0, extra_context=extra_context,
             model_overrides=self._model_overrides_from(self._step_overrides(row)),  # per-step model (D-68)
-            per_artifact=await self._per_artifact_enabled(),  # runtime split toggle (D-106)
+            # Retrigger implies the split (parts only exist under it); force it on then.
+            per_artifact=(await self._per_artifact_enabled()) or bool(retrigger_fields),  # D-106
+            retrigger_fields=retrigger_fields,  # D-107 step 2: regenerate only these parts
             **self._custom_fields(stage),  # custom phase config (D-74)
         )
         await self._dynamo.put_phase_state(project_id=project_id, phase=phase, status="IN_PROGRESS", reviewer_role=stage["reviewerRole"])

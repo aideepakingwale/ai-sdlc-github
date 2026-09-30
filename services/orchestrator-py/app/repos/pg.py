@@ -837,6 +837,32 @@ class Database:
         row = await self.pool.fetchrow("SELECT * FROM llm_traces WHERE id=$1", trace_id)
         return dict(row) if row else None
 
+    # ---- per-artifact generation parts (D-107 step 2) -------------------------
+    async def upsert_generation_part(
+        self, *, project_id: str, phase: int, field: str, status: str,
+        error: str | None, value_json: str | None,
+    ) -> None:
+        assert self.pool
+        await self.pool.execute(
+            """
+            INSERT INTO generation_parts (project_id, phase, field, status, error, value_json, updated_at)
+            VALUES ($1,$2,$3,$4,$5,$6, now())
+            ON CONFLICT (project_id, phase, field) DO UPDATE
+              SET status=EXCLUDED.status, error=EXCLUDED.error,
+                  value_json=EXCLUDED.value_json, updated_at=now()
+            """,
+            project_id, phase, field, status, (error or None), value_json,
+        )
+
+    async def list_generation_parts(self, project_id: str, phase: int) -> list[dict]:
+        assert self.pool
+        rows = await self.pool.fetch(
+            "SELECT field, status, error, value_json, updated_at FROM generation_parts "
+            "WHERE project_id=$1 AND phase=$2 ORDER BY field",
+            project_id, phase,
+        )
+        return [dict(r) for r in rows]
+
     async def obs_summary(self, days: int) -> dict:
         assert self.pool
         totals = await self.pool.fetchrow(

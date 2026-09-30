@@ -131,6 +131,17 @@ export default function StageWorkspace({
   });
   const formworks = formworksQ.data?.formworks ?? [];
 
+  // D-107 step 2: per-artifact-part status (✓/✗) for this stage, with per-part retrigger.
+  const partsQ = useQuery({
+    queryKey: ['parts', projectId, selectedSeq],
+    queryFn: () =>
+      api.get<{ parts: Array<{ field: string; status: string; error: string | null; updatedAt: string }> }>(
+        `/api/projects/${projectId}/phase/${selectedSeq}/parts`,
+      ),
+    enabled: Boolean(projectId),
+  });
+  const parts = partsQ.data?.parts ?? [];
+
   // Reset the compose box and curated selection when the user switches stages,
   // so one stage's draft never leaks into another.
   useEffect(() => {
@@ -241,6 +252,33 @@ export default function StageWorkspace({
       endStream();
       void qc.invalidateQueries({ queryKey: ['project', projectId] });
       void qc.invalidateQueries({ queryKey: ['artefacts', projectId] });
+      void qc.invalidateQueries({ queryKey: ['flow', projectId] });
+      void qc.invalidateQueries({ queryKey: ['phase', projectId] });
+      void qc.invalidateQueries({ queryKey: ['parts', projectId, selectedSeq] });  // D-107 step 2
+    }
+  }
+
+  // D-107 step 2: regenerate ONE failed part and merge it. Enqueues a run that
+  // regenerates only this part (reusing the cached rest), then watches progress.
+  async function retriggerPart(field: string) {
+    if (streaming) return;
+    beginStream();
+    pushEvent({ type: 'node', node: 'queue', label: `Retriggering ${field}…` } as never);
+    try {
+      await api.post(`/api/projects/${projectId}/phase/${selectedSeq}/parts/${encodeURIComponent(field)}/retrigger`, {});
+    } catch (err) {
+      endStream();
+      window.alert(err instanceof Error ? err.message : 'Could not retrigger this part');
+      return;
+    }
+    try {
+      await streamStageProgress(projectId, selectedSeq, pushEvent);
+    } finally {
+      try { await qc.refetchQueries({ queryKey: ['flow', projectId] }); } catch { /* ignore */ }
+      endStream();
+      void qc.invalidateQueries({ queryKey: ['parts', projectId, selectedSeq] });
+      void qc.invalidateQueries({ queryKey: ['artefacts', projectId] });
+      void qc.invalidateQueries({ queryKey: ['project', projectId] });
       void qc.invalidateQueries({ queryKey: ['phase', projectId] });
     }
   }
@@ -270,6 +308,7 @@ export default function StageWorkspace({
           void qc.invalidateQueries({ queryKey: ['artefacts', projectId] });
           void qc.invalidateQueries({ queryKey: ['project', projectId] });
           void qc.invalidateQueries({ queryKey: ['phase', projectId] });
+          void qc.invalidateQueries({ queryKey: ['parts', projectId, selectedSeq] });  // D-107 step 2
         }
       } catch {
         /* no running job / not reachable — nothing to resume */
@@ -756,6 +795,44 @@ export default function StageWorkspace({
               Boolean(pendingGate && pendingGate.phase === selectedSeq && pendingGate.canReview)
             }
           />
+        )}
+
+        {/* ---- generation parts (D-107 step 2): per-part ✓/✗ + retrigger ---- */}
+        {parts.length > 0 && (
+          <section>
+            <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Generation parts ({parts.filter((p) => p.status === 'done').length}/{parts.length})
+              {parts.some((p) => p.status === 'failed') && (
+                <span className="ml-2 rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-semibold text-red-600">
+                  {parts.filter((p) => p.status === 'failed').length} failed
+                </span>
+              )}
+            </div>
+            <div className="space-y-1">
+              {parts.map((p) => (
+                <div key={p.field} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs">
+                  <span className={p.status === 'done' ? 'text-emerald-600' : 'text-red-600'}>
+                    {p.status === 'done' ? '✓' : '✗'}
+                  </span>
+                  <span className="font-mono text-slate-700">{p.field}</span>
+                  {p.status === 'failed' && p.error && (
+                    <span className="min-w-0 flex-1 truncate text-slate-400" title={p.error}>{p.error}</span>
+                  )}
+                  {p.status === 'failed' && (
+                    <button
+                      type="button"
+                      onClick={() => retriggerPart(p.field)}
+                      disabled={streaming}
+                      className="ml-auto shrink-0 rounded border border-brand-300 bg-brand-50 px-2 py-0.5 text-[11px] font-semibold text-brand-700 hover:bg-brand-100 disabled:opacity-40"
+                      title="Regenerate just this part and merge it"
+                    >
+                      ↺ Retrigger
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
         )}
 
         {/* ---- outputs ---- */}

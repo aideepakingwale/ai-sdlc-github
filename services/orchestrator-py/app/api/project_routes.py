@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac as hmac_mod
+import json
 from typing import Literal
 
 from pydantic import BaseModel
@@ -401,6 +402,41 @@ async def trigger_stage_plan(
     is already queued/running). The result goes to gate review when it completes."""
     if not 1 <= phase_id <= 12:
         raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+    return await container.gen_jobs.enqueue(project_id, phase_id, user.email)
+
+
+@router.get("/api/projects/{project_id}/phase/{phase_id}/parts")
+async def get_generation_parts(
+    project_id: str, phase_id: int,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Per-artifact-part status for a stage (D-107 step 2): one entry per top-level
+    output with done/failed + error, powering the UI checklist and per-part retrigger.
+    Empty unless the stage was generated with the per-artifact split."""
+    await container.authz.assert_project_access(project_id, user)
+    parts = await container.db.list_generation_parts(project_id, phase_id)
+    return {
+        "parts": [
+            {"field": p["field"], "status": p["status"], "error": p["error"],
+             "updatedAt": p["updated_at"].isoformat()}
+            for p in parts
+        ]
+    }
+
+
+@router.post("/api/projects/{project_id}/phase/{phase_id}/parts/{field}/retrigger")
+async def retrigger_generation_part(
+    project_id: str, phase_id: int, field: str,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Regenerate ONE failed part and merge it (D-107 step 2). Stashes the target part
+    for trigger_stage to consume, then enqueues a stage run that regenerates only this
+    part (reusing the cached rest) and re-persists the artifacts as new versions. The
+    stage's write-permission is enforced in trigger_stage. Returns {jobId, status}."""
+    if not 1 <= phase_id <= 12:
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+    await container.authz.assert_project_access(project_id, user)
+    await container.redis.set(f"sdlc:retrigger:{project_id}:{phase_id}", json.dumps([field]), ex=300)
     return await container.gen_jobs.enqueue(project_id, phase_id, user.email)
 
 
