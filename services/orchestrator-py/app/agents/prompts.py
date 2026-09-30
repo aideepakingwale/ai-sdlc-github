@@ -1,7 +1,7 @@
 """Phase-agent prompt construction. Every prompt fragment comes from the
-central prompt library — this module only assembles them. The
-`#mock:phaseN` directive drives the deterministic mock LLM offline;
-real providers ignore it. RAG snippets are injected between persona and
+central prompt library (D-34) — this module only assembles them. The
+`#mock:phaseN` directive drives the deterministic mock LLM offline (D-06);
+real providers ignore it. RAG snippets (D-19) are injected between persona and
 context so agents ground decisions in enterprise standards + previously
 approved artifacts."""
 
@@ -27,22 +27,22 @@ PHASE_JSON_SHAPES: dict[int, str] = {
        'C4 views, interfaces, data + security architecture with a threat table, capacity/cost, '
        'resilience, DR, risks, traceability)",'
        '"architecturePrinciples":["e.g. Stateless services; fail closed on auth; ..."],'
-       '"components":[{"name":"API Service","responsibility":"...","technology":"ECS Fargate",'
-       '"dependsOn":["Aurora","SQS"]}],'
+       '"components":[{"name":"API Service","responsibility":"...","technology":"the target platform\'s compute (container/serverless/VM)",'
+       '"dependsOn":["Database","Queue"]}],'
        '"designPatterns":[{"name":"e.g. CQRS / Circuit Breaker / Outbox","appliedTo":"...","rationale":"..."}],'
        '"qualityAttributes":[{"id":"NFR-1","attribute":"Availability","target":"99.9%","tactic":"Multi-AZ + health checks"}],'
-       '"deploymentArchitecture":{"title":"AWS deployment","direction":"TB",'
-       '"clusters":[{"id":"vpc","label":"VPC","parent":""},{"id":"az_a","label":"AZ eu-west-2a","parent":"vpc"},'
-       '{"id":"pub_a","label":"public-subnet-a","parent":"az_a"},{"id":"priv_a","label":"private-subnet-a","parent":"az_a"}],'
+       '"deploymentArchitecture":{"title":"Deployment architecture (use the confirmed target platform)","direction":"TB",'
+       '"clusters":[{"id":"net","label":"Network","parent":""},{"id":"zone_a","label":"Zone A","parent":"net"},'
+       '{"id":"pub_a","label":"public-subnet-a","parent":"zone_a"},{"id":"priv_a","label":"private-subnet-a","parent":"zone_a"}],'
        '"nodes":[{"id":"user","label":"Customer","service":"user","group":""},'
-       '{"id":"cf","label":"CloudFront","service":"cloudfront","group":""},'
-       '{"id":"alb","label":"ALB","service":"alb","group":"pub_a"},'
-       '{"id":"svc","label":"API Service","service":"fargate","group":"priv_a"},'
-       '{"id":"db","label":"Aurora","service":"aurora","group":"priv_a"}],'
-       '"edges":[{"fromId":"user","toId":"cf","label":"HTTPS"},{"fromId":"cf","toId":"alb","label":""},'
-       '{"fromId":"alb","toId":"svc","label":""},{"fromId":"svc","toId":"db","label":"SQL"}]},'
+       '{"id":"cdn","label":"CDN","service":"cdn","group":""},'
+       '{"id":"lb","label":"Load Balancer","service":"loadbalancer","group":"pub_a"},'
+       '{"id":"svc","label":"API Service","service":"service","group":"priv_a"},'
+       '{"id":"db","label":"Database","service":"postgres","group":"priv_a"}],'
+       '"edges":[{"fromId":"user","toId":"cdn","label":"HTTPS"},{"fromId":"cdn","toId":"lb","label":""},'
+       '{"fromId":"lb","toId":"svc","label":""},{"fromId":"svc","toId":"db","label":"SQL"}]},'
        '"structurizrDsl":"workspace { model { ... } views { ... } }",'
-       '"mermaidArchitecture":"flowchart LR\\n  user[User] --> alb[ALB] --> api[API Service] --> db[(Aurora)]",'
+       '"mermaidArchitecture":"flowchart LR\\n  user[User] --> lb[Load Balancer] --> api[API Service] --> db[(Database)]",'
        '"adrs":[{"title":"ADR-001: ...","context":"...","decision":"...","consequences":"...",'
        '"optionsConsidered":["Option A — rejected because ...","Option B — rejected because ..."],'
        '"status":"Accepted"}]}',
@@ -53,14 +53,14 @@ PHASE_JSON_SHAPES: dict[int, str] = {
        '"errorTaxonomy":[{"code":"ERR_VALIDATION","httpStatus":400,"message":"...","retryable":false}],'
        '"resilience":{"retries":3,"timeoutMs":2000,"circuitBreaker":"5 failures / 30s open","cacheTtlSeconds":300},'
        '"componentDiagram":{"title":"Component / deployment detail","direction":"LR",'
-       '"clusters":[{"id":"task","label":"ECS Task","parent":""}],'
+       '"clusters":[{"id":"task","label":"App runtime","parent":""}],'
        '"nodes":[{"id":"api","label":"API container","service":"container","group":"task"},'
-       '{"id":"cache","label":"Redis","service":"cache","group":""},{"id":"db","label":"Aurora","service":"aurora","group":""}],'
+       '{"id":"cache","label":"Cache","service":"cache","group":""},{"id":"db","label":"Database","service":"postgres","group":""}],'
        '"edges":[{"fromId":"api","toId":"cache","label":"idempotency"},{"fromId":"api","toId":"db","label":"read/write"}]},'
        '"plantumlDiagrams":["@startuml ... @enduml"],'
        '"mermaidSequence":"sequenceDiagram\\n  participant U as User\\n  U->>API: POST /v1/items\\n  API->>DB: INSERT",'
        '"openapiYaml":"openapi: 3.0.3 ...","dbmlSchema":"Table x { ... }",'
-       '"cdkStack":"import { Stack } from \'aws-cdk-lib\'; ..."}',
+       '"cdkStack":"// Infrastructure-as-code for the confirmed target platform (Terraform / Bicep / CDK / Helm as appropriate) ..."}',
     4: '{"testStrategyMarkdown":"# Test Strategy ... (environments + test data incl. PII handling, '
        'automation approach, regression policy)",'
        '"testLevels":[{"level":"unit|integration|contract|e2e|performance|security|accessibility",'
@@ -134,35 +134,35 @@ def build_phase_prompt(
         render("policy.responsible_ai"),
         render("phase.system.persona",
                persona=phase_def.agent_persona, phase_id=phase_def.id, phase_name=phase_def.name),
-        # Expert steering: resolved DYNAMICALLY by the stage's persona/domain
+        # Expert steering (#5): resolved DYNAMICALLY by the stage's persona/domain
         # (not the phase number), so it also applies to reordered and custom stages.
         resolve_steering(phase_def.agent_persona),
         render("phase.system.produces", produces=", ".join(phase_def.produces)),
         render("phase.system.stack", tech_stack=tech_stack),
-        # Project profile: name, stack and integration targets, so every
+        # Project profile (#4): name, stack and integration targets, so every
         # stage generates against the same project configuration.
         (f"## Project profile\n{project_profile}" if project_profile else ""),
         render("phase.system.grounding"),
-        # Professional quality bars: the universal craft standard plus
+        # Professional quality bars (D-39): the universal craft standard plus
         # the stage-specific rubric a senior reviewer would apply.
         render("phase.system.craft"),
         render(f"phase.quality.{phase_def.id}"),
         quality_gate_block,
     ]
     if has_codebase:
-        # Brownfield mode: retrieved snippets include the uploaded codebase.
+        # Brownfield mode (D-21): retrieved snippets include the uploaded codebase.
         system_parts.append(render("phase.system.brownfield"))
     system_parts.append(
         render("phase.system.json_contract", json_shape=PHASE_JSON_SHAPES[phase_def.id])
     )
-    # Project Canon and Output Formworks sit ABOVE retrieved knowledge and
+    # Project Canon and Output Formworks (D-38) sit ABOVE retrieved knowledge and
     # prior-phase context: they are human-authored, binding, and must not be
     # diluted by lower-priority material later in the prompt.
     if canon_block:
         system_parts.append("\n" + render("phase.system.canon_intro") + "\n" + canon_block)
     if formwork_block:
         system_parts.append("\n" + render("phase.system.formwork_intro") + "\n" + formwork_block)
-    # User-curated context for this run: explicit @references + attachments
+    # User-curated context for this run (D-54): explicit @references + attachments
     # the requester pinned. Placed high (just below binding Canon/Formwork) because
     # the human chose it deliberately for this stage — it outranks retrieved/auto
     # context below.
