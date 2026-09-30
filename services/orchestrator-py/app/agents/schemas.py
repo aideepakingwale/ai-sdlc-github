@@ -399,8 +399,29 @@ PHASE_SCHEMAS: dict[int, type[BaseModel]] = {
 }
 
 
+class ClarificationOption(BaseModel):
+    """One predefined answer choice for a clarifying question (D-108)."""
+    label: str = Field(description="Short selectable answer (1-5 words).")
+    description: str = Field(default="", description="One line: what this choice means or its trade-off.")
+
+
+class ClarificationQuestion(BaseModel):
+    """A structured clarifying question with predefined options (Claude-Code-style):
+    the UI renders the options as choices and always adds an 'Other' free-text entry."""
+    id: str = Field(description="Short kebab-case id, e.g. 'cloud-provider' or 'auth-model'.")
+    question: str = Field(description="The specific, answerable question.")
+    header: str = Field(default="", description="Very short chip label (<=12 chars), e.g. 'Cloud'.")
+    options: list[ClarificationOption] = Field(
+        default_factory=list,
+        description="2-4 predefined, mutually-exclusive choices (unless multiSelect). The UI adds 'Other'.",
+    )
+    multiSelect: bool = Field(default=False, description="True if several options may apply.")
+    rationale: str = Field(default="", description="One line: why this matters to the outcome.")
+
+
 class ClarificationOutput(BaseModel):
-    """Ambiguity pre-check (#1): whether the stage's inputs are clear enough to
-    generate without assuming, and the concrete questions to ask if not."""
+    """Ambiguity pre-check (#1/D-108): whether the stage's inputs are clear enough to
+    generate without assuming, and the structured questions (with predefined options)
+    to ask if not."""
     needs_clarification: bool = False
-    questions: list[str] = Field(default_factory=list)
+    questions: list[ClarificationQuestion] = Field(default_factory=list)

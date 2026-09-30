@@ -529,6 +529,18 @@ class Database:
         assert self.pool
         await self.pool.execute("DELETE FROM stage_plans WHERE project_id=$1 AND phase=$2", project_id, phase)
 
+    async def set_stage_clarification(self, project_id: str, phase: int, clarification_json: str | None) -> None:
+        """Store (or clear, with None) the pending structured clarification for a stage
+        (D-108). Creates the plan row if absent; other columns keep their defaults."""
+        assert self.pool
+        await self.pool.execute(
+            "INSERT INTO stage_plans (project_id, phase, clarification_json, updated_at) "
+            "VALUES ($1,$2,$3, now()) "
+            "ON CONFLICT (project_id, phase) DO UPDATE SET "
+            "clarification_json=EXCLUDED.clarification_json, updated_at=now()",
+            project_id, phase, clarification_json,
+        )
+
     # ------------------------------------------------------------ generation feedback (D-57)
     async def insert_feedback(
         self, *, project_id: str, phase: int, source: str, category: str,

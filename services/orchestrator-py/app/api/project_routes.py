@@ -405,6 +405,49 @@ async def trigger_stage_plan(
     return await container.gen_jobs.enqueue(project_id, phase_id, user.email)
 
 
+class _ClarificationAnswer(BaseModel):
+    question: str = ""
+    answer: str = ""
+
+
+class ClarificationAnswersBody(BaseModel):
+    answers: list[_ClarificationAnswer] = []
+
+
+@router.get("/api/projects/{project_id}/phase/{phase_id}/clarification")
+async def get_clarification(
+    project_id: str, phase_id: int,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Pending structured clarifying questions for a stage (D-108), or null. Cheap —
+    reads the stage_plans row; drives the answer-cards UI without the heavy plan build."""
+    await container.authz.assert_project_access(project_id, user)
+    row = await container.db.get_stage_plan(project_id, phase_id)
+    clarification = None
+    if row and row["clarification_json"]:
+        try:
+            clarification = json.loads(row["clarification_json"])
+        except Exception:
+            clarification = None
+    return {"clarification": clarification}
+
+
+@router.post("/api/projects/{project_id}/phase/{phase_id}/clarify")
+async def answer_clarification(
+    project_id: str, phase_id: int, body: ClarificationAnswersBody,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Submit answers to a stage's clarifying questions (D-108): fold them into the
+    plan overlay, clear the pending questions, then enqueue the run. Returns the
+    enqueued job so the UI streams generation immediately."""
+    if not 1 <= phase_id <= 12:
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+    await container.chat.answer_clarification(
+        project_id=project_id, phase=phase_id, user=user, answers=[a.model_dump() for a in body.answers],
+    )
+    return await container.gen_jobs.enqueue(project_id, phase_id, user.email)
+
+
 @router.get("/api/projects/{project_id}/phase/{phase_id}/parts")
 async def get_generation_parts(
     project_id: str, phase_id: int,

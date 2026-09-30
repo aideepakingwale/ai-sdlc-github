@@ -30,6 +30,15 @@ interface StagePlan {
   agent: { persona: string; tier: string; nodes: string[] };
   skills: Array<{ id: string; name: string; tier: string }>;
   expectedTools: string[];
+  // Pending interactive clarification (D-108); null when none.
+  clarification?: Array<{
+    id: string;
+    question: string;
+    header?: string;
+    options?: Array<{ label: string; description?: string }>;
+    multiSelect?: boolean;
+    rationale?: string;
+  }> | null;
   // Intelligent, context-aware plan (D-105); null when disabled/unavailable.
   intel?: {
     summary: string;
@@ -141,6 +150,18 @@ export default function StageWorkspace({
     enabled: Boolean(projectId),
   });
   const parts = partsQ.data?.parts ?? [];
+
+  // D-108: pending interactive clarifying questions for this stage (answer cards).
+  type ClarQ = NonNullable<StagePlan['clarification']>[number];
+  const clarificationQ = useQuery({
+    queryKey: ['clarification', projectId, selectedSeq],
+    queryFn: () => api.get<{ clarification: ClarQ[] | null }>(
+      `/api/projects/${projectId}/phase/${selectedSeq}/clarification`,
+    ),
+    enabled: Boolean(projectId),
+  });
+  const clarification = clarificationQ.data?.clarification ?? null;
+  const [clarifyAns, setClarifyAns] = useState<Record<string, { selected: string[]; other: string }>>({});
 
   // Reset the compose box and curated selection when the user switches stages,
   // so one stage's draft never leaks into another.
@@ -255,6 +276,7 @@ export default function StageWorkspace({
       void qc.invalidateQueries({ queryKey: ['flow', projectId] });
       void qc.invalidateQueries({ queryKey: ['phase', projectId] });
       void qc.invalidateQueries({ queryKey: ['parts', projectId, selectedSeq] });  // D-107 step 2
+      void qc.invalidateQueries({ queryKey: ['clarification', projectId, selectedSeq] });  // D-108
     }
   }
 
@@ -280,6 +302,38 @@ export default function StageWorkspace({
       void qc.invalidateQueries({ queryKey: ['artefacts', projectId] });
       void qc.invalidateQueries({ queryKey: ['project', projectId] });
       void qc.invalidateQueries({ queryKey: ['phase', projectId] });
+    }
+  }
+
+  // D-108: submit answers to the clarifying questions, then generate.
+  async function submitClarification() {
+    if (streaming || !clarification) return;
+    const answers = clarification.map((q) => {
+      const a = clarifyAns[q.id] || { selected: [], other: '' };
+      const parts_ = [...a.selected];
+      if (a.other.trim()) parts_.push(a.other.trim());
+      return { question: q.question, answer: parts_.join('; ') };
+    });
+    beginStream();
+    pushEvent({ type: 'node', node: 'queue', label: 'Applying your answers…' } as never);
+    try {
+      await api.post(`/api/projects/${projectId}/phase/${selectedSeq}/clarify`, { answers });
+    } catch (err) {
+      endStream();
+      window.alert(err instanceof Error ? err.message : 'Could not submit answers');
+      return;
+    }
+    setClarifyAns({});
+    try {
+      await streamStageProgress(projectId, selectedSeq, pushEvent);
+    } finally {
+      try { await qc.refetchQueries({ queryKey: ['flow', projectId] }); } catch { /* ignore */ }
+      endStream();
+      void qc.invalidateQueries({ queryKey: ['clarification', projectId, selectedSeq] });
+      void qc.invalidateQueries({ queryKey: ['project', projectId] });
+      void qc.invalidateQueries({ queryKey: ['artefacts', projectId] });
+      void qc.invalidateQueries({ queryKey: ['phase', projectId] });
+      void qc.invalidateQueries({ queryKey: ['parts', projectId, selectedSeq] });
     }
   }
 
@@ -492,6 +546,73 @@ export default function StageWorkspace({
                   </div>
                 )}
               </div>
+            </div>
+          </section>
+        )}
+
+        {/* ---- interactive clarification (D-108): answer cards before generating ---- */}
+        {clarification && clarification.length > 0 && !streamingHere && (
+          <section className="rounded-xl border border-amber-300 bg-amber-50/60 p-4">
+            <div className="mb-1 text-sm font-bold text-amber-900">A few questions before generating</div>
+            <p className="mb-3 text-[11px] text-amber-800">
+              Answer these so the agent builds to your intent instead of assuming. Pick an option or type your own; leave blank to let the agent decide.
+            </p>
+            <div className="space-y-3">
+              {clarification.map((q) => {
+                const ans = clarifyAns[q.id] || { selected: [], other: '' };
+                const toggle = (label: string) => setClarifyAns((prev) => {
+                  const cur = prev[q.id] || { selected: [], other: '' };
+                  let selected: string[];
+                  if (q.multiSelect) {
+                    selected = cur.selected.includes(label) ? cur.selected.filter((l) => l !== label) : [...cur.selected, label];
+                  } else {
+                    selected = cur.selected.includes(label) ? [] : [label];
+                  }
+                  return { ...prev, [q.id]: { ...cur, selected } };
+                });
+                return (
+                  <div key={q.id} className="rounded-lg border border-amber-200 bg-white p-3">
+                    <div className="flex items-center gap-2">
+                      {q.header && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-800">{q.header}</span>}
+                      <span className="text-[13px] font-semibold text-slate-800">{q.question}</span>
+                    </div>
+                    {q.rationale && <div className="mt-0.5 text-[11px] text-slate-500">{q.rationale}</div>}
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {(q.options || []).map((o) => {
+                        const on = ans.selected.includes(o.label);
+                        return (
+                          <button
+                            key={o.label} type="button" onClick={() => toggle(o.label)} disabled={streaming}
+                            title={o.description || ''}
+                            className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-40 ${
+                              on ? 'border-brand-500 bg-brand-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:border-brand-400'
+                            }`}
+                          >
+                            {q.multiSelect ? (on ? '☑ ' : '☐ ') : (on ? '● ' : '○ ')}{o.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <input
+                      type="text" disabled={streaming}
+                      placeholder="Other / add detail…"
+                      value={ans.other}
+                      onChange={(e) => setClarifyAns((prev) => ({ ...prev, [q.id]: { ...(prev[q.id] || { selected: [], other: '' }), other: e.target.value } }))}
+                      className="mt-2 w-full rounded-md border border-slate-300 px-2 py-1 text-[12px] focus:border-brand-400 focus:outline-none"
+                    />
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                type="button" onClick={submitClarification} disabled={streaming}
+                className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-40"
+                title="Submit answers and generate"
+              >
+                {streaming ? 'Generating…' : '✓ Submit answers & generate'}
+              </button>
+              <span className="text-[11px] text-amber-800">Your answers are added to the plan and guide generation.</span>
             </div>
           </section>
         )}

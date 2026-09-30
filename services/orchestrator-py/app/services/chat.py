@@ -412,10 +412,11 @@ class ChatService:
     async def _clarification_questions(
         self, *, project: dict, stage: dict, user_input: str,
         context: list[ContextArtifact], extra_context: str,
-    ) -> list[str]:
-        """Ambiguity pre-check (#1): return clarifying questions when the inputs are
-        too ambiguous to generate without assuming; [] to proceed. Never raises —
-        a failed check must not block generation."""
+    ) -> list[dict[str, Any]]:
+        """Ambiguity pre-check (#1/D-108): return STRUCTURED clarifying questions (each
+        with predefined options for the UI cards) when the inputs are too ambiguous to
+        generate without assuming; [] to proceed. Never raises — a failed check must
+        not block generation."""
         from ..agents.schemas import ClarificationOutput
         from ..domain.models import get_phase
         from .prompt_library import render as render_prompt
@@ -452,14 +453,20 @@ class ChatService:
                 "What are the measurable success criteria?",
                 "Are there compliance, legal or data-privacy obligations (e.g. GDPR, PCI-DSS)?",
             ]
-            return [f"Please provide: {b}" for b in base][:max_questions]
+            # No predefined options for open discovery questions — the UI renders a
+            # free-text ('Other') entry for each.
+            return [
+                {"id": f"need-{i}", "question": f"Please provide: {b}", "header": "",
+                 "options": [], "multiSelect": False, "rationale": ""}
+                for i, b in enumerate(base)
+            ][:max_questions]
         digest = "\n".join(f"- [P{a.phase}] {a.type}: {a.title}" for a in context[-20:]) or "(no upstream artifacts yet)"
         if extra_context:
             digest = f"{digest}\n\nCurated context:\n{extra_context[:2000]}"
         req = user_input.strip() or f"Produce {', '.join(stage.get('outputs') or ['the deliverables'])} for the '{stage['name']}' stage."
         try:
             out, _ = await self._deps.llm.generate_json(
-                intent="standard", tier="light", tag="clarify", max_tokens=512,
+                intent="standard", tier="light", tag="clarify", max_tokens=1500,
                 schema=ClarificationOutput,
                 messages=[
                     {"role": "system", "content": render_prompt(
@@ -473,7 +480,39 @@ class ChatService:
             )
         except Exception:
             return []
-        return list(out.questions)[:max_questions] if out.needs_clarification else []
+        return [q.model_dump() for q in out.questions][:max_questions] if out.needs_clarification else []
+
+    async def answer_clarification(
+        self, *, project_id: str, phase: int, user: UserPublic, answers: list[dict[str, Any]],
+    ) -> None:
+        """Fold the reviewer's answers to the clarifying questions into the stage's
+        prompt overlay and clear the pending questions (D-108), so the next run has
+        the context and skips the check. Write-permission required."""
+        _, stage = await self._stage_for(project_id, phase)
+        if not await self._can_write_stage(project_id, stage, user):
+            raise SdlcError("FORBIDDEN", f"Answering the '{stage['name']}' clarification requires write permission ({' or '.join(self._stage_writers(stage))})")
+        row = await self._db.get_stage_plan(project_id, phase)
+        existing = ((row["prompt_overlay"] if row else "") or "").strip()
+        lines: list[str] = []
+        for a in answers:
+            q = str(a.get("question") or "").strip()
+            ans = str(a.get("answer") or "").strip() or "(no preference — use your best judgement)"
+            if q:
+                lines.append(f"- {q}\n  → {ans}")
+        block = "## Clarifications (confirmed by the reviewer)\n" + "\n".join(lines)
+        new_overlay = f"{existing}\n\n{block}" if existing else block
+        await self._db.upsert_stage_plan(
+            project_id=project_id, phase=phase, prompt_overlay=new_overlay,
+            referenced_artifact_ids=(row["referenced_artifact_ids"] if row else []) or [],
+            attachment_ids=(row["attachment_ids"] if row else []) or [],
+            formwork_ids=(row["formwork_ids"] if row else []) or [],
+            step_overrides=(row["step_overrides"] if row else {}) or {},
+            origin="clarification", updated_by=user.email,
+        )
+        await self._db.set_stage_clarification(project_id, phase, None)  # clear pending questions
+        self._audit.record(project_id=project_id, phase=phase, agent_role="Orchestrator",
+                           event="clarification.answered", human_reviewer=user.email,
+                           detail={"stage": stage["key"], "count": len(lines)})
 
     @staticmethod
     def _custom_fields(stage: dict) -> dict[str, Any]:
@@ -623,6 +662,13 @@ class ChatService:
             "formworkIds": (row["formwork_ids"] if row else []) or [],
             "origin": row["origin"] if row else "new",
         }
+        # Pending interactive clarification (D-108): the UI renders these as answer cards.
+        clarification = None
+        if row and row["clarification_json"]:
+            try:
+                clarification = json.loads(row["clarification_json"])
+            except Exception:
+                clarification = None
         step_overrides = self._step_overrides(row)
         system, user_prompt, extra_context, context, snippets = await self._assemble_prompt_preview(
             project, session or {}, stage, overlay, lambda e: None
@@ -680,6 +726,8 @@ class ChatService:
                 "nodes": PIPELINE_NODES,
             },
             "skills": skills,
+            # Pending clarifying questions with options (D-108); null when none.
+            "clarification": clarification,
             "expectedTools": available_tools,
             # Multi-model plan (D-68): the typed step list + selectable catalog.
             "steps": steps,
@@ -778,29 +826,38 @@ class ChatService:
         )
         context = [ContextArtifact.model_validate(a) for a in (session.get("context_window") or [])]
 
-        # Ambiguity pre-check (#1): on a fresh, un-curated trigger, ask clarifying
-        # questions instead of assuming. Questions are written into the plan overlay
-        # so the reviewer answers them in Plan Review, then re-runs; once the overlay
-        # is non-empty the check is skipped and generation proceeds.
-        if getattr(self._settings, "CLARIFY_ENABLED", True) and not prompt_overlay and status == "NOT_STARTED":
+        # Interactive ambiguity pre-check (#1/D-108): ask STRUCTURED clarifying
+        # questions (with predefined options) instead of assuming — even when a
+        # description was given, since a key dimension (e.g. cloud/platform) may still
+        # be unspecified. State machine on the stage plan:
+        #   - already answered (origin == 'clarification') → skip, generate.
+        #   - questions pending (clarification_json set) → re-surface them, stop.
+        #   - otherwise → run the check; if it asks, store the questions and stop.
+        # Skipped on retrigger.
+        already_clarified = bool(row and row["origin"] == "clarification")
+        pending_clar = row["clarification_json"] if row else None
+        if (getattr(self._settings, "CLARIFY_ENABLED", True) and status == "NOT_STARTED"
+                and not retrigger_fields and not already_clarified):
+            if pending_clar:
+                try:
+                    pending_qs = json.loads(pending_clar)
+                except Exception:
+                    pending_qs = []
+                if pending_qs:
+                    emit({"type": "clarification", "phase": phase, "stage": stage["name"], "questions": pending_qs})
+                    emit({"type": "node", "node": "agent",
+                          "label": f"Answer the {len(pending_qs)} clarifying question(s) to proceed"})
+                    return
             questions = await self._clarification_questions(
                 project=project, stage=stage, user_input=prompt_overlay, context=context, extra_context=extra_context)
             if questions:
-                block = ("## Clarifying questions\n\nThese inputs look ambiguous. Please answer inline, then re-run this "
-                         "stage — your answers become the stage's plan and guide generation:\n\n"
-                         + "\n".join(f"{i + 1}. {q}\n   - Answer: " for i, q in enumerate(questions)))
-                await self._db.upsert_stage_plan(
-                    project_id=project_id, phase=phase, prompt_overlay=block,
-                    referenced_artifact_ids=overlay["referencedArtifactIds"],
-                    attachment_ids=overlay["attachmentIds"], formwork_ids=overlay["formworkIds"],
-                    origin="clarification", updated_by=user.email,
-                )
+                await self._db.set_stage_clarification(project_id, phase, json.dumps(questions))
                 self._audit.record(project_id=project_id, phase=phase, agent_role="Orchestrator",
                                    event="clarification.requested", human_reviewer=user.email,
-                                   detail={"stage": stage["key"], "questions": questions})
+                                   detail={"stage": stage["key"], "count": len(questions)})
                 emit({"type": "clarification", "phase": phase, "stage": stage["name"], "questions": questions})
                 emit({"type": "node", "node": "agent",
-                      "label": f"Clarification needed — {len(questions)} question(s) written to the plan; answer and re-run"})
+                      "label": f"Clarification needed — {len(questions)} question(s); answer them to proceed"})
                 return
 
         set_run_context(project_id, phase)
