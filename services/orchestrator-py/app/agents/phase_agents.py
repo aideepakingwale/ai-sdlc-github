@@ -10,7 +10,7 @@ import re
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, create_model
 
@@ -59,14 +59,17 @@ async def _generate_phase_split(
     schema: type[BaseModel], base_tag: str, intent: str, max_tokens: int,
     model: str | None, emit: Emit,
 ) -> tuple[BaseModel, LlmResult]:
-    """D-98 v1 — per-artifact PARALLEL generation.
+    """D-98/D-107 — per-artifact PARALLEL generation, resilient to partial failure.
 
     Generate each top-level field of the combined `schema` in its own focused call:
-    the ANCHOR field first (this writes the cached system prefix), then the rest in
-    parallel (bounded by PER_ARTIFACT_MAX_PARALLEL, each reading the cached prefix).
-    Assemble the pieces back into the combined object the pipeline expects, with an
-    aggregated LlmResult. Raises on any field failure so the caller can fall back to
-    the single combined call (also the mock-mode path, keeping local runs working)."""
+    the ANCHOR field first (warms the cached system prefix), then the rest in parallel
+    (bounded by PER_ARTIFACT_MAX_PARALLEL). Each part streams a running/✓/✗ status so
+    the reviewer can trace it live. Parts that FAIL do NOT abort the others (D-107):
+    successful parts are kept and a typed placeholder (marked as failed, for retrigger)
+    fills each failed/missing field so the combined object still assembles — the stage
+    then persists what succeeded and lands in review partial. Only when NOTHING
+    succeeds, or the placeholder assembly can't validate, does it raise so the caller
+    falls back to the single combined call (also the mock all-success path)."""
     fields = list(schema.model_fields.keys())
     if len(fields) <= 1:
         raise ValueError("schema has nothing to split")
@@ -87,27 +90,63 @@ async def _generate_phase_split(
         )
         return field_name, getattr(inst, field_name), res
 
-    # Anchor first → warms the cached system prefix that the parallel calls reuse.
+    values: dict[str, Any] = {}
+    results: list[LlmResult] = []
+    failures: dict[str, str] = {}
+
+    # Anchor first → warms the cached system prefix the parallel calls reuse. A failed
+    # anchor is non-fatal (the rest just don't get the cache benefit).
     anchor = fields[0]
     emit({"type": "node", "node": "agent", "label": f"Generating {anchor} (anchor)…"})
-    a_name, a_val, a_res = await gen_field(anchor)
-    values: dict[str, Any] = {a_name: a_val}
-    results: list[LlmResult] = [a_res]
+    try:
+        n, v, r = await gen_field(anchor)
+        values[n] = v
+        results.append(r)
+        emit({"type": "node", "node": "agent", "label": f"✓ {anchor} generated"})
+    except Exception as err:  # noqa: BLE001
+        failures[anchor] = str(err)
+        emit({"type": "node", "node": "guardrail", "status": "error", "label": f"✗ {anchor} failed — {str(err)[:160]}"})
 
     rest = fields[1:]
     if rest:
         emit({"type": "node", "node": "agent", "label": f"Generating {len(rest)} more artifact(s) in parallel…"})
         sem = asyncio.Semaphore(max(1, getattr(deps.settings, "PER_ARTIFACT_MAX_PARALLEL", 4)))
 
-        async def bounded(fn: str) -> tuple[str, Any, LlmResult]:
+        async def bounded(fn: str) -> tuple[str, str, Any]:
             async with sem:
-                return await gen_field(fn)
+                try:
+                    n, v, r = await gen_field(fn)
+                    emit({"type": "node", "node": "agent", "label": f"✓ {fn} generated"})
+                    return ("ok", fn, (v, r))
+                except Exception as err:  # noqa: BLE001 — one part's failure must not sink the rest
+                    emit({"type": "node", "node": "guardrail", "status": "error",
+                          "label": f"✗ {fn} failed — {str(err)[:160]}"})
+                    return ("err", fn, err)
 
-        for fn, val, res in await asyncio.gather(*(bounded(f) for f in rest)):
-            values[fn] = val
-            results.append(res)
+        for outcome, fn, payload in await asyncio.gather(*(bounded(f) for f in rest)):
+            if outcome == "ok":
+                val, res = payload
+                values[fn] = val
+                results.append(res)
+            else:
+                failures[fn] = str(payload)
 
-    data = schema.model_validate(values)  # raises if a piece is missing/invalid → caller falls back
+    if not values:
+        # Nothing succeeded → let the caller fall back to the combined call.
+        raise SdlcError("PROVIDER_ERROR", f"per-artifact split produced no parts ({len(failures)} failed)")
+
+    # Fill each failed/missing field with a typed, failure-marked placeholder so the
+    # combined object validates and the successful parts can persist (D-107). If a
+    # placeholder can't be built/validated, the whole assembly raises → caller falls back.
+    for fn in fields:
+        if fn not in values:
+            values[fn] = _failed_placeholder(schema, fn, failures.get(fn, "not generated"))
+
+    data = schema.model_validate(values)
+    if failures:
+        emit({"type": "node", "node": "guardrail", "status": "error",
+              "label": f"⚠ {len(failures)} part(s) failed: {', '.join(failures)}. "
+                       f"Successful artifacts are saved; retrigger to complete the rest."})
     combined = LlmResult(
         provider=results[-1].provider, model=results[-1].model,
         content=data.model_dump_json(),
@@ -119,6 +158,67 @@ async def _generate_phase_split(
         tier=results[-1].tier,
     )
     return data, combined
+
+
+# Sentinel prefix marking an artifact part that failed generation and awaits retrigger
+# (D-107). Surfaced in the placeholder content so the reviewer sees the gap; Step 2
+# will add a durable per-part status + a per-part retrigger action.
+FAILED_PART_MARKER = "⚠ GENERATION FAILED — retrigger pending"
+
+
+def _failed_placeholder(schema: type[BaseModel], field: str, reason: str) -> Any:
+    """Build a minimal, schema-valid value for one failed/missing top-level field so
+    the combined object still assembles (D-107). String content carries the failure
+    marker. Honours a list field's min-length. Best-effort: raising here just makes
+    the caller fall back to the combined call, so there is no regression risk."""
+    fi = schema.model_fields[field]
+    note = f"{FAILED_PART_MARKER}: {reason[:200]}"
+    return _minimal_value(fi.annotation, note, _min_len(fi))
+
+
+def _min_len(field_info: Any) -> int:
+    """Extract a list field's min_length constraint (0 if none)."""
+    for m in getattr(field_info, "metadata", []) or []:
+        n = getattr(m, "min_length", None)
+        if isinstance(n, int) and n > 0:
+            return n
+    return 0
+
+
+def _minimal_value(ann: Any, note: str, min_items: int = 0) -> Any:
+    """Recursively construct a minimal valid value for a type annotation, embedding
+    `note` in string leaves so a failed part is visibly marked."""
+    origin = get_origin(ann)
+    if origin is Literal:
+        opts = get_args(ann)
+        return opts[0] if opts else note
+    if origin is Union:
+        args = [a for a in get_args(ann) if a is not type(None)]
+        if len(args) < len(get_args(ann)):
+            return None  # Optional → None is the cheapest valid value
+        return _minimal_value(args[0], note) if args else None
+    if ann is str:
+        return note
+    if ann is bool:
+        return False
+    if ann is int:
+        return 0
+    if ann is float:
+        return 0.0
+    if origin in (list, tuple):
+        item_args = get_args(ann)
+        if min_items > 0 and item_args:
+            return [_minimal_value(item_args[0], note) for _ in range(min_items)]
+        return []
+    if origin is dict:
+        return {}
+    if isinstance(ann, type) and issubclass(ann, BaseModel):
+        sub: dict[str, Any] = {}
+        for fn, fi in ann.model_fields.items():
+            if fi.is_required():
+                sub[fn] = _minimal_value(fi.annotation, note, _min_len(fi))
+        return ann.model_validate(sub)
+    return note
 
 
 @dataclass
