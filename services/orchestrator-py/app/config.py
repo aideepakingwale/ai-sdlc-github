@@ -152,6 +152,11 @@ class Settings(BaseSettings):
     # the inputs change; falls back to the deterministic plan on any planner failure
     # (incl. mock mode). Set False to force the deterministic plan.
     INTELLIGENT_PLANNING: bool = True
+    # Output budget for the stage planner's proposal (understood / willProduce /
+    # format / recommendation + steps + tool/skill/assumption/risk lists). Too small
+    # truncates the JSON and the whole proposal is lost, so this is generous and
+    # tunable: raise it for stages with many outputs/tools (D-112).
+    PLAN_MAX_TOKENS: int = 8_000
     CLARIFY_ENABLED: bool = True
     CLARIFY_MAX_QUESTIONS: int = 6
     # Requirement analysis is the most crucial stage; allow a deeper holistic

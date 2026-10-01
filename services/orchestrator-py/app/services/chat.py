@@ -716,9 +716,11 @@ class ChatService:
             data, _ = await self._deps.llm.generate_json(
                 intent="standard", tag=f"stage_planner_t{stage['template']}", temperature=0.1,
                 # The proposal (understood/willProduce/format/recommendation) plus steps and
-                # tool/skill/assumption/risk lists need headroom; 2000 truncated the JSON on
-                # richer stages and failed the whole plan (D-112 fix). Still one shot (D-109).
-                max_tokens=4000, schema=StagePlanIntel, max_attempts=1,
+                # tool/skill/assumption/risk lists need headroom; a small cap truncated the
+                # JSON on richer stages and failed the whole plan (D-112 fix). Generous and
+                # env-tunable via PLAN_MAX_TOKENS. Still one shot (D-109).
+                max_tokens=getattr(self._settings, "PLAN_MAX_TOKENS", 8000),
+                schema=StagePlanIntel, max_attempts=1,
                 messages=[{"role": "system", "content": sys_p}, {"role": "user", "content": usr_p}],
             )
             plan = data.model_dump()
