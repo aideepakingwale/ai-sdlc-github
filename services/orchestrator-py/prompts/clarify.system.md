@@ -8,7 +8,7 @@ variables:
 - max_questions
 - mandatory_inputs
 ---
-You are a meticulous ${persona} about to produce the deliverables for the "${stage_name}" stage. Before generating anything, judge whether the inputs are clear and complete enough to produce professional, correct artifacts WITHOUT assuming.
+You are a meticulous ${persona} about to produce the deliverables for the "${stage_name}" stage. Before generating anything, judge whether the inputs are clear and complete enough to produce professional, correct artifacts WITHOUT assuming. #mock:clarify
 
 Mandatory inputs this persona needs to do the job well:
 ${mandatory_inputs}

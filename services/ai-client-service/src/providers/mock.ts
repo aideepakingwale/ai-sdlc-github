@@ -113,6 +113,38 @@ function render(kind: string, topic: string, seed: string, userText: string): st
         toolCalls: [],
       });
 
+    case 'clarify':
+      // D-108/D-112: structured clarifying questions WITH predefined, selectable
+      // options (the UI adds its own 'Other'). Deterministic offline sample so the
+      // options UI is exercisable without a real model; real providers tailor these.
+      return JSON.stringify({
+        needs_clarification: true,
+        questions: [
+          {
+            id: 'target-cloud', header: 'Cloud', multiSelect: false,
+            question: `Which target cloud/platform should the ${topic} solution assume?`,
+            rationale: 'Materially changes architecture, cost and security.',
+            options: [
+              { label: 'AWS', description: 'Deploy on Amazon Web Services' },
+              { label: 'Azure', description: 'Deploy on Microsoft Azure' },
+              { label: 'GCP', description: 'Deploy on Google Cloud Platform' },
+              { label: 'On-prem / Kubernetes', description: 'Self-hosted or private cluster' },
+            ],
+          },
+          {
+            id: 'compliance', header: 'Compliance', multiSelect: true,
+            question: 'Which compliance regimes apply?',
+            rationale: 'Drives data handling, retention and audit controls.',
+            options: [
+              { label: 'GDPR', description: 'EU personal-data protection' },
+              { label: 'PCI-DSS', description: 'Payment card data' },
+              { label: 'HIPAA', description: 'Health information' },
+              { label: 'None', description: 'No specific regime applies' },
+            ],
+          },
+        ],
+      });
+
     case 'custom_format':
       // D-112: a single document mirroring a user-attached format (CustomFormatDoc).
       // Deterministic placeholder with a few headings so the pipeline persists ONE
