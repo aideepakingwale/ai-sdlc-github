@@ -1,16 +1,23 @@
-"""Extract usable context text from uploaded attachments.
+"""Extract usable context text from uploaded attachments (D-65, D-66).
 
 Users attach not just plain text but **documents** (PDF, Word) and **images**
 (screenshots of requirements, photos of a whiteboard, scanned specs). This turns
-each into text that the context pipeline can inline into the agent prompt:
+each into text that the D-54 context pipeline can inline into the agent prompt:
 
   - text/*             -> decoded as-is
   - PDF                -> extracted page text (pypdf)
-  - DOCX               -> paragraph + table text (python-docx)
-  - image/* -> vision LLM (, preferred) or OCR (pytesseract)
+  - DOCX               -> clean Markdown (mammoth + markdownify; python-docx fallback)
+  - XLSX               -> one Markdown table per sheet (openpyxl, values resolved)
+  - PPTX               -> Markdown, each slide a section (python-pptx)
+  - image/*            -> vision LLM (D-66, preferred) or OCR (pytesseract)
   - anything else      -> not inlined (kept as a labelled reference)
 
-Images have two extraction paths: a **vision LLM**, routed multi-model
+Office documents are converted to structured **Markdown** rather than a flat text
+dump (D-112): this strips the OOXML/markup noise and keeps headings, lists and
+tables, so an attachment costs far fewer tokens and the agent can reliably mirror
+an attached document's format.
+
+Images have two extraction paths (D-66): a **vision LLM**, routed multi-model
 through the ai-client gateway (Bedrock Claude → Gemini, with the deterministic
 mock as the offline sentinel), transcribes visible text *and* describes diagrams
 / UI / structure; and deterministic **OCR** (pytesseract) which needs no network
@@ -38,7 +45,7 @@ KIND_IMAGE = "image"
 KIND_BINARY = "binary"
 
 _MAX_CHARS = 200_000  # cap extracted text so one attachment can't blow the context
-# The vision instruction lives in the central prompt library: template
+# The vision instruction lives in the central prompt library (D-48): template
 # `attachment.vision.user` (verbatim transcription + structural description).
 
 
@@ -49,6 +56,12 @@ def _looks_like(filename: str, content_type: str, *exts: str, mime_prefix: str |
     return bool(mime_prefix and content_type.lower().startswith(mime_prefix))
 
 
+def _tidy_md(md: str) -> str:
+    """Collapse the excess blank lines a converter leaves behind."""
+    import re
+    return re.sub(r"\n{3,}", "\n\n", (md or "")).strip()
+
+
 def _extract_pdf(raw: bytes) -> str:
     from pypdf import PdfReader
 
@@ -57,16 +70,86 @@ def _extract_pdf(raw: bytes) -> str:
 
 
 def _extract_docx(raw: bytes) -> str:
+    """.docx -> clean Markdown. Prefer mammoth (HTML) + markdownify so headings,
+    lists and tables survive as real Markdown with no OOXML noise; fall back to
+    python-docx paragraph/table text if the conversion libraries are unavailable."""
+    try:
+        import mammoth
+        from markdownify import markdownify as _md
+        html = mammoth.convert_to_html(io.BytesIO(raw)).value
+        md = _tidy_md(_md(html or "", heading_style="ATX", bullets="-"))
+        if md:
+            return md
+    except Exception as err:  # noqa: BLE001 — fall back to the basic extractor
+        log.info("mammoth docx->md unavailable (%s); using python-docx", err)
     import docx  # python-docx
-
     doc = docx.Document(io.BytesIO(raw))
-    parts = [p.text for p in doc.paragraphs if p.text.strip()]
+    parts: list[str] = []
+    for p in doc.paragraphs:
+        text = p.text.strip()
+        if not text:
+            continue
+        style = (p.style.name or "").lower() if p.style else ""
+        if style.startswith("heading"):
+            level = "".join(ch for ch in style if ch.isdigit()) or "2"
+            parts.append(f"{'#' * min(int(level), 6)} {text}")
+        elif style.startswith("list") or style.startswith("bullet"):
+            parts.append(f"- {text}")
+        else:
+            parts.append(text)
     for table in doc.tables:
-        for row in table.rows:
-            cells = [c.text.strip() for c in row.cells if c.text.strip()]
-            if cells:
-                parts.append(" | ".join(cells))
-    return "\n".join(parts).strip()
+        rows = [[c.text.strip().replace("|", "\\|") for c in row.cells] for row in table.rows]
+        rows = [r for r in rows if any(r)]
+        if not rows:
+            continue
+        width = max(len(r) for r in rows)
+        rows = [r + [""] * (width - len(r)) for r in rows]
+        parts.append("")
+        parts.append("| " + " | ".join(rows[0]) + " |")
+        parts.append("| " + " | ".join(["---"] * width) + " |")
+        for r in rows[1:]:
+            parts.append("| " + " | ".join(r) + " |")
+    return _tidy_md("\n".join(parts))
+
+
+def _extract_xlsx(raw: bytes) -> str:
+    """.xlsx -> one Markdown table per sheet (values only, formulas resolved)."""
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    out: list[str] = []
+    for ws in wb.worksheets:
+        rows = [["" if c is None else str(c).strip() for c in row]
+                for row in ws.iter_rows(values_only=True)]
+        rows = [r for r in rows if any(cell for cell in r)]
+        if not rows:
+            continue
+        width = max(len(r) for r in rows)
+        rows = [[cell.replace("|", "\\|") for cell in r] + [""] * (width - len(r)) for r in rows]
+        out.append(f"## {ws.title}")
+        out.append("| " + " | ".join(rows[0]) + " |")
+        out.append("| " + " | ".join(["---"] * width) + " |")
+        for r in rows[1:]:
+            out.append("| " + " | ".join(r) + " |")
+        out.append("")
+    return _tidy_md("\n".join(out))
+
+
+def _extract_pptx(raw: bytes) -> str:
+    """.pptx -> Markdown: each slide a section, its text frames as headings/bullets."""
+    from pptx import Presentation
+    prs = Presentation(io.BytesIO(raw))
+    out: list[str] = []
+    for i, slide in enumerate(prs.slides, 1):
+        out.append(f"## Slide {i}")
+        for shape in slide.shapes:
+            if not getattr(shape, "has_text_frame", False):
+                continue
+            for para in shape.text_frame.paragraphs:
+                text = "".join(run.text for run in para.runs).strip()
+                if text:
+                    out.append(("  " * getattr(para, "level", 0)) + f"- {text}")
+        out.append("")
+    return _tidy_md("\n".join(out))
 
 
 def _extract_image_ocr(raw: bytes) -> str:
@@ -106,6 +189,20 @@ def extract(raw: bytes, filename: str, content_type: str) -> tuple[str, str, str
         except Exception as err:  # noqa: BLE001
             log.warning("DOCX extract failed for %s: %s", filename, err)
             return "", KIND_DOCUMENT, f"could not parse the document ({err})"
+    if _looks_like(filename, content_type, ".xlsx", ".xlsm"):
+        try:
+            txt = _extract_xlsx(raw)
+            return txt[:_MAX_CHARS], KIND_DOCUMENT, "" if txt else "the spreadsheet had no data"
+        except Exception as err:  # noqa: BLE001
+            log.warning("XLSX extract failed for %s: %s", filename, err)
+            return "", KIND_DOCUMENT, f"could not parse the spreadsheet ({err})"
+    if _looks_like(filename, content_type, ".pptx"):
+        try:
+            txt = _extract_pptx(raw)
+            return txt[:_MAX_CHARS], KIND_DOCUMENT, "" if txt else "the presentation had no text"
+        except Exception as err:  # noqa: BLE001
+            log.warning("PPTX extract failed for %s: %s", filename, err)
+            return "", KIND_DOCUMENT, f"could not parse the presentation ({err})"
 
     # 3) images -> OCR
     if _looks_like(filename, content_type, ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp",
@@ -152,7 +249,7 @@ async def describe_image_llm(
     raw: bytes, content_type: str, *, llm: Any, max_edge: int = 1536, tag: str | None = None,
 ) -> tuple[str, str] | None:
     """Vision extraction via the ai-client gateway (multi-model: Bedrock → Gemini,
-). Returns (text, provider) on success, or None when no *real* vision
+    D-66). Returns (text, provider) on success, or None when no *real* vision
     provider served it (the deterministic mock is treated as "not available", so
     the caller falls back to OCR). Never raises — any failure returns None."""
     try:

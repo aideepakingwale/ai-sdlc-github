@@ -19,11 +19,18 @@ dependencies = [
     "python-multipart>=0.0.18",
     "pyyaml>=6.0",
     "diagrams>=0.24",
-    # Attachment context extraction: parse documents + OCR images.
+    # Attachment context extraction (D-65): parse documents + OCR images.
     "pypdf>=5.1",
     "python-docx>=1.1",
     "pillow>=11.0",
     "pytesseract>=0.3.13",
+    # Deterministic document -> clean Markdown conversion (D-112): strip Office
+    # noise/markup and emit structured markdown so attachments cost far fewer tokens
+    # and the model can mirror an attached format reliably.
+    "mammoth>=1.8",        # .docx -> HTML (preserves headings/lists/tables)
+    "markdownify>=0.13",   # HTML -> Markdown
+    "openpyxl>=3.1",       # .xlsx -> Markdown tables
+    "python-pptx>=1.0",    # .pptx -> Markdown (slides as sections)
 ]
 
 [project.optional-dependencies]
@@ -45,5 +52,5 @@ target-version = "py312"
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
 
 [tool.setuptools.packages.find]
-# skills/ holds markdown skill packs, not Python — only app* is a package.
+# skills/ holds markdown skill packs (D-37), not Python — only app* is a package.
 include = ["app*"]
