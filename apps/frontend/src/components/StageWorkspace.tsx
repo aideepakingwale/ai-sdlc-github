@@ -123,6 +123,18 @@ export default function StageWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plan]);
   const [showSystemPrompt, setShowSystemPrompt] = useState(false);
+  // D-112 Phase C: a conversational thread for the plan. The agent's proposal and
+  // the reviewer's free-form refinements render as chat turns; each refinement is
+  // APPENDED to the overlay and re-plans, so the discussion actually steers the run.
+  type Turn = { role: 'you' | 'agent'; text: string; ts: number };
+  const [thread, setThread] = useState<Turn[]>([]);
+  const [refineText, setRefineText] = useState('');
+  const threadEndRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    threadEndRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [thread]);
+  // Reset the discussion when the selected stage changes.
+  useEffect(() => { setThread([]); setRefineText(''); }, [selectedSeq]);
   // Inline "@" mention autosuggest (D-56).
   const [mention, setMention] = useState<{ open: boolean; query: string; at: number }>({
     open: false, query: '', at: 0,
@@ -260,24 +272,66 @@ export default function StageWorkspace({
     return lines.length ? `\n\n## Production scope (confirmed by the reviewer)\n${lines.map((l) => `- ${l}`).join('\n')}` : '';
   };
 
+  // D-112 Phase C: a concise, chat-style summary of what the agent proposed, logged
+  // as an agent turn after each (re)plan so the discussion reads as a conversation.
+  const proposalSummary = (intel: StagePlan['intel']): string => {
+    if (!intel) return 'Plan ready — review it below, then trigger when you’re happy.';
+    const on = (o: { output: string; include?: boolean; recommended?: boolean }) =>
+      produceSel[o.output] ?? o.include ?? o.recommended;
+    const parts: string[] = [];
+    if (intel.understood) parts.push(intel.understood);
+    const rec = (intel.willProduce ?? []).filter(on).map((a) => a.output);
+    if (rec.length) parts.push(`I’ll produce: ${rec.join(', ')}.`);
+    if (intel.formatSource) parts.push(`Format: ${intel.formatSource}.`);
+    if (intel.recommendation) parts.push(intel.recommendation);
+    return parts.join(' ') || (intel.summary ?? 'Plan ready.');
+  };
+
   // D-56: save the overlay and (re-)render the full plan — "Review / Update plan".
-  async function reviewPlan(e?: FormEvent) {
+  // D-112 Phase C: `append` folds a free-form refinement into the overlay (additive,
+  // so earlier guidance is kept) and `logTurns` records the exchange in the thread.
+  async function reviewPlan(e?: FormEvent, opts?: { append?: string; logTurns?: boolean }) {
     e?.preventDefault();
     if (planBusy || streaming || promptError) return;
     setPlanBusy(true);
     setMention({ open: false, query: '', at: 0 });
+    const append = opts?.append?.trim();
+    const nextPrompt = append ? (prompt.trim() ? `${prompt.trim()}\n${append}` : append) : prompt;
+    if (append) setPrompt(nextPrompt);
     try {
       // Persist the overlay (fast, no planner), then GET the plan which computes the
       // intelligent plan ONCE (cached) — D-109. Previously the PUT itself ran the ~30s
       // planner, and both review + trigger PUT, so it fired several times per cycle.
-      await api.put<StagePlan>(`/api/projects/${projectId}/phase/${selectedSeq}/plan`, overlayBody());
+      await api.put<StagePlan>(`/api/projects/${projectId}/phase/${selectedSeq}/plan`, { ...overlayBody(), promptOverlay: nextPrompt });
       const p = await api.get<StagePlan>(`/api/projects/${projectId}/phase/${selectedSeq}/plan`);
       setPlan(p);
+      if (opts?.logTurns) setThread((t) => [...t, { role: 'agent', text: proposalSummary(p.intel), ts: Date.now() }]);
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : 'Could not build the plan');
+      const msg = err instanceof Error ? err.message : 'Could not build the plan';
+      if (opts?.logTurns) setThread((t) => [...t, { role: 'agent', text: `⚠ ${msg}`, ts: Date.now() }]);
+      else window.alert(msg);
     } finally {
       setPlanBusy(false);
     }
+  }
+
+  // D-112 Phase C: send a free-form refinement as a chat turn — logs it, appends it
+  // to the overlay, and re-plans so the agent responds with an updated proposal.
+  async function sendRefinement() {
+    const text = refineText.trim();
+    if (!text || planBusy || streaming) return;
+    setThread((t) => [...t, { role: 'you', text, ts: Date.now() }]);
+    setRefineText('');
+    await reviewPlan(undefined, { append: text, logTurns: true });
+  }
+
+  // D-112 Phase C: the composer's "Review / Update plan" — seeds the discussion with
+  // the reviewer's initial description, then logs the agent's proposal as a turn.
+  async function onReviewSubmit(e?: FormEvent) {
+    e?.preventDefault();
+    const p = prompt.trim();
+    if (p && thread.length === 0) setThread([{ role: 'you', text: p, ts: Date.now() }]);
+    await reviewPlan(undefined, { logTurns: true });
   }
 
   // D-99: ENQUEUE the run (returns immediately) then watch its progress. The run is
@@ -675,7 +729,7 @@ export default function StageWorkspace({
                 ↺ Changes were requested at gate review. The reviewer's feedback is pre-filled into the plan below — review it and trigger a fresh generation.
               </div>
             )}
-            <form onSubmit={reviewPlan}>
+            <form onSubmit={onReviewSubmit}>
               <div className="relative">
                 <textarea
                   ref={textareaRef}
@@ -842,6 +896,62 @@ export default function StageWorkspace({
                     <div className="mt-1 text-[10px] text-slate-400">Your selection is applied when you trigger the stage.</div>
                   </div>
                 )}
+
+                {/* ---- Discuss & refine (D-112 Phase C): a conversational thread. Reply
+                       free-form to adjust scope/format; each message re-plans so the agent
+                       responds with an updated proposal before you trigger. ---- */}
+                <div className="mb-3 rounded-lg border border-slate-200 bg-white p-3">
+                  <div className="mb-1.5 flex items-center gap-2">
+                    <span className="text-[11px] font-bold text-slate-700">💬 Discuss &amp; refine</span>
+                    <span className="text-[10px] text-slate-400">reply to adjust what’s produced or the format — then trigger when you’re happy</span>
+                  </div>
+                  {thread.length > 0 && (
+                    <div className="mb-2 max-h-56 space-y-1.5 overflow-auto pr-1">
+                      {thread.map((m, i) => (
+                        <div key={`${m.ts}-${i}`} className={`flex ${m.role === 'you' ? 'justify-end' : 'justify-start'}`}>
+                          <div
+                            className={
+                              'max-w-[85%] rounded-lg px-2.5 py-1.5 text-[12px] leading-snug ' +
+                              (m.role === 'you'
+                                ? 'bg-brand-600 text-white'
+                                : 'bg-slate-100 text-slate-800')
+                            }
+                          >
+                            <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-wide opacity-70">
+                              {m.role === 'you' ? 'You' : `${plan.agent.persona} agent`}
+                            </div>
+                            {m.text}
+                          </div>
+                        </div>
+                      ))}
+                      <div ref={threadEndRef} />
+                    </div>
+                  )}
+                  <div className="flex items-end gap-2">
+                    <textarea
+                      className="min-h-[38px] w-full flex-1 resize-y rounded-lg border border-slate-300 p-2 text-[12px] focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-200"
+                      rows={1}
+                      placeholder="e.g. “drop the NFR section”, “follow my attached format exactly”, or “also add a sequence diagram”"
+                      value={refineText}
+                      onChange={(e) => setRefineText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          void sendRefinement();
+                        }
+                      }}
+                      disabled={planBusy || streaming}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void sendRefinement()}
+                      disabled={planBusy || streaming || !refineText.trim()}
+                      className="shrink-0 rounded-lg border border-brand-300 bg-brand-50 px-3 py-2 text-[12px] font-semibold text-brand-700 hover:bg-brand-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {planBusy ? '…' : 'Send'}
+                    </button>
+                  </div>
+                </div>
 
                 {/* ---- Intelligent, context-aware plan (D-105) ---- */}
                 {plan.intel && (
