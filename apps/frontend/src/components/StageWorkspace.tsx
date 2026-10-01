@@ -189,6 +189,11 @@ export default function StageWorkspace({
   });
   const clarification = clarificationQ.data?.clarification ?? null;
   const [clarifyAns, setClarifyAns] = useState<Record<string, { selected: string[]; other: string }>>({});
+  // D-112: step through the questions ONE AT A TIME (Claude-Code style) — the LLM
+  // returns all gaps with options in one response; the user answers them in sequence
+  // and every answer is submitted back together.
+  const [clarifyStep, setClarifyStep] = useState(0);
+  useEffect(() => { setClarifyStep(0); }, [selectedSeq, clarification?.length]);
 
   // Reset the compose box and curated selection when the user switches stages,
   // so one stage's draft never leaks into another.
@@ -646,72 +651,116 @@ export default function StageWorkspace({
           </section>
         )}
 
-        {/* ---- interactive clarification (D-108): answer cards before generating ---- */}
-        {clarification && clarification.length > 0 && !streamingHere && (
-          <section className="rounded-xl border border-amber-300 bg-amber-50/60 p-4">
-            <div className="mb-1 text-sm font-bold text-amber-900">A few questions before generating</div>
-            <p className="mb-3 text-[11px] text-amber-800">
-              Answer these so the agent builds to your intent instead of assuming. Pick an option or type your own; leave blank to let the agent decide.
-            </p>
-            <div className="space-y-3">
-              {clarification.map((q) => {
-                const ans = clarifyAns[q.id] || { selected: [], other: '' };
-                const toggle = (label: string) => setClarifyAns((prev) => {
-                  const cur = prev[q.id] || { selected: [], other: '' };
-                  let selected: string[];
-                  if (q.multiSelect) {
-                    selected = cur.selected.includes(label) ? cur.selected.filter((l) => l !== label) : [...cur.selected, label];
-                  } else {
-                    selected = cur.selected.includes(label) ? [] : [label];
-                  }
-                  return { ...prev, [q.id]: { ...cur, selected } };
-                });
-                return (
-                  <div key={q.id} className="rounded-lg border border-amber-200 bg-white p-3">
-                    <div className="flex items-center gap-2">
-                      {q.header && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-800">{q.header}</span>}
-                      <span className="text-[13px] font-semibold text-slate-800">{q.question}</span>
-                    </div>
-                    {q.rationale && <div className="mt-0.5 text-[11px] text-slate-500">{q.rationale}</div>}
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {(q.options || []).map((o) => {
-                        const on = ans.selected.includes(o.label);
-                        return (
-                          <button
-                            key={o.label} type="button" onClick={() => toggle(o.label)} disabled={streaming}
-                            title={o.description || ''}
-                            className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-40 ${
-                              on ? 'border-brand-500 bg-brand-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:border-brand-400'
-                            }`}
-                          >
-                            {q.multiSelect ? (on ? '☑ ' : '☐ ') : (on ? '● ' : '○ ')}{o.label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <input
-                      type="text" disabled={streaming}
-                      placeholder="Other / add detail…"
-                      value={ans.other}
-                      onChange={(e) => setClarifyAns((prev) => ({ ...prev, [q.id]: { ...(prev[q.id] || { selected: [], other: '' }), other: e.target.value } }))}
-                      className="mt-2 w-full rounded-md border border-slate-300 px-2 py-1 text-[12px] focus:border-brand-400 focus:outline-none"
-                    />
+        {/* ---- interactive clarification (D-108/D-112): ONE question at a time
+               (Claude-Code style). The LLM returned every gap + options in a single
+               response; the user steps through them and all answers submit together. ---- */}
+        {clarification && clarification.length > 0 && !streamingHere && (() => {
+          const total = clarification.length;
+          const step = Math.min(clarifyStep, total - 1);
+          const q = clarification[step];
+          if (!q) return null;
+          const ans = clarifyAns[q.id] || { selected: [], other: '' };
+          const answered = (id: string) => {
+            const a = clarifyAns[id];
+            return !!a && (a.selected.length > 0 || a.other.trim().length > 0);
+          };
+          const answeredCount = clarification.filter((x) => answered(x.id)).length;
+          const toggle = (label: string) => setClarifyAns((prev) => {
+            const cur = prev[q.id] || { selected: [], other: '' };
+            let selected: string[];
+            if (q.multiSelect) {
+              selected = cur.selected.includes(label) ? cur.selected.filter((l) => l !== label) : [...cur.selected, label];
+            } else {
+              selected = cur.selected.includes(label) ? [] : [label];
+            }
+            return { ...prev, [q.id]: { ...cur, selected } };
+          });
+          const isLast = step === total - 1;
+          return (
+            <section className="rounded-xl border border-amber-300 bg-amber-50/60 p-4">
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <div className="text-sm font-bold text-amber-900">A few questions before generating</div>
+                <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                  Question {step + 1} of {total}
+                </span>
+              </div>
+              {/* progress dots — click a dot to jump to that question */}
+              <div className="mb-3 flex items-center gap-1.5">
+                {clarification.map((x, i) => (
+                  <button
+                    key={x.id} type="button" onClick={() => setClarifyStep(i)} disabled={streaming}
+                    title={x.question}
+                    className={`h-1.5 rounded-full transition-all ${
+                      i === step ? 'w-6 bg-amber-500' : answered(x.id) ? 'w-3 bg-emerald-400' : 'w-3 bg-amber-200'
+                    }`}
+                  />
+                ))}
+                <span className="ml-1 text-[10px] text-amber-700">{answeredCount}/{total} answered · blank = let the agent decide</span>
+              </div>
+
+              <div className="rounded-lg border border-amber-200 bg-white p-3">
+                <div className="flex items-center gap-2">
+                  {q.header && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-800">{q.header}</span>}
+                  <span className="text-[13px] font-semibold text-slate-800">{q.question}</span>
+                </div>
+                {q.rationale && <div className="mt-0.5 text-[11px] text-slate-500">{q.rationale}</div>}
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {(q.options || []).map((o) => {
+                    const on = ans.selected.includes(o.label);
+                    return (
+                      <button
+                        key={o.label} type="button" onClick={() => toggle(o.label)} disabled={streaming}
+                        title={o.description || ''}
+                        className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-40 ${
+                          on ? 'border-brand-500 bg-brand-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:border-brand-400'
+                        }`}
+                      >
+                        {q.multiSelect ? (on ? '☑ ' : '☐ ') : (on ? '● ' : '○ ')}{o.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {(q.options || []).some((o) => !!o.description) && (
+                  <div className="mt-1.5 space-y-0.5">
+                    {(q.options || []).filter((o) => ans.selected.includes(o.label) && o.description).map((o) => (
+                      <div key={o.label} className="text-[10px] text-slate-500">{o.label}: {o.description}</div>
+                    ))}
                   </div>
-                );
-              })}
-            </div>
-            <div className="mt-3 flex items-center gap-2">
-              <button
-                type="button" onClick={submitClarification} disabled={streaming}
-                className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-40"
-                title="Submit answers and generate"
-              >
-                {streaming ? 'Generating…' : '✓ Submit answers & generate'}
-              </button>
-              <span className="text-[11px] text-amber-800">Your answers are added to the plan and guide generation.</span>
-            </div>
-          </section>
-        )}
+                )}
+                <input
+                  type="text" disabled={streaming}
+                  placeholder="Other / add detail…"
+                  value={ans.other}
+                  onChange={(e) => setClarifyAns((prev) => ({ ...prev, [q.id]: { ...(prev[q.id] || { selected: [], other: '' }), other: e.target.value } }))}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (isLast) submitClarification(); else setClarifyStep(step + 1); } }}
+                  className="mt-2 w-full rounded-md border border-slate-300 px-2 py-1 text-[12px] focus:border-brand-400 focus:outline-none"
+                />
+              </div>
+
+              <div className="mt-3 flex items-center gap-2">
+                <button
+                  type="button" onClick={() => setClarifyStep(Math.max(0, step - 1))} disabled={streaming || step === 0}
+                  className="rounded-lg border border-amber-300 px-3 py-2 text-xs font-semibold text-amber-800 hover:bg-amber-100 disabled:opacity-30"
+                >‹ Back</button>
+                {!isLast ? (
+                  <button
+                    type="button" onClick={() => setClarifyStep(step + 1)} disabled={streaming}
+                    className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-600 disabled:opacity-40"
+                  >Next ›</button>
+                ) : (
+                  <button
+                    type="button" onClick={submitClarification} disabled={streaming}
+                    className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-40"
+                    title="Submit all answers and generate"
+                  >{streaming ? 'Generating…' : '✓ Submit all & generate'}</button>
+                )}
+                <span className="text-[11px] text-amber-800">
+                  {isLast ? 'All answers are added to the plan and guide generation.' : 'Answer, or skip with Next; submit on the last question.'}
+                </span>
+              </div>
+            </section>
+          );
+        })()}
 
         {/* ---- compose & run ---- */}
         {runnable ? (
