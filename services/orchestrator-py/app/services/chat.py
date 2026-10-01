@@ -593,6 +593,39 @@ class ChatService:
 
         return [t for t in tools if available(t)]
 
+    def _deterministic_proposal(
+        self, stage: dict, overlay: dict,
+        attachments: list[dict] | None = None, formworks: list[dict] | None = None,
+    ) -> dict[str, Any]:
+        """A model-free advise→decide proposal built from the stage's declared outputs
+        and the attached context (D-112). Guarantees the reviewer always sees what will
+        be produced — with per-output checkboxes and the format to follow — even when
+        the LLM planner is unavailable (mock, disabled, or a failed/truncated call).
+        The LLM proposal, when present, takes precedence over this."""
+        outputs = list(stage.get("outputs") or [])
+        att = [a.get("filename", "") for a in (attachments or []) if a.get("filename")]
+        fw = [f.get("name", "") for f in (formworks or []) if f.get("name")]
+        instr = (overlay.get("promptOverlay") or "").strip()
+        understood = (
+            f"Produce {stage['name']} output" + (f" — {instr[:220]}" if instr else " for this request.")
+        )
+        will = [{"output": o, "recommended": True, "include": True,
+                 "reason": "declared output of this stage"} for o in outputs]
+        if att:
+            fmt = f"the attached document(s): {', '.join(att)}"
+        elif fw:
+            fmt = f"the selected template(s): {', '.join(fw)}"
+        else:
+            fmt = "the stage's default template"
+        return {
+            "understood": understood, "willProduce": will, "formatSource": fmt,
+            "outOfScope": [], "recommendation":
+                "Review the outputs below and untick anything you don't want, then trigger the stage.",
+            "summary": "", "steps": [], "toolRecommendations": [],
+            "skillRecommendations": [], "assumptions": [], "risks": [],
+            "cached": False, "deterministic": True,
+        }
+
     async def _intelligent_plan(
         self, *, project: dict, phase: int, stage: dict, overlay: dict,
         available_tools: list[str], skills: list[dict], prior_arts: list[dict], canon_applied: bool,
@@ -682,7 +715,10 @@ class ChatService:
         try:
             data, _ = await self._deps.llm.generate_json(
                 intent="standard", tag=f"stage_planner_t{stage['template']}", temperature=0.1,
-                max_tokens=2000, schema=StagePlanIntel, max_attempts=1,  # advisory: one shot, no retry (D-109)
+                # The proposal (understood/willProduce/format/recommendation) plus steps and
+                # tool/skill/assumption/risk lists need headroom; 2000 truncated the JSON on
+                # richer stages and failed the whole plan (D-112 fix). Still one shot (D-109).
+                max_tokens=4000, schema=StagePlanIntel, max_attempts=1,
                 messages=[{"role": "system", "content": sys_p}, {"role": "user", "content": usr_p}],
             )
             plan = data.model_dump()
@@ -765,6 +801,23 @@ class ChatService:
             for st_ in steps:
                 if rationale_by_id.get(st_["id"]):
                     st_["rationale"] = rationale_by_id[st_["id"]]
+
+        # D-112 fix: the advise→decide surface must ALWAYS render, independent of the
+        # LLM planner. When the planner is unavailable (mock mode, disabled, or a
+        # truncated/failed call) or returned no proposal, synthesise a deterministic
+        # proposal from the stage's declared outputs + attachments so the reviewer can
+        # still see what will be produced and choose/skip outputs before triggering.
+        det = self._deterministic_proposal(stage, overlay, attachments, formworks)
+        if not intel:
+            intel = det
+        elif not intel.get("willProduce"):
+            intel = {
+                **intel,
+                "willProduce": det["willProduce"],
+                "understood": intel.get("understood") or det["understood"],
+                "formatSource": intel.get("formatSource") or det["formatSource"],
+                "recommendation": intel.get("recommendation") or det["recommendation"],
+            }
 
         return {
             "projectId": project_id, "phase": phase, "status": status,
