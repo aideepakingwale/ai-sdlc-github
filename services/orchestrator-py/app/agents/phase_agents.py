@@ -34,6 +34,7 @@ from .prompts import build_phase_prompt, openapi_fix_prompt
 from .schemas import (
     PHASE_SCHEMAS,
     CloudArchitecture,
+    CustomFormatDoc,
     CustomPhaseOutput,
     DiagramEdge,
     DiagramNode,
@@ -1894,6 +1895,106 @@ async def _run_custom(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     )
 
 
+# D-112: the primary document type each stage template yields, used when a custom
+# attached-format run produces a single document instead of the structured set.
+_PRIMARY_DOC_TYPE: dict[int, str] = {1: "PRD", 2: "HLD", 3: "LLD", 4: "TEST_STRATEGY", 5: "PIPELINE_DESIGN"}
+
+# Explicit "follow the attached format" phrasings. Matched against the user's own
+# instruction (not the auto-added scope/clarification blocks) so an incidental
+# attachment used only as reference does NOT trigger custom-format mode.
+_ATTACHED_FORMAT_PATTERNS = [
+    # "follow the attached / following the attached sample / follow my attached format"
+    re.compile(r"follow(?:ing|s)?[^.\n]{0,40}(attached|sample|reference|provided|supplied|uploaded)", re.I),
+    re.compile(r"follow[^.\n]{0,25}format[^.\n]{0,40}(attached|sample|reference)", re.I),
+    re.compile(r"\b(similar|same|exact|identical)\b[^.\n]{0,20}format", re.I),
+    re.compile(r"(as per|per|like|matching|mirror(?:ing)?)[^.\n]{0,25}(attached|sample|reference)", re.I),
+    re.compile(r"in the (attached|same|provided) format", re.I),
+]
+
+
+def _wants_attached_format(state: "AgentState") -> bool:
+    """True when the requester explicitly asked to follow an ATTACHED document's
+    format AND an attachment is present to mirror (D-112). Only then do we bypass the
+    stage's rigid schema/rubric and reproduce that document's structure instead."""
+    if not (state.extra_context or "").strip():
+        return False  # nothing attached to mirror
+    # Look only at the human instruction, before the auto-generated scope/clarify blocks.
+    text = re.split(r"##\s*(?:Production scope|Clarifications)", state.user_input or "", maxsplit=1)[0]
+    return any(p.search(text) for p in _ATTACHED_FORMAT_PATTERNS)
+
+
+async def _run_custom_format(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAgentResult:
+    """Generate ONE document that mirrors the user's attached format, bypassing the
+    stage's fixed schema + default rubric (D-112). This is what makes 'follow my
+    attached format exactly' actually hold: no built-in template, no Agile backlog —
+    just the attached document's structure, filled for this request. Stage-agnostic."""
+    phase = get_phase(state.stage_template)
+    persona = phase.agent_persona
+    emit({"type": "node", "node": "agent",
+          "label": f"Following your attached format exactly — producing a single {phase.name} document "
+                   f"(no default template or backlog)"})
+    context_block, _ = await build_context_block(
+        state.context_window, deps.settings.CONTEXT_TOKEN_THRESHOLD, deps.llm
+    )
+    sys_parts = [
+        # Mock marker FIRST so the offline mock returns a CustomFormatDoc (not the
+        # phase persona's default corpus); real providers treat it as noise (D-06).
+        "#mock:custom_format",
+        render_prompt("policy.responsible_ai"),
+        render_prompt("phase.system.persona", persona=persona, phase_id=phase.id, phase_name=phase.name),
+        resolve_steering(persona),
+        render_prompt("phase.system.stack", tech_stack=state.tech_stack),
+        (f"## Project profile\n{state.project_profile}" if state.project_profile else ""),
+        render_prompt("phase.system.craft"),
+        "## Governing output format (MANDATORY — overrides every default)\n"
+        "The requester attached a document that DEFINES the exact format for this deliverable. "
+        "Reproduce that document's section headings, their order, its tables and overall structure "
+        "PRECISELY, filling each section with content specific to THIS request. Do NOT apply any "
+        "built-in template. Do NOT produce an Agile epic/feature/story backlog, a Definition of "
+        "Ready/Done, or any section the attached document does not contain. If the attached document "
+        "has a section you have no input for, keep the heading and note what is needed. Return the "
+        "whole deliverable as GitHub-flavoured markdown in `markdown`, and a short `title`.",
+        ("## The attached format and context (authoritative — mirror its structure)\n" + state.extra_context
+         if state.extra_context else ""),
+        (f"## Approved context from previous phases\n{context_block}" if context_block else ""),
+    ]
+    system = "\n".join(p for p in sys_parts if p)
+    # Strip the auto-added scope block from the shown instruction; keep the human ask.
+    instruction = re.split(r"##\s*Production scope", state.user_input or "", maxsplit=1)[0].strip()
+    user = instruction or f"Produce the {phase.name} document, following the attached format exactly."
+
+    data, result = await deps.llm.generate_json(
+        intent="generation", tag=f"stage{state.current_phase}_custom_format",
+        messages=[{"role": "system", "content": system, "cache": True},
+                  {"role": "user", "content": user}],
+        schema=CustomFormatDoc,
+        max_tokens=getattr(deps.settings, "PHASE_MAX_TOKENS", 16_000),
+        model=state.model_overrides.get("generate") or None,
+    )
+    state.last_provider, state.last_model = result.provider, result.model
+    deps.audit.record(
+        project_id=state.project_id, phase=state.current_phase, agent_role=persona,
+        event="ai.generation", provider=result.provider, model=result.model,
+        prompt_tokens=result.usage["promptTokens"], completion_tokens=result.usage["completionTokens"],
+        artefact_body=result.content, detail={"customFormat": True, "attachedFormat": True},
+    )
+    if result.provider == "mock" or "mock" in (result.model or "").lower():
+        emit({"type": "node", "node": "guardrail",
+              "label": "⚠ Served by the deterministic MOCK provider — output is placeholder."})
+    doc_type = _PRIMARY_DOC_TYPE.get(state.stage_template, "DOCUMENT")
+    title = (data.title or "").strip() or (state.stage_name or phase.name)
+    art = await _save_artifact(
+        deps, state, emit, type_=doc_type, title=title,
+        content=data.markdown, summary=(data.markdown or "")[:300], exact=True,
+    )
+    arts = [art] if art is not None else []
+    return PhaseAgentResult(
+        summary=f"Produced '{title}' following your attached format ({len(data.markdown or '')} chars). "
+                f"No default template or Agile backlog was generated — only the document you asked for.",
+        new_artifacts=arts, gate_status="PENDING_REVIEW",
+    )
+
+
 _RUNNERS: dict[int, Callable[[AgentDeps, AgentState, Emit], Awaitable[PhaseAgentResult]]] = {
     1: _run_phase1, 2: _run_phase2, 3: _run_phase3, 4: _run_phase4, 5: _run_phase5, 6: _run_phase6,
     7: _run_custom,  # data-driven custom phase (D-74)
@@ -1924,6 +2025,17 @@ async def run_phase_agent(deps: AgentDeps, state: AgentState, emit: Emit) -> Pha
     # sink so external writes are QUEUED, not executed. The collected actions ride
     # back on the result for the caller to persist against the phase; they replay
     # only after the gate is approved. Disabled → sink stays None → legacy path.
+    # D-112: when the requester explicitly asked to follow an attached document's
+    # format, generate a single document mirroring it instead of the stage's fixed
+    # schema/backlog. Falls back to the normal runner if that path fails (e.g. mock).
+    if _wants_attached_format(state):
+        try:
+            return await _run_custom_format(deps, state, emit)
+        except Exception as err:  # noqa: BLE001
+            log.warning("custom attached-format generation failed (%s); using the standard runner", err)
+            emit({"type": "node", "node": "guardrail", "status": "error",
+                  "label": f"Attached-format generation failed ({str(err)[:120]}); falling back to the standard output"})
+
     defer = getattr(deps.settings, "PUBLISH_ON_APPROVAL", True)
     token = _publish_sink.set([] if defer else None)
     # D-112 Phase B-ii: expose the confirmed scope to the side-effecting helpers.

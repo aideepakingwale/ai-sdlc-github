@@ -487,7 +487,7 @@ class ChatService:
         req = user_input.strip() or f"Produce {', '.join(stage.get('outputs') or ['the deliverables'])} for the '{stage['name']}' stage."
         try:
             out, _ = await self._deps.llm.generate_json(
-                intent="standard", tier="light", tag="clarify", max_tokens=1500, max_attempts=2,
+                intent="standard", tier="auto", tag="clarify", max_tokens=1500, max_attempts=2,
                 schema=ClarificationOutput,
                 messages=[
                     {"role": "system", "content": render_prompt(

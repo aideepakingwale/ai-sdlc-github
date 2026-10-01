@@ -32,6 +32,15 @@ class CustomPhaseOutput(BaseModel):
     toolCalls: list[CustomToolCall] = Field(default_factory=list)
 
 
+class CustomFormatDoc(BaseModel):
+    """A single free-form document that mirrors a user-attached format (D-112). Used
+    when the requester explicitly asks to follow an attached sample's format, so
+    generation bypasses the stage's rigid schema/rubric and reproduces that exact
+    structure instead of the built-in template or an Agile backlog."""
+    title: str = ""
+    markdown: str
+
+
 class StoryStatement(BaseModel):
     """The canonical Agile story form as structured fields (not free text)."""
     asA: str

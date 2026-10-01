@@ -4,7 +4,7 @@ import * as corpus from './mock-corpus.js';
 import type { LlmProvider, ProviderResult } from './types.js';
 
 /**
- * Deterministic mock LLM. Orchestrator prompts embed a directive line
+ * Deterministic mock LLM (D-06). Orchestrator prompts embed a directive line
  * `#mock:<kind>` (real providers treat it as prompt noise); the mock switches
  * on it to return schema-valid JSON for every pipeline node, so all six phases,
  * gates and the build-recovery loop are exercisable offline. Same input ⇒ same
@@ -15,7 +15,7 @@ export function createMockProvider(): LlmProvider {
     id: 'mock',
     configured: true,
     model: 'mock-sdlc-1',
-    vision: true, // handles image requests deterministically so offline vision never dead-ends
+    vision: true, // handles image requests deterministically so offline vision never dead-ends (D-66)
 
     async generate(req: GenerateRequest): Promise<ProviderResult> {
       const all = req.messages.map((m) => m.content).join('\n');
@@ -102,7 +102,7 @@ function render(kind: string, topic: string, seed: string, userText: string): st
       });
 
     case 'custom':
-      // Data-driven custom phase: a generic, schema-valid deliverable set.
+      // Data-driven custom phase (D-77): a generic, schema-valid deliverable set.
       return JSON.stringify({
         deliverables: [{
           output: 'DELIVERABLE',
@@ -111,6 +111,21 @@ function render(kind: string, topic: string, seed: string, userText: string): st
             + '## Summary\nKey findings and recommendations for the stage.\n',
         }],
         toolCalls: [],
+      });
+
+    case 'custom_format':
+      // D-112: a single document mirroring a user-attached format (CustomFormatDoc).
+      // Deterministic placeholder with a few headings so the pipeline persists ONE
+      // document and no backlog; real providers reproduce the attached structure.
+      return JSON.stringify({
+        title: `${topic} — Requirement Specification`,
+        markdown: `# ${topic} — Requirement Specification\n\n`
+          + `_Produced following the requester's attached format (mock provider, ref ${seed})._\n\n`
+          + '## 1. Document Reference\n| Document | Version |\n|---|---|\n| This spec | v0.1 |\n\n'
+          + '## 2. Background\nContext for the requirement.\n\n'
+          + '## 3. Application Details\nSource and target systems.\n\n'
+          + '## 4. Non-Functional Requirements\nAvailability, performance, security.\n\n'
+          + '## 5. Change History\n| Version | Date | Author | Description |\n|---|---|---|---|\n',
       });
 
     case 'phase1':
@@ -192,7 +207,7 @@ function render(kind: string, topic: string, seed: string, userText: string): st
       return JSON.stringify({ ok: true, issues: [] });
 
     case 'validate':
-      // Validation agent: the deterministic corpus is well-formed, so the
+      // Validation agent (D-52): the deterministic corpus is well-formed, so the
       // offline verdict always passes; real providers do the real judgement.
       return JSON.stringify({ ok: true, issues: [], reworkInstructions: '' });
 

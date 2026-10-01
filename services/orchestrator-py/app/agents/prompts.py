@@ -147,7 +147,12 @@ def build_phase_prompt(
         # Professional quality bars (D-39): the universal craft standard plus
         # the stage-specific rubric a senior reviewer would apply.
         render("phase.system.craft"),
-        render(f"phase.quality.{phase_def.id}"),
+        # The stage's default quality rubric mandates the built-in template sections
+        # (and, for requirements, an Epic→Feature→Story backlog). When the requester
+        # confirmed a DIFFERENT format, that rubric fights the chosen format and drags
+        # the output back to the default — so drop it and let the governing-format
+        # block below rule (D-112). Craft standards still apply.
+        ("" if format_directive else render(f"phase.quality.{phase_def.id}")),
         quality_gate_block,
     ]
     if has_codebase:
