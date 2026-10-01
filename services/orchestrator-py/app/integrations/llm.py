@@ -227,8 +227,13 @@ class LlmClient:
         tag: str | None = None,
         tier: str = "auto",
         model: str | None = None,
+        max_attempts: int = 3,
     ) -> tuple[T, LlmResult]:
         """JSON-mode generation validated against `schema`, with truncation-aware retries.
+
+        max_attempts caps the generate+validate retries (D-109). Advisory callers (the
+        intelligent planner) pass 1 — one shot, no expensive repair loop — so a schema
+        the model doesn't nail on the first try costs one call, not three.
 
         D-103: a large artifact can hit the provider's output-token cap; the returned
         JSON is then incomplete and unparseable, and a same-size repair just truncates
@@ -238,7 +243,7 @@ class LlmClient:
         HARD_MAX = 64_000  # Claude Sonnet's output ceiling — the growth limit
         effective_max = max_tokens
         last_issues = ""
-        for attempt in range(3):
+        for attempt in range(max(1, max_attempts)):
             msgs = messages if attempt == 0 else [
                 *messages,
                 {"role": "user", "content": render_prompt("json_repair.user", issues=last_issues[:500])},

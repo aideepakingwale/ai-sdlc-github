@@ -466,7 +466,7 @@ class ChatService:
         req = user_input.strip() or f"Produce {', '.join(stage.get('outputs') or ['the deliverables'])} for the '{stage['name']}' stage."
         try:
             out, _ = await self._deps.llm.generate_json(
-                intent="standard", tier="light", tag="clarify", max_tokens=1500,
+                intent="standard", tier="light", tag="clarify", max_tokens=1500, max_attempts=2,
                 schema=ClarificationOutput,
                 messages=[
                     {"role": "system", "content": render_prompt(
@@ -478,9 +478,13 @@ class ChatService:
                         context_digest=digest)},
                 ],
             )
-        except Exception:
+        except Exception as err:  # noqa: BLE001 — a failed check must not block generation
+            log.info("clarify check errored (%s); proceeding without questions", err)
             return []
-        return [q.model_dump() for q in out.questions][:max_questions] if out.needs_clarification else []
+        # Drop any blank questions (lenient schema), then apply the cap.
+        qs = [q.model_dump() for q in out.questions if (q.question or "").strip()]
+        log.info("clarify: needs=%s questions=%d stage=%s", out.needs_clarification, len(qs), stage.get("name"))
+        return qs[:max_questions] if (out.needs_clarification and qs) else []
 
     async def answer_clarification(
         self, *, project_id: str, phase: int, user: UserPublic, answers: list[dict[str, Any]],
@@ -643,7 +647,7 @@ class ChatService:
         try:
             data, _ = await self._deps.llm.generate_json(
                 intent="standard", tag=f"stage_planner_t{stage['template']}", temperature=0.1,
-                max_tokens=2000, schema=StagePlanIntel,
+                max_tokens=2000, schema=StagePlanIntel, max_attempts=1,  # advisory: one shot, no retry (D-109)
                 messages=[{"role": "system", "content": sys_p}, {"role": "user", "content": usr_p}],
             )
             plan = data.model_dump()

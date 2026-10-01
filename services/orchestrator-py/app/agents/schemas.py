@@ -361,34 +361,6 @@ class PlannerOutput(BaseModel):
     steps: list[PlannerStep] = Field(min_length=1)
 
 
-# --- Intelligent stage planning (D-105) ------------------------------------
-# An LLM-built, context-aware plan for a stage: what to produce, which tools to
-# use, which skills to emphasise, and why — tailored to the input, tech stack,
-# prior artifacts and configuration. Advisory (shown in Review-plan); it does not
-# change the generated schema in this scope.
-class PlanStepIntel(BaseModel):
-    id: str = Field(description="Step id: 'generate', 'validate', 'tool:<name>', or 'gate'.")
-    label: str = Field(description="Short human label for the step.")
-    kind: str = Field(description="One of: llm | tool | gate.")
-    tier: str = Field(default="", description="Recommended model tier for llm steps (frontier|balanced|light|local), else ''.")
-    rationale: str = Field(description="Why this step is needed for THIS input/stack/context (one sentence).")
-
-
-class PlanToolRec(BaseModel):
-    tool: str = Field(description="Tool name from the available (configured) set.")
-    use: bool = Field(description="Whether to invoke this tool for this run.")
-    rationale: str = Field(description="Why use it (or why skip it).")
-
-
-class StagePlanIntel(BaseModel):
-    summary: str = Field(description="1-3 sentences: the tailored approach for this stage given the input, stack, prior artifacts and config.")
-    steps: list[PlanStepIntel] = Field(default_factory=list)
-    toolRecommendations: list[PlanToolRec] = Field(default_factory=list)
-    skillRecommendations: list[str] = Field(default_factory=list, description="Skill ids to emphasise for this run.")
-    assumptions: list[str] = Field(default_factory=list, description="Assumptions the planner made from the given context.")
-    risks: list[str] = Field(default_factory=list, description="Risks/gaps worth the reviewer's attention before running.")
-
-
 PHASE_SCHEMAS: dict[int, type[BaseModel]] = {
     1: Phase1Output,
     2: Phase2Output,
@@ -399,17 +371,45 @@ PHASE_SCHEMAS: dict[int, type[BaseModel]] = {
 }
 
 
+# D-105/D-109: the planner is ADVISORY and runs with a single attempt (no repair
+# loop), so every field is optional-with-default — the model's first output validates
+# even if it omits or renames a field, instead of failing and triggering costly retries.
+class PlanStepIntel(BaseModel):
+    id: str = Field(default="", description="Step id: 'generate', 'validate', 'tool:<name>', or 'gate'.")
+    label: str = Field(default="", description="Short human label for the step.")
+    kind: str = Field(default="llm", description="One of: llm | tool | gate.")
+    tier: str = Field(default="", description="Recommended model tier for llm steps, else ''.")
+    rationale: str = Field(default="", description="Why this step is needed for THIS input/stack/context.")
+
+
+class PlanToolRec(BaseModel):
+    tool: str = Field(default="", description="Tool name from the available (configured) set.")
+    use: bool = Field(default=True, description="Whether to invoke this tool for this run.")
+    rationale: str = Field(default="", description="Why use it (or why skip it).")
+
+
+class StagePlanIntel(BaseModel):
+    summary: str = Field(default="", description="1-3 sentences: the tailored approach for this stage.")
+    steps: list[PlanStepIntel] = Field(default_factory=list)
+    toolRecommendations: list[PlanToolRec] = Field(default_factory=list)
+    skillRecommendations: list[str] = Field(default_factory=list, description="Skill ids to emphasise.")
+    assumptions: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+
+
 class ClarificationOption(BaseModel):
-    """One predefined answer choice for a clarifying question (D-108)."""
-    label: str = Field(description="Short selectable answer (1-5 words).")
+    """One predefined answer choice for a clarifying question (D-108). Lenient defaults
+    (D-109): the model's output validates on the first try instead of failing and being
+    silently swallowed (which left the system generating on assumptions, no cards)."""
+    label: str = Field(default="", description="Short selectable answer (1-5 words).")
     description: str = Field(default="", description="One line: what this choice means or its trade-off.")
 
 
 class ClarificationQuestion(BaseModel):
     """A structured clarifying question with predefined options (Claude-Code-style):
     the UI renders the options as choices and always adds an 'Other' free-text entry."""
-    id: str = Field(description="Short kebab-case id, e.g. 'cloud-provider' or 'auth-model'.")
-    question: str = Field(description="The specific, answerable question.")
+    id: str = Field(default="", description="Short kebab-case id, e.g. 'cloud-provider' or 'auth-model'.")
+    question: str = Field(default="", description="The specific, answerable question.")
     header: str = Field(default="", description="Very short chip label (<=12 chars), e.g. 'Cloud'.")
     options: list[ClarificationOption] = Field(
         default_factory=list,
