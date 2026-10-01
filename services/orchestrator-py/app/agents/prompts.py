@@ -114,6 +114,7 @@ def build_phase_prompt(
     quality_gate_enabled: bool = True,
     coverage_min: int = 80,
     lint_required: bool = True,
+    format_directive: str = "",
 ) -> tuple[str, str]:
     phase_def = get_phase(phase)
     # Coverage + lint quality gate applies to the test, CI/CD and implementation
@@ -170,6 +171,19 @@ def build_phase_prompt(
         system_parts.append(
             "\n## Context the requester attached for this stage (treat as authoritative "
             "inputs; use it directly)\n" + user_context_block
+        )
+    # Confirmed output format (D-112 Phase B): the requester reviewed the plan and
+    # chose a GOVERNING format for this run — the sections of an attached sample, a
+    # named template, or the default. This OUTRANKS the stage's default rubric: when
+    # it conflicts with the template mandated above (e.g. a fixed PRD section list or
+    # a mandatory Epic→Feature→Story backlog), the requester's chosen format WINS.
+    # Mirror the chosen format's sections, headings and order in the primary narrative
+    # field; do not bolt on the default template's sections the requester did not ask
+    # for, and do not invent a backlog/structure the chosen format does not contain.
+    if format_directive:
+        system_parts.append(
+            "\n## Governing output format (confirmed by the requester — overrides the "
+            "default template above where they conflict)\n" + format_directive
         )
     if rag_block:
         system_parts.append("\n" + rag_block)

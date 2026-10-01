@@ -57,6 +57,71 @@ Emit = Callable[[dict[str, Any]], None]
 _NO_REUSE = object()
 
 
+# ---- D-112 Phase B: the reviewer's confirmed production scope -------------------
+# The StageWorkspace folds the reviewer's decision into the prompt overlay as a
+# machine-readable block (see productionDirective() in StageWorkspace.tsx):
+#
+#   ## Production scope (confirmed by the reviewer)
+#   - Produce ONLY these artifacts: A, B.
+#   - Do NOT produce: C, D.
+#   - Follow this output format: <source>.
+#
+# We parse it back deterministically so generation can HONOUR it: steer the model to
+# the chosen format and relax the hardcoded default rubric when a non-default format
+# was chosen. The block is optional — a run without it behaves exactly as before.
+_SCOPE_INCLUDE = re.compile(r"Produce ONLY these artifacts:\s*(.+?)\s*\.?\s*$", re.I | re.M)
+_SCOPE_EXCLUDE = re.compile(r"Do NOT produce:\s*(.+?)\s*\.?\s*$", re.I | re.M)
+_SCOPE_FORMAT = re.compile(r"Follow this output format:\s*(.+?)\s*\.?\s*$", re.I | re.M)
+
+
+def _split_names(raw: str) -> list[str]:
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+def production_scope(user_input: str | None) -> dict[str, Any]:
+    """Parse the reviewer's confirmed production scope out of the prompt overlay.
+    Returns {include, exclude, format}; all empty when no scope block is present."""
+    text = user_input or ""
+    inc = _SCOPE_INCLUDE.search(text)
+    exc = _SCOPE_EXCLUDE.search(text)
+    fmt = _SCOPE_FORMAT.search(text)
+    return {
+        "include": _split_names(inc.group(1)) if inc else [],
+        "exclude": _split_names(exc.group(1)) if exc else [],
+        "format": (fmt.group(1).strip() if fmt else ""),
+    }
+
+
+def _format_directive(scope: dict[str, Any], has_attachment: bool) -> str:
+    """Build the governing-format instruction injected into the system prompt when
+    the reviewer chose a non-default output format. Empty → no override (default
+    rubric applies as before)."""
+    fmt = (scope.get("format") or "").strip()
+    if not fmt:
+        return ""
+    # A default-template choice is NOT an override — let the stage rubric stand.
+    if re.search(r"\bdefault\b|standard template|built-?in template", fmt, re.I):
+        return ""
+    lines = [f"The requester chose this output format: **{fmt}**."]
+    if has_attachment or re.search(r"attach|sample|provided|uploaded|their|above", fmt, re.I):
+        lines.append(
+            "Treat the attached document above as the FORMAT TEMPLATE: reproduce its exact "
+            "section headings, order and table layout, filling them with content for THIS "
+            "request. Do not add the default template's sections it does not contain, and do "
+            "not drop sections it does contain."
+        )
+    inc, exc = scope.get("include") or [], scope.get("exclude") or []
+    if inc:
+        lines.append("Produce ONLY these deliverables: " + ", ".join(inc) + ".")
+    if exc:
+        lines.append(
+            "Do NOT produce: " + ", ".join(exc) + ". Where the stage schema still requires a "
+            "field for an excluded deliverable, return a single minimal placeholder for it "
+            "rather than full content."
+        )
+    return "\n".join(f"- {l}" for l in lines)
+
+
 async def _generate_phase_split(
     *, deps: "AgentDeps", state: "AgentState", system: str, user: str,
     schema: type[BaseModel], base_tag: str, intent: str, max_tokens: int,
@@ -472,6 +537,16 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
     if rework:
         amend_comments = (f"{amend_comments}\n\n" if amend_comments else "") + rework
 
+    # D-112 Phase B: honour the reviewer's confirmed output format. When they chose a
+    # non-default format (an attached sample's sections, a named template), inject a
+    # governing-format directive that OUTRANKS the stage's default rubric so the output
+    # follows what they asked for instead of the built-in template.
+    scope = production_scope(state.user_input)
+    fmt_directive = _format_directive(scope, has_attachment=bool((state.extra_context or "").strip()))
+    if fmt_directive:
+        emit({"type": "node", "node": "agent",
+              "label": f"Honouring the confirmed output format: {scope['format'][:80]}"})
+
     system, user = build_phase_prompt(
         phase=state.stage_template,
         context_block=context_block,
@@ -487,6 +562,7 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
         quality_gate_enabled=getattr(deps.settings, "QUALITY_GATE_ENABLED", True),
         coverage_min=getattr(deps.settings, "COVERAGE_MIN_PERCENT", 80),
         lint_required=getattr(deps.settings, "LINT_REQUIRED", True),
+        format_directive=fmt_directive,
     )
     if state.extra_context:
         emit({"type": "node", "node": "agent",
@@ -596,10 +672,17 @@ def _deterministic_quality(state: AgentState, out: BaseModel, phase) -> tuple[li
             fix="Provide the actual requirements (or answer the clarifying questions) and regenerate."))
         cap = 60
 
+    # D-112 Phase B: when the reviewer confirmed a non-default output format (e.g. an
+    # attached sample's sections), the built-in PRD section list no longer applies —
+    # penalising its absence would contradict the format the requester explicitly
+    # chose. Skip the hardcoded section checks in that case.
+    fmt_active = bool(_format_directive(production_scope(state.user_input),
+                                        has_attachment=bool((state.extra_context or "").strip())))
+
     # Requirement stage must carry the mandated sections (compliance/legal,
     # confidence, open items) — enforced deterministically so the deepening does
     # not depend on the model choosing to include them.
-    if phase.id == 1:
+    if phase.id == 1 and not fmt_active:
         text = getattr(out, "prdMarkdown", "") or ""
         checks = {
             "Compliance, legal & regulatory": r"complian|regulat|gdpr|pci|hipaa|sox|wcag|data.?privacy|\blegal\b",
