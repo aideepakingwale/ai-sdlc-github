@@ -144,6 +144,11 @@ def build_phase_prompt(
         # stage generates against the same project configuration.
         (f"## Project profile\n{project_profile}" if project_profile else ""),
         render("phase.system.grounding"),
+        # Universal clarify-or-proceed principle (D-112): ask when a material gap
+        # exists, otherwise proceed and record a labelled assumption. The interactive
+        # ask happens in the pre-generation clarify gate; here it keeps the agent from
+        # inventing facts and makes it surface residual gaps as explicit assumptions.
+        render("policy.clarification"),
         # Professional quality bars (D-39): the universal craft standard plus
         # the stage-specific rubric a senior reviewer would apply.
         render("phase.system.craft"),

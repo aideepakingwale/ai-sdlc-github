@@ -490,7 +490,7 @@ class ChatService:
                 intent="standard", tier="auto", tag="clarify", max_tokens=1500, max_attempts=2,
                 schema=ClarificationOutput,
                 messages=[
-                    {"role": "system", "content": render_prompt(
+                    {"role": "system", "content": render_prompt("policy.clarification") + "\n\n" + render_prompt(
                         "clarify.system", persona=persona, stage_name=stage["name"],
                         max_questions=max_questions,
                         mandatory_inputs=mandatory_block)},
@@ -698,7 +698,8 @@ class ChatService:
         if not allow_compute:
             return None
 
-        sys_p = (
+        from .prompt_library import render as render_prompt
+        sys_p = render_prompt("policy.clarification") + "\n\n" + (
             "You are the planning brain for one stage of an enterprise AI-SDLC pipeline. You do NOT "
             "produce the artifacts — before generation you RECONCILE the user's intent with what THIS "
             "stage can actually do, ADVISE what is best, and let the reviewer decide. Restate what you "
