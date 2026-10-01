@@ -596,6 +596,7 @@ class ChatService:
     async def _intelligent_plan(
         self, *, project: dict, phase: int, stage: dict, overlay: dict,
         available_tools: list[str], skills: list[dict], prior_arts: list[dict], canon_applied: bool,
+        attachments: list[dict] | None = None, formworks: list[dict] | None = None,
         allow_compute: bool = True,
     ) -> dict[str, Any] | None:
         """LLM-built, context-aware plan for a stage (D-105). Fed the input, tech
@@ -615,13 +616,17 @@ class ChatService:
         stack = project.get("tech_stack") or "Node.js + TypeScript"
         profile = self._project_profile(project)
         art_digest = "; ".join(f"{a['type']}:{a['title']}" for a in prior_arts[:20]) or "none"
+        outputs = list(stage.get("outputs") or [])
+        att_names = [a.get("filename", "") for a in (attachments or [])]
+        fw_names = [f.get("name", "") for f in (formworks or [])]
         # Cache signature: recompute only when something that shapes the plan changes.
         sig_src = json.dumps({
             "t": stage["template"], "ov": overlay.get("promptOverlay", ""),
             "ref": overlay.get("referencedArtifactIds", []), "att": overlay.get("attachmentIds", []),
             "fw": overlay.get("formworkIds", []), "stack": stack, "profile": profile,
-            "tools": sorted(available_tools), "outputs": sorted(stage.get("outputs") or []),
+            "tools": sorted(available_tools), "outputs": sorted(outputs),
             "arts": art_digest, "canon": canon_applied, "persona": stage.get("persona"),
+            "attn": sorted(att_names), "fwn": sorted(fw_names),
         }, sort_keys=True)
         sig = hashlib.sha256(sig_src.encode()).hexdigest()[:16]
         ckey = f"sdlc:planintel:{project['id']}:{phase}"
@@ -644,26 +649,35 @@ class ChatService:
             return None
 
         sys_p = (
-            "You are the planning brain for one stage of an enterprise AI-SDLC pipeline. "
-            "You do NOT produce the artifacts — you produce a concise, tailored PLAN for how this "
-            "stage should run, given the specific input, technology stack, prior artifacts and "
-            "configuration. Be specific to the inputs; never generic. Only recommend tools from the "
-            "AVAILABLE list. Keep every rationale to one sentence."
+            "You are the planning brain for one stage of an enterprise AI-SDLC pipeline. You do NOT "
+            "produce the artifacts — before generation you RECONCILE the user's intent with what THIS "
+            "stage can actually do, ADVISE what is best, and let the reviewer decide. Restate what you "
+            "understood, then, from the stage's declared OUTPUT ARTIFACTS, recommend which to produce "
+            "for THIS request (the user may want only one, e.g. just a PRD — do not force the rest; mark "
+            "those recommended=false with a reason). Pick the FORMAT to follow: if the user attached a "
+            "document and asked to follow its format, set formatSource to mirror that file's sections; "
+            "else a matching formwork; else the stage's default template. List anything out of scope — "
+            "including parts of the request that belong to a DIFFERENT stage. Be specific to the inputs; "
+            "never generic. Only recommend tools from the AVAILABLE list. One sentence per rationale."
         )
         usr_p = (
             f"STAGE: {stage['name']} (persona: {stage.get('persona')}, template {stage['template']}).\n"
-            f"OUTPUT ARTIFACTS this stage produces: {', '.join(stage.get('outputs') or []) or '—'}.\n"
+            f"OUTPUT ARTIFACTS this stage can produce: {', '.join(outputs) or '—'}.\n"
             f"AVAILABLE TOOLS (configured — recommend only these): {', '.join(available_tools) or 'none'}.\n"
             f"AVAILABLE SKILLS: {', '.join(s['name'] for s in skills) or 'none'}.\n"
+            f"AVAILABLE OUTPUT TEMPLATES (formworks): {', '.join(n for n in fw_names if n) or 'none'}.\n"
+            f"ATTACHED DOCUMENTS (user-provided; may define the desired format): {', '.join(n for n in att_names if n) or 'none'}.\n"
             f"TECH STACK: {stack}.\n{profile}\n"
             f"PRIOR-STAGE ARTIFACTS: {art_digest}.\n"
             f"CANON RULES APPLIED: {'yes' if canon_applied else 'no'}.\n\n"
             f"USER INPUT / INSTRUCTIONS for this stage:\n"
             f"{(overlay.get('promptOverlay') or '(none — infer from the stage and context)')[:4000]}\n\n"
-            "Produce a plan: a 1-3 sentence tailored summary; the ordered steps (generate, validate if "
-            "useful, one per recommended tool, gate) each with a one-sentence rationale and a model tier "
-            "for llm steps; tool recommendations (use/skip + why) covering the available tools; skills to "
-            "emphasise; assumptions; and risks the reviewer should see before running."
+            "Produce the proposal: `understood` (restate the intent); `willProduce` (each declared output "
+            "with recommended=true/false + a one-line reason, honouring what the user actually asked for); "
+            "`formatSource` (default template / an attached file's sections / a formwork); `outOfScope`; a "
+            "`recommendation` advising the best course; a short `summary`; the ordered `steps` (generate, "
+            "validate, one per recommended tool, gate) with rationale + model tier; `toolRecommendations`; "
+            "`skillRecommendations`; `assumptions`; and `risks`."
         )
         try:
             data, _ = await self._deps.llm.generate_json(
@@ -743,7 +757,7 @@ class ChatService:
         intel = await self._intelligent_plan(
             project=project, phase=phase, stage=stage, overlay=overlay,
             available_tools=available_tools, skills=skills, prior_arts=prior_arts, canon_applied=canon_applied,
-            allow_compute=run_intel,
+            attachments=attachments, formworks=formworks, allow_compute=run_intel,
         )
         if intel:
             # Fold the planner's per-step rationale onto the matching deterministic steps.

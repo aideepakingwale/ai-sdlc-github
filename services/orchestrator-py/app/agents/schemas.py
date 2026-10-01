@@ -388,7 +388,24 @@ class PlanToolRec(BaseModel):
     rationale: str = Field(default="", description="Why use it (or why skip it).")
 
 
+class ProposedArtifact(BaseModel):
+    """One of the stage's declared outputs, with the agent's recommendation on whether
+    to produce it for THIS request (D-112). The agent advises (`recommended`); the user
+    decides (`include`, which the UI defaults to `recommended`)."""
+    output: str = Field(default="", description="A stage output/artifact type, e.g. 'PRD', 'HLD', 'EPIC'.")
+    recommended: bool = Field(default=True, description="The agent's advice: produce this for this request?")
+    include: bool = Field(default=True, description="Whether to produce it (defaults to `recommended`; user overrides).")
+    reason: str = Field(default="", description="One line: why it's recommended or not, per the user's intent.")
+
+
 class StagePlanIntel(BaseModel):
+    # D-112 intent reconciliation: restate the intent, reconcile it with the stage's
+    # declared outputs/steering/templates, advise what's best, and let the user decide.
+    understood: str = Field(default="", description="Plain-language restatement of what the user is asking this stage to do.")
+    willProduce: list[ProposedArtifact] = Field(default_factory=list, description="The stage's outputs, each with a produce/skip recommendation per intent.")
+    formatSource: str = Field(default="", description="The output format to follow: the default template, an attached file's sections, or a named formwork — whichever best matches the intent.")
+    outOfScope: list[str] = Field(default_factory=list, description="What is deliberately NOT produced, including anything the intent asks for that belongs to a different stage.")
+    recommendation: str = Field(default="", description="One or two sentences advising the best course for this request.")
     summary: str = Field(default="", description="1-3 sentences: the tailored approach for this stage.")
     steps: list[PlanStepIntel] = Field(default_factory=list)
     toolRecommendations: list[PlanToolRec] = Field(default_factory=list)

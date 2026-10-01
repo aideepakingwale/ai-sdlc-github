@@ -41,6 +41,11 @@ interface StagePlan {
   }> | null;
   // Intelligent, context-aware plan (D-105); null when disabled/unavailable.
   intel?: {
+    understood: string;
+    willProduce: Array<{ output: string; recommended: boolean; include: boolean; reason: string }>;
+    formatSource: string;
+    outOfScope: string[];
+    recommendation: string;
     summary: string;
     steps: Array<{ id: string; label: string; kind: string; tier: string; rationale: string }>;
     toolRecommendations: Array<{ tool: string; use: boolean; rationale: string }>;
@@ -107,6 +112,16 @@ export default function StageWorkspace({
   const [uploading, setUploading] = useState(false);
   const [plan, setPlan] = useState<StagePlan | null>(null);
   const [planBusy, setPlanBusy] = useState(false);
+  // D-112: the reviewer's decision on which outputs to produce (defaults to the
+  // agent's recommendation from the proposal); folded into generation on trigger.
+  const [produceSel, setProduceSel] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    const wp = plan?.intel?.willProduce;
+    if (wp && wp.length) {
+      setProduceSel(Object.fromEntries(wp.map((a) => [a.output, a.include ?? a.recommended])));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan]);
   const [showSystemPrompt, setShowSystemPrompt] = useState(false);
   // Inline "@" mention autosuggest (D-56).
   const [mention, setMention] = useState<{ open: boolean; query: string; at: number }>({
@@ -226,6 +241,25 @@ export default function StageWorkspace({
     formworkIds,
   });
 
+  // D-112: the reviewer's decision (which outputs to produce + the format) as an
+  // explicit instruction folded into the overlay at trigger time, so generation
+  // honours exactly what was chosen. Phase B enforces this at the schema/runner level;
+  // for now it steers the agent directly.
+  const productionDirective = (): string => {
+    const intel = plan?.intel;
+    const wp = intel?.willProduce ?? [];
+    if (!intel || wp.length === 0) return '';
+    const on = (o: { output: string; include?: boolean; recommended?: boolean }) =>
+      produceSel[o.output] ?? o.include ?? o.recommended;
+    const include = wp.filter(on).map((a) => a.output);
+    const exclude = wp.filter((a) => !on(a)).map((a) => a.output);
+    const lines: string[] = [];
+    if (include.length) lines.push(`Produce ONLY these artifacts: ${include.join(', ')}.`);
+    if (exclude.length) lines.push(`Do NOT produce: ${exclude.join(', ')}.`);
+    if (intel.formatSource) lines.push(`Follow this output format: ${intel.formatSource}.`);
+    return lines.length ? `\n\n## Production scope (confirmed by the reviewer)\n${lines.map((l) => `- ${l}`).join('\n')}` : '';
+  };
+
   // D-56: save the overlay and (re-)render the full plan — "Review / Update plan".
   async function reviewPlan(e?: FormEvent) {
     e?.preventDefault();
@@ -258,8 +292,12 @@ export default function StageWorkspace({
     // happened / no artifacts". beginStream() also guards re-clicks (streaming=true).
     beginStream();
     pushEvent({ type: 'node', node: 'queue', label: 'Starting the run…' } as never);
-    // persist the latest overlay first, then enqueue the reviewed run
-    try { await api.put(`/api/projects/${projectId}/phase/${selectedSeq}/plan`, overlayBody()); } catch { /* proceed */ }
+    // persist the latest overlay (with the reviewer's production-scope decision) first,
+    // then enqueue the reviewed run.
+    try {
+      const base = overlayBody();
+      await api.put(`/api/projects/${projectId}/phase/${selectedSeq}/plan`, { ...base, promptOverlay: base.promptOverlay + productionDirective() });
+    } catch { /* proceed */ }
     try {
       await api.post(`/api/projects/${projectId}/phase/${selectedSeq}/plan/trigger`, {});
     } catch (err) {
@@ -754,6 +792,56 @@ export default function StageWorkspace({
                     </span>
                   )}
                 </div>
+
+                {/* ---- Intent proposal: advise what's best, let the reviewer decide (D-112) ---- */}
+                {plan.intel && (plan.intel.understood || (plan.intel.willProduce?.length ?? 0) > 0) && (
+                  <div className="mb-3 rounded-lg border border-brand-300 bg-brand-50/50 p-3">
+                    {plan.intel.understood && (
+                      <div className="mb-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">What I understood</div>
+                        <p className="text-[12px] leading-snug text-slate-800">{plan.intel.understood}</p>
+                      </div>
+                    )}
+                    {(plan.intel.willProduce?.length ?? 0) > 0 && (
+                      <div className="mb-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                          I recommend producing <span className="normal-case text-slate-400">— tick what you want; untick to skip</span>
+                        </div>
+                        <div className="mt-1 space-y-1">
+                          {plan.intel.willProduce.map((a) => (
+                            <label key={a.output} className="flex items-start gap-2 text-[12px] text-slate-700">
+                              <input
+                                type="checkbox"
+                                className="mt-0.5"
+                                checked={produceSel[a.output] ?? a.include ?? a.recommended}
+                                onChange={(e) => setProduceSel((p) => ({ ...p, [a.output]: e.target.checked }))}
+                              />
+                              <span>
+                                <span className="font-semibold">{a.output}</span>
+                                {a.recommended
+                                  ? <span className="ml-1 rounded bg-emerald-100 px-1 text-[9px] font-semibold text-emerald-700">recommended</span>
+                                  : <span className="ml-1 rounded bg-slate-100 px-1 text-[9px] text-slate-500">optional</span>}
+                                {a.reason && <span className="text-slate-500"> — {a.reason}</span>}
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {plan.intel.formatSource && (
+                      <div className="mb-1 text-[11px] text-slate-600"><span className="font-semibold">Format:</span> {plan.intel.formatSource}</div>
+                    )}
+                    {plan.intel.recommendation && (
+                      <div className="mb-1 rounded bg-white px-2 py-1 text-[11px] text-brand-800"><span className="font-semibold">Advice:</span> {plan.intel.recommendation}</div>
+                    )}
+                    {(plan.intel.outOfScope?.length ?? 0) > 0 && (
+                      <div className="text-[11px] text-slate-500">
+                        <span className="font-semibold text-slate-600">Out of scope:</span> {plan.intel.outOfScope.join('; ')}
+                      </div>
+                    )}
+                    <div className="mt-1 text-[10px] text-slate-400">Your selection is applied when you trigger the stage.</div>
+                  </div>
+                )}
 
                 {/* ---- Intelligent, context-aware plan (D-105) ---- */}
                 {plan.intel && (
