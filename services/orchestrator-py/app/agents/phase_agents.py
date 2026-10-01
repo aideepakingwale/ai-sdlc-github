@@ -122,6 +122,77 @@ def _format_directive(scope: dict[str, Any], has_attachment: bool) -> str:
     return "\n".join(f"- {l}" for l in lines)
 
 
+# ---- D-112 Phase B-ii: enforce the confirmed scope at the artifact level ---------
+# A best-effort map from an artifact CONCEPT to the keywords that name it, so the
+# reviewer's free-text include/exclude choices ("Epic & Story backlog", "ADRs",
+# "the PRD") can be matched to the artifact types/tools a stage actually produces.
+# Matching is conservative: an artifact is dropped only when its concept is in the
+# exclude set AND not in the include set, so a wanted deliverable is never lost.
+_CONCEPTS: list[tuple[str, tuple[str, ...]]] = [
+    # "backlog" names the whole Epic→Feature→Story hierarchy, so excluding it drops all three.
+    ("epic", ("epic", "backlog")),
+    ("feature", ("feature", "backlog")),
+    ("story", ("story", "stories", "backlog", "user story")),
+    ("adr", ("adr", "decision record", "architecture decision")),
+    ("prd", ("prd", "product requirement", "requirement spec", "requirements doc", "brd", "business requirement")),
+    ("hld", ("hld", "high-level design", "high level design")),
+    ("lld", ("lld", "low-level design", "low level design", "detailed design")),
+    ("diagram", ("diagram", "drawio", "draw.io", "structurizr", "cloudcraft", "c4", "mermaid", "plantuml", "topology")),
+    ("openapi", ("openapi", "swagger", "api spec", "api contract")),
+    ("schema", ("dbml", "db schema", "database schema", "data model")),
+    ("test", ("test plan", "test strategy", "test case", "xray", "unit test", "testing")),
+    ("pipeline", ("pipeline", "ci/cd", "cicd", "ci cd", "devops", "deployment config")),
+    ("iac", ("terraform", "cdk", "iac", "infrastructure as code", "cloudformation")),
+    ("code", ("source code", "app code", "implementation code")),
+]
+
+
+def _concepts(text: str) -> set[str]:
+    """The set of artifact concepts named in a piece of free text."""
+    t = (text or "").lower()
+    return {key for key, words in _CONCEPTS if any(w in t for w in words)}
+
+
+def labels_excluded(scope: dict[str, Any], *labels: str) -> bool:
+    """True when the artifact described by `labels` (type, title, …) belongs to a
+    concept the reviewer excluded and NOT to one they included (include wins)."""
+    exc = scope.get("exclude") or []
+    if not exc:
+        return False
+    mine = set()
+    for lab in labels:
+        mine |= _concepts(lab)
+    if not mine:
+        return False
+    excluded = set().union(*(_concepts(p) for p in exc)) if exc else set()
+    included = set().union(*(_concepts(p) for p in (scope.get("include") or []))) or set()
+    return bool(mine & excluded) and not bool(mine & included)
+
+
+# The confirmed production scope for the stage currently running, so the
+# side-effecting helpers (_save_artifact, _publish) can honour it without threading
+# a new parameter through every call site. Set per-run in run_phase_agent.
+_scope_ctx: ContextVar[dict[str, Any]] = ContextVar("production_scope", default={})
+
+# A human label per external-write tool, so an excluded concept also suppresses the
+# matching external write (no empty Jira epic created on approval, etc.).
+_TOOL_LABELS: dict[str, str] = {
+    "jira_create_epic": "epic",
+    "jira_create_story": "user story backlog",
+    "jira_create_xray_test": "xray test",
+    "confluence_publish_prd": "prd",
+    "confluence_publish_hld": "hld",
+    "confluence_publish_lld": "lld",
+}
+
+
+def _add(artifacts: list[ContextArtifact], a: ContextArtifact | None) -> None:
+    """Append a saved artifact, tolerating a None return when the save was skipped
+    because the artifact's concept was excluded from the confirmed scope (D-112)."""
+    if a is not None:
+        artifacts.append(a)
+
+
 async def _generate_phase_split(
     *, deps: "AgentDeps", state: "AgentState", system: str, user: str,
     schema: type[BaseModel], base_tag: str, intent: str, max_tokens: int,
@@ -420,6 +491,15 @@ async def _publish(deps: AgentDeps, emit: Emit, name: str, args: dict[str, Any])
     sink is active (generation, pre-gate), the call is queued and a deterministic
     stub is returned so generation completes without touching Jira/Confluence/
     GitHub. When no sink is active, it executes immediately (legacy path)."""
+    # D-112 Phase B-ii: if this external write produces a concept the reviewer
+    # excluded, suppress it — return a deterministic stub (so the runner's downstream
+    # cross-links still resolve) WITHOUT executing or queuing it, so no empty Jira
+    # epic / Confluence page is created on gate approval for an unwanted deliverable.
+    label = _TOOL_LABELS.get(name)
+    if label and labels_excluded(_scope_ctx.get(), label):
+        emit({"type": "tool_call", "tool": name, "status": "skipped",
+              "summary": "suppressed — not in the confirmed output scope"})
+        return _deferred_stub(name, args, 0)
     sink = _publish_sink.get()
     if sink is None:
         return await _tool(deps, emit, name, args)
@@ -435,7 +515,16 @@ async def _save_artifact(
     type_: str, title: str, content: str, summary: str,
     url: str | None = None, exact: bool = False, ref_key: str | None = None,
     source_path: str | None = None,
-) -> ContextArtifact:
+) -> ContextArtifact | None:
+    # D-112 Phase B-ii: honour the reviewer's confirmed scope. If this artifact's
+    # concept was explicitly excluded (and not included), skip it entirely — do not
+    # persist, index or surface it — so generation produces only what was confirmed.
+    scope = production_scope(state.user_input)
+    if labels_excluded(scope, type_, title):
+        emit({"type": "node", "node": "agent",
+              "label": f"Skipped {type_} '{title[:60]}' — not in the confirmed output scope"})
+        return None
+
     # Output guardrail (D-34): mask secrets/PII before the body is persisted
     # anywhere (content store, DB, RAG index) — masks are audited.
     content, masked = sanitise_output(content)
@@ -1199,7 +1288,7 @@ async def _run_phase1(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
             "## Features",
             *[f"- **{f.title}** ({f.priority}) — {f.description}" for f in epic.features],
         ])
-        artifacts.append(await _save_artifact(
+        _add(artifacts, await _save_artifact(
             deps, state, emit, type_="EPIC", title=f"{created['epicKey']}: {epic.title}",
             content=epic_md, url=created["url"], ref_key=created["epicKey"],
             summary=f"Epic {created['epicKey']} — {epic.title}: {epic.businessCase[:150]}",
@@ -1221,7 +1310,7 @@ async def _run_phase1(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
                 "## Stories",
                 *[f"- {_story_sentence(s)} ({s.storyPoints} pts)" for s in feature.stories],
             ])
-            artifacts.append(await _save_artifact(
+            _add(artifacts, await _save_artifact(
                 deps, state, emit, type_="FEATURE", title=f"{fkey}: {feature.title}",
                 content=feature_md, ref_key=fkey,
                 summary=f"Feature {fkey} — {feature.title}: {feature.description[:150]}",
@@ -1235,7 +1324,7 @@ async def _run_phase1(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
                     **key_arg,
                 })
                 jira_links.append(s["storyKey"])
-                artifacts.append(await _save_artifact(
+                _add(artifacts, await _save_artifact(
                     deps, state, emit, type_="USER_STORY",
                     title=f"{s['storyKey']}: {story.title}",
                     content=_render_story_md(story, s["storyKey"]),
@@ -1253,7 +1342,7 @@ async def _run_phase1(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     prd = await _publish(deps, emit, "confluence_publish_prd", {
         "title": f"PRD — {state.user_input[:60]}", "content": prd_body, "jiraLinks": jira_links,
     })
-    artifacts.append(await _save_artifact(
+    _add(artifacts, await _save_artifact(
         deps, state, emit, type_="PRD", title="Product Requirements Document",
         content=prd_body, url=prd["url"], summary=prd_body[:300],
     ))
@@ -1285,16 +1374,16 @@ async def _run_phase2(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     })
 
     hld_body = out.hldNarrative + _hld_structured(out)
-    artifacts.append(await _save_artifact(
+    _add(artifacts, await _save_artifact(
         deps, state, emit, type_="HLD", title="High-Level Design",
         content=hld_body, url=page["url"], summary=out.hldNarrative[:300],
     ))
-    artifacts.append(await _save_artifact(
+    _add(artifacts, await _save_artifact(
         deps, state, emit, type_="STRUCTURIZR_DSL", title="C4 model (Structurizr DSL)",
         content=out.structurizrDsl, url=commit["htmlUrl"],
         summary="C4 container model committed to git", exact=True,
     ))
-    artifacts.append(await _save_artifact(
+    _add(artifacts, await _save_artifact(
         deps, state, emit, type_="HLD_DIAGRAM", title="Architecture diagram (Mermaid)",
         content=out.mermaidArchitecture, summary="Rendered architecture diagram", exact=True,
     ))
@@ -1317,7 +1406,7 @@ async def _run_phase2(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     )
     if dio:
         artifacts.append(dio)
-    artifacts.append(await _save_artifact(
+    _add(artifacts, await _save_artifact(
         deps, state, emit, type_="CLOUDCRAFT_JSON", title="AWS topology (Cloudcraft)",
         content=cloudcraft["cloudcraftJson"], url=commit["htmlUrl"], summary="Cloudcraft AWS topology JSON",
     ))
@@ -1329,7 +1418,7 @@ async def _run_phase2(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
             + "\n".join(f"- {o}" for o in adr.optionsConsidered)
             if adr.optionsConsidered else ""
         )
-        artifacts.append(await _save_artifact(
+        _add(artifacts, await _save_artifact(
             deps, state, emit, type_="ADR", title=adr.title,
             content=f"# {adr.title}\n\n**Status:** {adr.status}\n\n## Context\n{adr.context}"
                     f"{options}\n\n## Decision\n{adr.decision}\n\n## Consequences\n{adr.consequences}",
@@ -1380,7 +1469,7 @@ async def _run_phase3(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         "plantumlSources": out.plantumlDiagrams, "openapiYaml": openapi_yaml,
     })
 
-    artifacts.append(await _save_artifact(
+    _add(artifacts, await _save_artifact(
         deps, state, emit, type_="LLD", title="Low-Level Design",
         content=out.lldMarkdown + _lld_structured(out),
         url=page["url"], summary=out.lldMarkdown[:300], exact=True,
@@ -1404,24 +1493,24 @@ async def _run_phase3(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     )
     if dio:
         artifacts.append(dio)
-    artifacts.append(await _save_artifact(
+    _add(artifacts, await _save_artifact(
         deps, state, emit, type_="LLD_DIAGRAM", title="Sequence diagram (Mermaid)",
         content=out.mermaidSequence, summary="Rendered primary-flow sequence diagram", exact=True,
     ))
-    artifacts.append(await _save_artifact(
+    _add(artifacts, await _save_artifact(
         deps, state, emit, type_="OPENAPI", title="OpenAPI 3.0 contract", content=openapi_yaml,
         url=commit["htmlUrl"], summary="Linted OpenAPI 3.0 service contract", exact=True,
     ))
-    artifacts.append(await _save_artifact(
+    _add(artifacts, await _save_artifact(
         deps, state, emit, type_="DBML", title="Database schema (DBML)", content=out.dbmlSchema,
         url=commit["htmlUrl"], summary="DBML entity model", exact=True,
     ))
-    artifacts.append(await _save_artifact(
+    _add(artifacts, await _save_artifact(
         deps, state, emit, type_="CDK", title="AWS CDK stack", content=out.cdkStack,
         url=commit["htmlUrl"], summary="CDK IaC stack (TypeScript)",
     ))
     for i, diagram in enumerate(out.plantumlDiagrams):
-        artifacts.append(await _save_artifact(
+        _add(artifacts, await _save_artifact(
             deps, state, emit, type_="PLANTUML", title=f"PlantUML diagram {i + 1}",
             content=diagram, url=commit["htmlUrl"], summary=f"PlantUML source {i + 1}",
         ))
@@ -1462,7 +1551,7 @@ async def _run_phase4(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         ("RTM", "Requirements Traceability Matrix", out.rtmMarkdown, "RTM linking stories to tests", False),
     ]
     for type_, title, content, summary, exact in specs:
-        artifacts.append(await _save_artifact(
+        _add(artifacts, await _save_artifact(
             deps, state, emit, type_=type_, title=title, content=content, summary=summary, exact=exact,
         ))
 
@@ -1473,7 +1562,7 @@ async def _run_phase4(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     openapi = _ctx_content(state, "OPENAPI") or "openapi: 3.0.3\npaths:\n  /healthz:\n    get:\n      summary: health\n"
 
     ra = await _tool(deps, emit, "restassured_generate_tests", {"openapiYaml": openapi, "serviceName": service})
-    artifacts.append(await _save_artifact(
+    _add(artifacts, await _save_artifact(
         deps, state, emit, type_="REST_ASSURED", title="REST Assured API tests (Java)",
         content=ra["javaClass"], summary=f"{ra['testCount']} REST Assured tests for {ra['path']}", exact=True,
     ))
@@ -1487,19 +1576,19 @@ async def _run_phase4(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         for n, t in enumerate(out.xrayTests)
     ]
     pw = await _tool(deps, emit, "playwright_generate_tests", {"stories": stories})
-    artifacts.append(await _save_artifact(
+    _add(artifacts, await _save_artifact(
         deps, state, emit, type_="PLAYWRIGHT_SPEC", title="Playwright UI tests",
         content=pw["specTs"], summary=f"{pw['testCount']} Playwright tests from user stories", exact=True,
     ))
 
     jm = await _tool(deps, emit, "jmeter_generate_plan", {"openapiYaml": openapi, "serviceName": service})
-    artifacts.append(await _save_artifact(
+    _add(artifacts, await _save_artifact(
         deps, state, emit, type_="JMETER_PLAN", title="JMeter load-test plan",
         content=jm["jmxXml"], summary=f"JMX plan with {jm['samplerCount']} samplers",
     ))
 
     lo = await _tool(deps, emit, "locust_generate_test", {"openapiYaml": openapi, "serviceName": service})
-    artifacts.append(await _save_artifact(
+    _add(artifacts, await _save_artifact(
         deps, state, emit, type_="LOCUSTFILE", title="Locust load-test file",
         content=lo["locustfile"], summary=f"locustfile.py with {lo['taskCount']} tasks",
     ))
@@ -1533,12 +1622,12 @@ async def _run_phase5(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
           "label": "Pipeline dry-run: all 7 stages present" if not missing
           else f"Pipeline dry-run warning: missing {', '.join(missing)}"})
 
-    artifacts.append(await _save_artifact(
+    _add(artifacts, await _save_artifact(
         deps, state, emit, type_="GITHUB_ACTIONS", title="CI/CD workflow (7 stages)",
         content=out.workflowYaml, url=commit["htmlUrl"],
         summary="GitHub Actions: checkout, lint, build, test, snyk-scan, inspector-scan, deploy", exact=True,
     ))
-    artifacts.append(await _save_artifact(
+    _add(artifacts, await _save_artifact(
         deps, state, emit, type_="GRAFANA_DASHBOARD", title="Grafana dashboard",
         content=out.grafanaDashboardJson, url=commit["htmlUrl"], summary="Service health dashboard JSON",
     ))
@@ -1546,12 +1635,12 @@ async def _run_phase5(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     # security gates, observability SLOs and rollout/rollback as a review doc.
     pipeline_design = _pipeline_design_markdown(out)
     if pipeline_design.strip() and pipeline_design != "# CI/CD & Operations design\n":
-        artifacts.append(await _save_artifact(
+        _add(artifacts, await _save_artifact(
             deps, state, emit, type_="PIPELINE_DESIGN", title="CI/CD & operations design",
             content=pipeline_design, summary="Pipeline stages, security gates, SLOs and rollout strategy",
         ))
     for dockerfile in out.dockerfiles:
-        artifacts.append(await _save_artifact(
+        _add(artifacts, await _save_artifact(
             deps, state, emit, type_="DOCKERFILE", title=dockerfile.path,
             content=dockerfile.content, url=commit["htmlUrl"], summary=f"Container build for {dockerfile.path}",
         ))
@@ -1567,7 +1656,7 @@ async def _run_phase5(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     for secret_id in ("sdlc/jwt-secret", "sdlc/github-webhook-secret"):
         check = await _tool(deps, emit, "aws_secrets_check", {"secretId": secret_id})
         secret_rows.append(f"| {secret_id} | {'✅ present' if check['exists'] else '❌ MISSING'} | {check['mode']} |")
-    artifacts.append(await _save_artifact(
+    _add(artifacts, await _save_artifact(
         deps, state, emit, type_="SECURITY_SCAN", title="Pipeline security scan (Trivy + Secrets)",
         content=f"{trivy['reportMarkdown']}\n\n## Secrets Manager verification\n\n"
                 f"| Secret | Status | Mode |\n|---|---|---|\n" + "\n".join(secret_rows),
@@ -1621,7 +1710,7 @@ async def _run_phase6(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     # each file by language. Tests are typed UNIT_TESTS so they are traceable.
     for f in out.files:
         is_test = _is_test_path(f.path)
-        artifacts.append(await _save_artifact(
+        _add(artifacts, await _save_artifact(
             deps, state, emit,
             type_="UNIT_TESTS" if is_test else "APP_CODE",
             title=f.path,
@@ -1684,7 +1773,7 @@ async def _run_phase6(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         sections.append(zap["reportMarkdown"])
         verdicts.append(f"ZAP {zap['result']}")
         if sections:
-            artifacts.append(await _save_artifact(
+            _add(artifacts, await _save_artifact(
                 deps, state, emit, type_="TEST_EXECUTION_REPORT", title="Test execution report",
                 content="\n\n---\n\n".join(sections), summary=" · ".join(verdicts),
             ))
@@ -1692,7 +1781,7 @@ async def _run_phase6(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         sonar = await _tool(deps, emit, "sonarqube_analyse", {
             "files": [f.model_dump() for f in out.files],
         })
-        artifacts.append(await _save_artifact(
+        _add(artifacts, await _save_artifact(
             deps, state, emit, type_="QUALITY_REPORT", title="SonarQube quality report",
             content=sonar["reportMarkdown"],
             summary=f"Quality gate {sonar['qualityGate']}: {sonar['bugs']} bugs, "
@@ -1779,7 +1868,7 @@ async def _run_custom(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     artifacts: list[ContextArtifact] = []
     for out_type in outputs:
         body = by_output.get(out_type) or fallback or f"# {state.stage_name}\n\n(No content generated.)"
-        artifacts.append(await _save_artifact(
+        _add(artifacts, await _save_artifact(
             deps, state, emit, type_=out_type, title=f"{state.stage_name} — {out_type}" if len(outputs) > 1
             else (state.stage_name or out_type),
             content=body, summary=body[:300], exact=True,
@@ -1837,11 +1926,14 @@ async def run_phase_agent(deps: AgentDeps, state: AgentState, emit: Emit) -> Pha
     # only after the gate is approved. Disabled → sink stays None → legacy path.
     defer = getattr(deps.settings, "PUBLISH_ON_APPROVAL", True)
     token = _publish_sink.set([] if defer else None)
+    # D-112 Phase B-ii: expose the confirmed scope to the side-effecting helpers.
+    scope_token = _scope_ctx.set(production_scope(state.user_input))
     try:
         result = await runner(deps, state, emit)
     finally:
         collected = _publish_sink.get()
         _publish_sink.reset(token)
+        _scope_ctx.reset(scope_token)
     if defer and collected:
         result.publish_actions = collected
     return result
