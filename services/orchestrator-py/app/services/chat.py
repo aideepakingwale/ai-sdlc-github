@@ -406,12 +406,18 @@ class ChatService:
         if not row:
             return {}
         raw = row["step_overrides"] if "step_overrides" in row else {}
-        if isinstance(raw, str):
+        # Tolerate a value that was accidentally double/triple-encoded (a jsonb that
+        # holds a JSON *string*): decode until it is no longer a str. Always return a
+        # dict so callers can safely .items() it (a str here previously crashed a run).
+        for _ in range(4):
+            if not isinstance(raw, str):
+                break
             try:
                 raw = json.loads(raw or "{}")
             except json.JSONDecodeError:
                 raw = {}
-        return raw or {}
+                break
+        return raw if isinstance(raw, dict) else {}
 
     @staticmethod
     def _project_profile(project: dict) -> str:
@@ -531,7 +537,7 @@ class ChatService:
             referenced_artifact_ids=(row["referenced_artifact_ids"] if row else []) or [],
             attachment_ids=(row["attachment_ids"] if row else []) or [],
             formwork_ids=(row["formwork_ids"] if row else []) or [],
-            step_overrides=(row["step_overrides"] if row else {}) or {},
+            step_overrides=self._step_overrides(row),  # normalized dict — never re-encode the raw jsonb string (prevents double-encoding)
             origin="clarification", updated_by=user.email,
         )
         await self._db.set_stage_clarification(project_id, phase, None)  # clear pending questions
