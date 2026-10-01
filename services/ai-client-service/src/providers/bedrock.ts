@@ -52,6 +52,14 @@ export function createBedrockProvider(opts: {
       client ??= new AnthropicBedrock({ awsRegion: opts.region });
       const modelId = req.model || opts.modelId!; // per-call model override (D-68)
 
+      // Bedrock rejects max_tokens above the model's output ceiling (400: "Number
+      // must be less than or equal to 32768"). A high PHASE_MAX_TOKENS/PLAN_MAX_TOKENS
+      // therefore 400s the whole call. Clamp to a safe ceiling so a generous budget
+      // never fails the request — it is a ceiling, not a target, so output is unaffected
+      // for anything short of ~130KB of text. (D-112)
+      const BEDROCK_MAX_OUTPUT = 32_768;
+      const maxTokens = Math.min(Math.max(1, req.maxTokens || BEDROCK_MAX_OUTPUT), BEDROCK_MAX_OUTPUT);
+
       // D-98 prompt caching: mark stable prefixes with `cache_control: ephemeral`
       // so Bedrock reuses them across calls (~10% read cost) — the key to making a
       // per-artifact split affordable. Cache is prefix-based; only messages the
@@ -99,7 +107,7 @@ export function createBedrockProvider(opts: {
           .stream(
             {
               model: modelId,
-              max_tokens: req.maxTokens,
+              max_tokens: maxTokens,
               // system/messages carry optional cache_control blocks (D-98) that this
               // SDK version's param types don't model; cast at this adapter boundary.
               ...(system ? { system: system as never } : {}),
