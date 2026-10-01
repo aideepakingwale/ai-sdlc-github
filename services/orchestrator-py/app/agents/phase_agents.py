@@ -387,7 +387,21 @@ async def _save_artifact(
         if source_path
         else artifact_key(state.project_id, state.current_phase, type_, artefact_id)
     )
-    await deps.content.put(key, content)
+    # Persist the body to the content-store tier (D-23), BUT best-effort (D-110): a
+    # content-store (S3) write failure must NOT lose a fully-generated artifact. If it
+    # fails we fall back to storing the FULL body in the DB (storage_key=None) so the
+    # artifact still persists, displays and the stage completes, instead of the whole
+    # generation being thrown away on an S3 hiccup (missing bucket, KMS, permissions).
+    stored_ok = True
+    try:
+        await deps.content.put(key, content)
+    except Exception as err:  # noqa: BLE001
+        stored_ok = False
+        log.warning("content-store put failed for %s '%s' (%s); persisting full body to DB instead", type_, title, err)
+        deps.audit.record(
+            project_id=state.project_id, phase=state.current_phase, agent_role="ContentStore",
+            event="content_store.put_failed", detail={"type": type_, "title": title, "error": str(err)[:300]},
+        )
     # Deferred publish (D-67): a `pending://` URL is a sentinel kept in the DB row
     # so publication can back-patch the real external URL after approval; it is
     # NOT surfaced as a clickable link until then.
@@ -399,16 +413,19 @@ async def _save_artifact(
     prev = await deps.db.latest_artefact_version(state.project_id, state.current_phase, type_, title)
     lineage_id = prev["lineage_id"] if prev else artefact_id
     version = (prev["version"] + 1) if prev else 1
+    # storage_key only when the body actually reached the content store; otherwise the
+    # DB row holds the full content (insert_artefact keeps it verbatim when key is None).
     await deps.db.insert_artefact(
         project_id=state.project_id, phase=state.current_phase,
         type_=type_, title=title, content=content, url=url,
-        storage_key=key, storage_mode=deps.content.mode, artefact_id=artefact_id,
-        lineage_id=lineage_id, version=version,
+        storage_key=(key if stored_ok else None),
+        storage_mode=(deps.content.mode if stored_ok else "db"),
+        artefact_id=artefact_id, lineage_id=lineage_id, version=version,
     )
     artifact = ContextArtifact(
         phase=state.current_phase, type=type_, title=title, summary=summary,
         exact=exact, content=content if exact else None,
-        ref=ArtifactRef(url=ref_url, key=ref_key),
+        ref=ArtifactRef(url=ref_url, key=(ref_key if stored_ok else None)),
     )
     await deps.rag.index_artifact(state.project_id, artefact_id, artifact)  # D-19
     emit({"type": "artifact", "artifact": {"type": type_, "title": title, "url": url, "key": ref_key}})
