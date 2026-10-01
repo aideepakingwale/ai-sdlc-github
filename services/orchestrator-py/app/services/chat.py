@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from typing import Any, AsyncIterator, Callable
 
 from redis.asyncio import Redis
@@ -480,11 +481,12 @@ class ChatService:
                 "What are the measurable success criteria?",
                 "Are there compliance, legal or data-privacy obligations (e.g. GDPR, PCI-DSS)?",
             ]
-            # No predefined options for open discovery questions — the UI renders a
-            # free-text ('Other') entry for each.
+            # Even open discovery questions get selectable options now (D-112): the
+            # topic-aware synthesiser offers choices so the user can click, not only type.
             return [
-                {"id": f"need-{i}", "question": f"Please provide: {b}", "header": "",
-                 "options": [], "multiSelect": False, "rationale": ""}
+                self._ensure_options(
+                    {"id": f"need-{i}", "question": f"Please provide: {b}", "header": "",
+                     "options": [], "multiSelect": False, "rationale": ""})
                 for i, b in enumerate(base)
             ][:max_questions]
         digest = "\n".join(f"- [P{a.phase}] {a.type}: {a.title}" for a in context[-20:]) or "(no upstream artifacts yet)"
@@ -508,10 +510,62 @@ class ChatService:
         except Exception as err:  # noqa: BLE001 — a failed check must not block generation
             log.info("clarify check errored (%s); proceeding without questions", err)
             return []
-        # Drop any blank questions (lenient schema), then apply the cap.
-        qs = [q.model_dump() for q in out.questions if (q.question or "").strip()]
+        # Drop any blank questions (lenient schema), guarantee each has selectable
+        # options (D-112), then apply the cap.
+        qs = [self._ensure_options(q.model_dump()) for q in out.questions if (q.question or "").strip()]
         log.info("clarify: needs=%s questions=%d stage=%s", out.needs_clarification, len(qs), stage.get("name"))
         return qs[:max_questions] if (out.needs_clarification and qs) else []
+
+    # Deterministic option sets by topic, so a clarifying question ALWAYS offers
+    # selectable choices even when the model returns it without any (D-112). Keyed by
+    # a keyword that may appear in the question or its header.
+    _OPTION_LIBRARY: list[tuple[tuple[str, ...], list[tuple[str, str]]]] = [
+        (("cloud", "platform", "infra", "deployment", "hosting", "provider"),
+         [("AWS", "Amazon Web Services"), ("Azure", "Microsoft Azure"), ("GCP", "Google Cloud"),
+          ("On-prem / Kubernetes", "Self-hosted or private cluster")]),
+        (("complian", "regulat", "gdpr", "pci", "hipaa", "privacy", "legal", "data residency", "retention"),
+         [("GDPR", "EU personal-data protection"), ("PCI-DSS", "Payment card data"),
+          ("HIPAA", "Health information"), ("None", "No specific regime applies")]),
+        (("auth", "identity", "sso", "login", "access control"),
+         [("OAuth2 / OIDC", "Token-based SSO"), ("SAML", "Enterprise SSO"),
+          ("API keys", "Service-to-service"), ("Username / password", "Basic credentials")]),
+        (("database", "datastore", "persistence", "storage engine"),
+         [("PostgreSQL", "Relational"), ("MySQL", "Relational"), ("MongoDB", "Document"),
+          ("Other", "Specify in Other")]),
+        (("protocol", "integration pattern", "messaging", "transport", "queue", "interface"),
+         [("Message queue (MQ)", "Async messaging"), ("REST / HTTP", "Synchronous API"),
+          ("Kafka / streaming", "Event stream"), ("File transfer", "Batch files")]),
+        (("frequency", "schedule", "cadence", "how often", "real-time", "latency"),
+         [("Near real-time", "As events occur"), ("Hourly", "Every hour"),
+          ("Daily", "Once a day"), ("Batch", "Scheduled batch")]),
+        (("environment", "stage", "target env"),
+         [("Production", "Live"), ("Staging / UAT", "Pre-prod"), ("Development", "Dev only")]),
+    ]
+
+    @classmethod
+    def _ensure_options(cls, q: dict[str, Any]) -> dict[str, Any]:
+        """Guarantee a clarifying question offers selectable options (D-112): keep the
+        model's valid options; otherwise synthesise topic-appropriate ones, falling
+        back to a generic pair so the user can always click instead of typing."""
+        opts = [o for o in (q.get("options") or [])
+                if isinstance(o, dict) and str(o.get("label") or "").strip()]
+        if len(opts) < 2:
+            text = f"{q.get('header', '')} {q.get('question', '')}".lower()
+            chosen: list[tuple[str, str]] | None = None
+            for keys, lib in cls._OPTION_LIBRARY:
+                if any(k in text for k in keys):
+                    chosen = lib
+                    break
+            if chosen is None:
+                # Yes/No for a decision question; else a safe generic pair.
+                if re.match(r"\s*(should|is|are|do|does|can|will|would|has|have|shall)\b", text):
+                    chosen = [("Yes", "Proceed with this"), ("No", "Do not")]
+                else:
+                    chosen = [("Use your recommended default", "Let the agent choose the best option"),
+                              ("I'll specify", "Type the specifics in Other")]
+            opts = [{"label": lbl, "description": desc} for lbl, desc in chosen]
+        q["options"] = opts
+        return q
 
     async def answer_clarification(
         self, *, project_id: str, phase: int, user: UserPublic, answers: list[dict[str, Any]],
