@@ -233,7 +233,11 @@ export default function StageWorkspace({
     setPlanBusy(true);
     setMention({ open: false, query: '', at: 0 });
     try {
-      const p = await api.put<StagePlan>(`/api/projects/${projectId}/phase/${selectedSeq}/plan`, overlayBody());
+      // Persist the overlay (fast, no planner), then GET the plan which computes the
+      // intelligent plan ONCE (cached) — D-109. Previously the PUT itself ran the ~30s
+      // planner, and both review + trigger PUT, so it fired several times per cycle.
+      await api.put<StagePlan>(`/api/projects/${projectId}/phase/${selectedSeq}/plan`, overlayBody());
+      const p = await api.get<StagePlan>(`/api/projects/${projectId}/phase/${selectedSeq}/plan`);
       setPlan(p);
     } catch (err) {
       window.alert(err instanceof Error ? err.message : 'Could not build the plan');

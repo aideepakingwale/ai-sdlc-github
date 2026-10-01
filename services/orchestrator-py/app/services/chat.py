@@ -571,13 +571,18 @@ class ChatService:
     async def _intelligent_plan(
         self, *, project: dict, phase: int, stage: dict, overlay: dict,
         available_tools: list[str], skills: list[dict], prior_arts: list[dict], canon_applied: bool,
+        allow_compute: bool = True,
     ) -> dict[str, Any] | None:
         """LLM-built, context-aware plan for a stage (D-105). Fed the input, tech
         stack, project profile, prior artifacts, configured tools/skills/outputs and
         persona; returns a tailored approach with per-step rationale + tier and
         tool/skill recommendations. Cached in Redis until the inputs change. Returns
         None on any failure (incl. mock mode) so the caller falls back to the
-        deterministic plan and Review never breaks."""
+        deterministic plan and Review never breaks.
+
+        allow_compute=False (persist paths — save_plan, trigger) returns the cached
+        plan if one exists but NEVER makes an LLM call (D-109): the ~30s planner runs
+        only on the explicit plan DISPLAY, not on every overlay save/trigger."""
         if not getattr(self._settings, "INTELLIGENT_PLANNING", True):
             return None
         from ..agents.schemas import StagePlanIntel
@@ -601,8 +606,17 @@ class ChatService:
                 obj = json.loads(cached.decode() if isinstance(cached, (bytes, bytearray)) else cached)
                 if obj.get("sig") == sig:
                     return {**obj["plan"], "cached": True}
+                # A stale cache (inputs changed) is still useful on a persist path where
+                # we won't recompute — show it rather than nothing (D-109).
+                if not allow_compute:
+                    return {**obj["plan"], "cached": True, "stale": True}
         except Exception:
             pass
+
+        # Persist paths (save/trigger) never pay the ~30s planner cost (D-109): the
+        # planner runs only on the explicit plan display.
+        if not allow_compute:
+            return None
 
         sys_p = (
             "You are the planning brain for one stage of an enterprise AI-SDLC pipeline. "
@@ -642,7 +656,7 @@ class ChatService:
             pass
         return {**plan, "cached": False}
 
-    async def build_plan(self, *, project_id: str, phase: int, user: UserPublic) -> dict[str, Any]:
+    async def build_plan(self, *, project_id: str, phase: int, user: UserPublic, run_intel: bool = True) -> dict[str, Any]:
         """The full, editable execution plan for a stage BEFORE generation: the
         typed multi-model steps (each with its resolved model + rationale), the
         selectable model catalog, skills, tools, context inventory and the actual
@@ -699,10 +713,12 @@ class ChatService:
         canon_applied = bool(await self._deps.canon.render_block(project_id, stage["template"])) if self._deps.canon else False
 
         # D-105: intelligent, context-aware plan (advisory). None on any failure or in
-        # mock mode → the deterministic plan above stands unchanged.
+        # mock mode → the deterministic plan above stands unchanged. D-109: only the
+        # explicit plan DISPLAY computes it (run_intel); persist paths reuse the cache.
         intel = await self._intelligent_plan(
             project=project, phase=phase, stage=stage, overlay=overlay,
             available_tools=available_tools, skills=skills, prior_arts=prior_arts, canon_applied=canon_applied,
+            allow_compute=run_intel,
         )
         if intel:
             # Fold the planner's per-step rationale onto the matching deterministic steps.
@@ -768,7 +784,9 @@ class ChatService:
         )
         self._audit.record(project_id=project_id, phase=phase, agent_role="Orchestrator",
                            event="plan.updated", human_reviewer=user.email, detail={"stage": stage["key"]})
-        return await self.build_plan(project_id=project_id, phase=phase, user=user)
+        # D-109: a save is a persist, not a display — don't pay the ~30s planner here;
+        # reuse the cached intel. The explicit GET /plan recomputes it when needed.
+        return await self.build_plan(project_id=project_id, phase=phase, user=user, run_intel=False)
 
     async def trigger_stage(self, *, project_id: str, phase: int, user: UserPublic, emit: Emit) -> None:
         """Run ONE stage using its reviewed plan overlay (D-56). Nothing generates
