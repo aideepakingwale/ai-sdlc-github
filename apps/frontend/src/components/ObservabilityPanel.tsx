@@ -48,6 +48,7 @@ interface LlmConfig {
   xai_api_key_set: boolean;
   llm_debug_trace: string | null;  // "true" when debug capture is on (D-104)
   per_artifact_generation: string | null;  // "true" when per-artifact split is on (D-106)
+  plan_max_tokens: string | null;  // output budget for the LLM planner proposal (D-112)
 }
 interface LlmConfigState {
   config: LlmConfig;
@@ -92,6 +93,7 @@ function LlmConfigControl() {
     if (s && !seeded) {
       const t: Record<string, string> = {};
       for (const f of TEXT_FIELDS) t[f.key] = (s.config[f.key] as string | null) ?? '';
+      t.plan_max_tokens = s.config.plan_max_tokens ?? '';  // D-112
       setText(t);
       setSeeded(true);
     }
@@ -179,6 +181,48 @@ function LlmConfigControl() {
           </span>
         </span>
       </label>
+
+      {/* planner token budget (D-112) — output ceiling for the LLM plan proposal */}
+      <div className="mb-3 text-[11px] text-slate-600">
+        <div className="mb-1">
+          <span className="font-semibold text-slate-700">Planner output budget (max tokens)</span>{' '}
+          <span className="text-slate-400">
+            — ceiling for the LLM advise→decide proposal. Too low truncates it and the advisory is lost;
+            raise it for stages with many outputs/tools. Blank = env default (8000). A ceiling only — no cost unless used.
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={1000}
+            max={64000}
+            step={1000}
+            className="w-32 rounded border border-slate-300 px-2 py-1 text-[12px] focus:border-brand-500 focus:outline-none"
+            placeholder="8000"
+            value={text.plan_max_tokens ?? ''}
+            disabled={save.isPending}
+            onChange={(e) => setText((p) => ({ ...p, plan_max_tokens: e.target.value }))}
+          />
+          <button
+            type="button"
+            disabled={save.isPending || (text.plan_max_tokens ?? '') === (s?.config.plan_max_tokens ?? '')}
+            onClick={() => {
+              const v = Number(text.plan_max_tokens);
+              if (!text.plan_max_tokens || Number.isNaN(v) || v < 1000 || v > 64000) {
+                window.alert('Enter a number between 1000 and 64000.');
+                return;
+              }
+              save.mutate({ plan_max_tokens: String(Math.round(v)) });
+            }}
+            className="rounded border border-brand-300 bg-brand-50 px-2.5 py-1 text-[11px] font-semibold text-brand-700 hover:bg-brand-100 disabled:opacity-40"
+          >
+            Save
+          </button>
+          {s?.config.plan_max_tokens && (
+            <span className="text-[10px] text-slate-400">current override: {s.config.plan_max_tokens}</span>
+          )}
+        </div>
+      </div>
 
       {/* text config */}
       <div className="grid gap-2 sm:grid-cols-2">

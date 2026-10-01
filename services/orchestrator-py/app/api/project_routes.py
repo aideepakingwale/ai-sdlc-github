@@ -7,7 +7,7 @@ import hmac as hmac_mod
 import json
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
@@ -1596,6 +1596,7 @@ LLM_SETTING_KEYS = (
     "groq_api_key", "gemini_api_key", "xai_api_key",
     "llm_debug_trace",  # D-104: capture request/response bodies into llm_traces
     "per_artifact_generation",  # D-106: split each stage artifact into its own parallel call
+    "plan_max_tokens",  # D-112: output budget for the LLM stage-planner proposal
 )
 
 
@@ -1613,6 +1614,9 @@ class LlmConfigRequest(BaseModel):
     xai_api_key: str | None = None
     llm_debug_trace: bool | None = None  # D-104: runtime debug-capture toggle
     per_artifact_generation: bool | None = None  # D-106: runtime per-artifact split toggle
+    # D-112: planner output budget. Bounded so a typo can't set a runaway/too-small
+    # value; 0 is rejected by the bound, "" (clear) reverts to the env default.
+    plan_max_tokens: int | None = Field(default=None, ge=1_000, le=64_000)
 
 
 async def _live_llm_state(container: Container) -> dict:

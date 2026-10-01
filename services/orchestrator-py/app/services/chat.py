@@ -577,6 +577,23 @@ class ChatService:
         except Exception:
             return False
 
+    async def _plan_max_tokens(self) -> int:
+        """Effective output budget for the LLM stage planner (D-112): the runtime
+        setting `plan_max_tokens` (Super-Admin, mirrored to Redis) OR the env default.
+        Read per plan display; never raises."""
+        env_default = getattr(self._settings, "PLAN_MAX_TOKENS", 8000)
+        try:
+            raw = await self._redis.get("sdlc:settings:plan_max_tokens")
+            if isinstance(raw, (bytes, bytearray)):
+                raw = raw.decode()
+            if raw is not None and str(raw).strip():
+                v = int(str(raw).strip())
+                if v > 0:
+                    return v
+        except Exception:
+            pass
+        return env_default
+
     def _configured_tools(self, tools: list[str]) -> list[str]:
         """Filter a stage's candidate tools to those whose integration is actually
         configured (D-105), so the plan never proposes a tool that cannot run. Jira/
@@ -719,7 +736,7 @@ class ChatService:
                 # tool/skill/assumption/risk lists need headroom; a small cap truncated the
                 # JSON on richer stages and failed the whole plan (D-112 fix). Generous and
                 # env-tunable via PLAN_MAX_TOKENS. Still one shot (D-109).
-                max_tokens=getattr(self._settings, "PLAN_MAX_TOKENS", 8000),
+                max_tokens=await self._plan_max_tokens(),
                 schema=StagePlanIntel, max_attempts=1,
                 messages=[{"role": "system", "content": sys_p}, {"role": "user", "content": usr_p}],
             )
