@@ -609,16 +609,19 @@ class Database:
     # ------------------------------------------------------------ audit index (D-09)
     async def insert_audit_index(self, row: dict[str, Any]) -> None:
         assert self.pool
+        import json as _json
+        body = row.get("body")
         await self.pool.execute(
             """
             INSERT INTO audit_index
               (id, project_id, phase, agent_role, event, provider, model,
-               prompt_tokens, completion_tokens, artefact_hash, human_reviewer, s3_key, detail)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
+               prompt_tokens, completion_tokens, artefact_hash, human_reviewer, s3_key, detail, body)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb)
             """,
             row["id"], row["project_id"], row.get("phase"), row["agent_role"], row["event"],
             row.get("provider"), row.get("model"), row.get("prompt_tokens"), row.get("completion_tokens"),
             row.get("artefact_hash"), row.get("human_reviewer"), row["s3_key"], row.get("detail", {}),
+            (body if isinstance(body, str) else _json.dumps(body)) if body is not None else None,
         )
 
     async def list_audit(self, project_id: str) -> list[asyncpg.Record]:

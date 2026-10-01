@@ -1,4 +1,4 @@
-"""Immutable audit trail: S3 JSON object + Postgres index row per event.
+"""Immutable audit trail (D-09): S3 JSON object + Postgres index row per event.
 Writes are queued off the request path; flush() drains on shutdown."""
 
 from __future__ import annotations
@@ -103,6 +103,11 @@ class AuditService:
                 log.error("audit S3 write failed: %s", err)
 
             await self._db.insert_audit_index({
+                # Retain the FULL event body in Postgres when the S3 archive did not
+                # accept it, so the audit trail stays complete and self-contained even
+                # with S3 missing/misconfigured (D-112). When S3 succeeded, the body
+                # lives there and PG keeps only the index to avoid duplication.
+                "body": None if s3_ok else body,
                 "id": event_id,
                 "project_id": event["project_id"],
                 "phase": event.get("phase"),

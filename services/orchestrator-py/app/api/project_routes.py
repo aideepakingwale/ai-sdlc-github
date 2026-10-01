@@ -1074,12 +1074,26 @@ async def project_audit(
 ) -> dict:
     await container.authz.assert_project_access(project_id, user)
     rows = await container.db.list_audit(project_id)
+    import json as _json
+
+    def _body(e):  # retained full event body (D-112): jsonb col, or None when archived to S3
+        raw = e["body"] if "body" in e else None
+        if isinstance(raw, str):
+            try:
+                return _json.loads(raw)
+            except _json.JSONDecodeError:
+                return None
+        return raw
+
     return {"events": [
         {"id": e["id"], "timestamp": e["timestamp"].isoformat(), "projectId": e["project_id"],
          "phase": e["phase"], "agentRole": e["agent_role"], "event": e["event"],
          "provider": e["provider"], "model": e["model"], "promptTokens": e["prompt_tokens"],
          "completionTokens": e["completion_tokens"], "artefactHash": e["artefact_hash"],
-         "humanReviewer": e["human_reviewer"], "detail": e["detail"]}
+         "humanReviewer": e["human_reviewer"], "detail": e["detail"],
+         # The full event content, retained in Postgres when S3 was unavailable, so the
+         # trail is auditable end-to-end without the S3 archive.
+         "body": _body(e), "archivedToS3": _body(e) is None}
         for e in rows
     ]}
 
