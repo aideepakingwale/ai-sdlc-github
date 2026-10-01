@@ -78,6 +78,27 @@ class ChatService:
                   "message": f"Stage {seq} failed: {err}. It has been reset — fix the issue and re-trigger."})
             raise
 
+    async def reset_stage_if_in_progress(self, project_id: str, phase: int) -> None:
+        """Safety net (D-111): if a stage is still IN_PROGRESS after its generation job
+        ended — e.g. the worker crashed, or an error bypassed the in-flow reset — return
+        it to NOT_STARTED so it is never stuck on 'Generating' and can be re-triggered.
+        Called by the worker runner on any uncaught failure. Never raises."""
+        try:
+            st = await self._dynamo.get_phase_state(project_id, phase)
+            if (st or {}).get("status") != "IN_PROGRESS":
+                return
+            try:
+                _, stage = await self._stage_for(project_id, phase)
+                reviewer = stage.get("reviewerRole", "") or ""
+            except Exception:  # noqa: BLE001
+                reviewer = (st or {}).get("reviewer_role") or ""
+            await self._dynamo.put_phase_state(project_id=project_id, phase=phase, status="NOT_STARTED", reviewer_role=reviewer)
+            self._audit.record(project_id=project_id, phase=phase, agent_role="Orchestrator",
+                               event="stage.reset_after_failure", detail={})
+            log.info("reset stuck stage %s/%s IN_PROGRESS -> NOT_STARTED after failure", project_id, phase)
+        except Exception:  # noqa: BLE001 — best-effort
+            log.exception("reset_stage_if_in_progress failed")
+
     async def _persist_publish_plan(self, project_id: str, seq: int, phase_result: Any) -> None:
         """Store the phase's deferred external-write plan so it can be replayed on
         gate approval (D-67). Replaces any prior plan for the phase."""
@@ -908,6 +929,11 @@ class ChatService:
         )
 
         last_gate = final_state.gate_status
+        # Did the run settle into a recognized state? If not, we must not leave the
+        # phase stuck on IN_PROGRESS (D-111). PENDING_REVIEW is the normal outcome;
+        # IN_PROGRESS (phase-6 build loop), ESCALATED and AMEND_REQUESTED are their
+        # own legitimate flows driven elsewhere.
+        settled = last_gate in ("IN_PROGRESS", "ESCALATED", "AMEND_REQUESTED")
         if phase_result:
             await self._db.update_context_window(session["id"], final_state.context_window)
             # Persist the deferred external-write plan for this stage (D-67).
@@ -918,6 +944,7 @@ class ChatService:
                 self._audit.record(project_id=project_id, phase=phase, agent_role=stage["persona"],
                                    event="gate.pending_review", human_reviewer=user.email,
                                    detail={"reviewerRole": stage["reviewerRole"], "stage": stage["key"], "viaPlan": True})
+                settled = True
             # Impact propagation (#): a re-run (retrigger/amend) just produced a new
             # version of this stage's outputs, so downstream stages that already
             # consumed the old ones are now potentially stale. Flag them (advisory —
@@ -926,6 +953,16 @@ class ChatService:
             if origin in ("retrigger", "amend"):
                 await self._flag_downstream_stale(project_id, phase, wf, states, stage["name"])
             await self._db.delete_stage_plan(project_id, phase)  # draft consumed
+
+        # Safety net (D-111): a run that produced no reviewable output (no result, or a
+        # gate state we didn't settle) must NOT leave the stage stuck on "Generating".
+        # Reset it to NOT_STARTED so it is immediately re-triggerable, and say so.
+        if not settled:
+            await self._dynamo.put_phase_state(project_id=project_id, phase=phase, status="NOT_STARTED", reviewer_role=stage["reviewerRole"])
+            self._audit.record(project_id=project_id, phase=phase, agent_role="Orchestrator",
+                               event="stage.no_output", detail={"stage": stage["key"], "gate": last_gate})
+            emit({"type": "node", "node": "guardrail", "status": "error",
+                  "label": "Stage produced no reviewable output — reset so you can re-trigger it."})
 
         safe_response, masked = sanitise_output(final_state.final_response)
         if masked:

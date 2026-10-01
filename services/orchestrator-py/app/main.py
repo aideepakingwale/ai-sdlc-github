@@ -147,7 +147,14 @@ async def lifespan(app: FastAPI):
         if not urow:
             raise SdlcError("NOT_FOUND", f"generation actor '{actor_email}' not found")
         actor = UserPublic(id=urow["id"], email=urow["email"], displayName=urow["display_name"], role=urow["role"])
-        await chat.trigger_stage(project_id=project_id, phase=phase, user=actor, emit=emit)
+        try:
+            await chat.trigger_stage(project_id=project_id, phase=phase, user=actor, emit=emit)
+        except Exception:
+            # Safety net (D-111): never leave the stage stuck IN_PROGRESS when the job
+            # fails for any reason — reset it so it's re-triggerable, then re-raise so
+            # the job is still recorded failed and the error reaches the stream.
+            await chat.reset_stage_if_in_progress(project_id, phase)
+            raise
 
     container.gen_jobs = GenerationJobs(db, redis, runner=_run_stage)
     _reconciled = await container.gen_jobs.reconcile()
