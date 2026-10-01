@@ -1918,7 +1918,14 @@ def _wants_attached_format(state: "AgentState") -> bool:
     stage's rigid schema/rubric and reproduce that document's structure instead."""
     if not (state.extra_context or "").strip():
         return False  # nothing attached to mirror
-    # Look only at the human instruction, before the auto-generated scope/clarify blocks.
+    # Strongest signal (robust, phrasing-independent): the CONFIRMED proposal format
+    # points at an attached document — the reviewer saw and accepted "Format: the
+    # attached document(s): <file>" in the plan. Honour that regardless of how the
+    # free-text instruction was worded.
+    fmt = (production_scope(state.user_input).get("format") or "").lower()
+    if fmt and re.search(r"attach|sample|uploaded|provided file|\.docx?\b|\.pdf\b|\.xlsx?\b|\.pptx?\b", fmt):
+        return True
+    # Fallback: an explicit free-text ask in the user's own instruction.
     text = re.split(r"##\s*(?:Production scope|Clarifications)", state.user_input or "", maxsplit=1)[0]
     return any(p.search(text) for p in _ATTACHED_FORMAT_PATTERNS)
 
