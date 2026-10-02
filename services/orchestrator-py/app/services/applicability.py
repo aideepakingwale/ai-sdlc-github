@@ -28,36 +28,64 @@ GENERATED_ARTIFACTS: dict[int, list[str]] = {
     6: ["APP_CODE", "UNIT_TESTS", "PULL_REQUEST"],
 }
 
-# Which project trait an artifact type needs (absent trait → not applicable).
-REQUIRES_TRAIT: dict[str, str] = {
-    "PLAYWRIGHT_SPEC": "ui",
-    "REST_ASSURED": "api",
-    "OPENAPI": "api",
-    "POSTMAN_COLLECTION": "api",
-    "DBML": "database",
-    "CDK": "cloud",
+# Which project traits an artifact type needs. ALL listed traits must not be confidently
+# absent. Types not listed apply to every project (core deliverables of the stage).
+# Derived trait `service` = the project exposes an API or a UI (something to load-test,
+# scan or monitor at runtime) — false for libraries, CLIs and batch jobs.
+REQUIRES_TRAIT: dict[str, tuple[str, ...]] = {
+    # Stage 2 — solution architecture
+    "CLOUDCRAFT_JSON": ("aws",),            # AWS topology
+    # Stage 3 — technical design
+    "OPENAPI": ("api",),
+    "DBML": ("database",),
+    "CDK": ("aws",),                        # AWS CDK stack
+    # Stage 4 — test engineering
+    "POSTMAN_COLLECTION": ("api",),
+    "REST_ASSURED": ("api",),
+    "PLAYWRIGHT_SPEC": ("ui",),
+    "K6_SCRIPT": ("service",),
+    "JMETER_PLAN": ("service",),
+    "LOCUSTFILE": ("service",),
+    # Stage 5 — CI/CD & observability
+    "DOCKERFILE": ("container",),
+    "GRAFANA_DASHBOARD": ("service",),
+    # Stage 6 — steps of the delivery run that are gated like artifacts
+    "ZAP_SCAN": ("service",),               # DAST needs a running web target
+    "AWS_SECRETS_CHECK": ("aws",),
 }
+# Gated items that are tool steps rather than saved artifacts (never listed as outputs).
+EXTRA_GATED: dict[int, list[str]] = {5: ["AWS_SECRETS_CHECK"], 6: ["ZAP_SCAN"]}
 
-# Tools that only make sense for an artifact type (skipped together with it).
+# Tools that only make sense for an artifact type / gated step (skipped together with it).
 TOOL_ARTIFACT: dict[str, str] = {
+    "amazonq_generate_cloudcraft": "CLOUDCRAFT_JSON",
+    "spectral_lint_openapi": "OPENAPI",
+    "restassured_generate_tests": "REST_ASSURED",
     "playwright_generate_tests": "PLAYWRIGHT_SPEC",
     "playwright_run_tests": "PLAYWRIGHT_SPEC",
-    "restassured_generate_tests": "REST_ASSURED",
-    "spectral_lint_openapi": "OPENAPI",
+    "jmeter_generate_plan": "JMETER_PLAN",
+    "locust_generate_test": "LOCUSTFILE",
+    "k6_run_test": "K6_SCRIPT",
     "postman_run_collection": "POSTMAN_COLLECTION",
+    "zap_baseline_scan": "ZAP_SCAN",
+    "aws_secrets_check": "AWS_SECRETS_CHECK",
 }
 
 _REASON = {
-    "ui": "no user interface in this project (API/service only) — nothing for UI automation or screens",
+    "ui": "no user interface in this project (API/service only)",
     "api": "no API surface in this project",
     "database": "no persistent data store in this project",
-    "cloud": "no cloud/IaC target in this project",
+    "cloud": "no cloud target in this project",
+    "aws": "the project does not target AWS",
+    "service": "not a running service (no API or UI to exercise at runtime)",
+    "container": "the project is not containerised (serverless, library or CLI)",
 }
 
 _KEYWORDS: dict[str, tuple[str, ...]] = {
     "ui": (r"ui", r"ux", r"front-?end", r"web ?app(?:lication)?", r"react", r"angular", r"vue", r"svelte",
            r"next\.?js", r"screens?", r"pages?", r"dashboard", r"portal", r"browser", r"spa", r"mobile app",
-           r"ios", r"android", r"html", r"css", r"user interface", r"web ?site", r"form"),
+           r"ios", r"android", r"html", r"css", r"user interface", r"web ?site", r"form", r"playwright",
+           r"selenium", r"cypress"),
     "api": (r"apis?", r"rest(?:ful)?", r"graphql", r"grpc", r"endpoints?", r"micro-?services?", r"openapi",
             r"swagger", r"web ?services?", r"backend", r"back-end", r"service"),
     "database": (r"databases?", r"db", r"sql", r"postgres(?:ql)?", r"mysql", r"mariadb", r"oracle", r"dynamo(?:db)?",
@@ -65,6 +93,10 @@ _KEYWORDS: dict[str, tuple[str, ...]] = {
                  r"aurora", r"rds"),
     "cloud": (r"aws", r"azure", r"gcp", r"cloud", r"kubernetes", r"k8s", r"terraform", r"cdk", r"lambda",
               r"ecs", r"eks", r"fargate", r"serverless", r"cloudformation"),
+    "aws": (r"aws", r"amazon", r"cdk", r"lambda", r"ecs", r"eks", r"fargate", r"dynamo(?:db)?", r"s3",
+            r"cloudformation", r"bedrock", r"aurora", r"rds", r"sqs", r"sns"),
+    "container": (r"docker\w*", r"containers?", r"containeri[sz]ed", r"kubernetes", r"k8s", r"ecs", r"eks",
+                  r"fargate", r"helm", r"podman"),
 }
 # Explicit statements that a trait is ABSENT.
 _NEGATIONS: dict[str, tuple[str, ...]] = {
@@ -74,7 +106,17 @@ _NEGATIONS: dict[str, tuple[str, ...]] = {
     "api": (r"no apis?", r"without (?:an? )?apis?"),
     "database": (r"no (?:database|db|persistence|data ?store)", r"stateless", r"without (?:a )?(?:database|db)"),
     "cloud": (r"on-?prem(?:ise|ises)?", r"no cloud", r"without cloud", r"bare[- ]metal"),
+    "aws": (r"no aws", r"not aws", r"without aws"),
+    "container": (r"no (?:docker|containers?)", r"without (?:docker|containers?)", r"not containeri[sz]ed"),
 }
+# Other clouds / IaC that, with no AWS mention, mean the project does not target AWS.
+_OTHER_CLOUD = (r"azure", r"gcp", r"google cloud", r"terraform", r"pulumi", r"on-?prem(?:ise|ises)?",
+                r"bare[- ]metal")
+# Delivery shapes that are not containerised services by default.
+_NON_CONTAINER = (r"serverless", r"lambda", r"static site", r"library", r"sdk", r"cli", r"command[- ]line",
+                  r"npm package", r"python package", r"batch job")
+_NON_SERVICE = (r"library", r"sdk", r"cli", r"command[- ]line", r"batch job", r"npm package", r"python package",
+                r"etl", r"script")
 
 
 def _has(text: str, pats: tuple[str, ...]) -> bool:
@@ -90,11 +132,14 @@ def strip_scope_block(text: str) -> str:
 def derive_traits(*, corpus: str) -> dict[str, bool | None]:
     """True = present, False = confidently absent, None = unknown (never excludes).
 
-    UI is False when the text says API/service-only, or describes an API service and
-    never mentions any UI concept (the typical headless-service project)."""
+    ui is False when the text says API/service-only, or it describes an API service and
+    never mentions any UI concept. aws is False when another cloud/IaC (or on-prem) is
+    named and AWS is not. container is False for serverless/library/CLI shapes with no
+    container mention. service (derived) is False for libraries/CLIs/batch jobs, or when
+    both api and ui are absent."""
     text = (corpus or "").lower()
     traits: dict[str, bool | None] = {}
-    for trait in ("ui", "api", "database", "cloud"):
+    for trait in ("ui", "api", "database", "cloud", "aws", "container"):
         if _has(text, _NEGATIONS[trait]):
             traits[trait] = False
         elif _has(text, _KEYWORDS[trait]):
@@ -103,16 +148,30 @@ def derive_traits(*, corpus: str) -> dict[str, bool | None]:
             traits[trait] = None
     if traits["ui"] is None and traits["api"] is True:
         traits["ui"] = False           # an API service with no UI signal anywhere
+    if traits["cloud"] is False:
+        traits["aws"] = False
+    if traits["aws"] is None and _has(text, _OTHER_CLOUD):
+        traits["aws"] = False
+    if traits["container"] is None and _has(text, _NON_CONTAINER):
+        traits["container"] = False
+    if traits["api"] or traits["ui"]:
+        traits["service"] = True
+    elif _has(text, _NON_SERVICE) or (traits["api"] is False and traits["ui"] is False):
+        traits["service"] = False
+    else:
+        traits["service"] = None
     return traits
 
 
 def inapplicable_types(traits: dict[str, bool | None], template: int) -> dict[str, str]:
-    """Artifact types of this stage whose required trait is confidently absent → reason."""
+    """Items of this stage (artifacts and gated tool steps) whose required trait is
+    confidently absent → reason. Items with no requirement are never excluded."""
     out: dict[str, str] = {}
-    for t in GENERATED_ARTIFACTS.get(template, []):
-        need = REQUIRES_TRAIT.get(t)
-        if need and traits.get(need) is False:
-            out[t] = _REASON[need]
+    for t in [*GENERATED_ARTIFACTS.get(template, []), *EXTRA_GATED.get(template, [])]:
+        for need in REQUIRES_TRAIT.get(t, ()):
+            if traits.get(need) is False:
+                out[t] = _REASON[need]
+                break
     return out
 
 

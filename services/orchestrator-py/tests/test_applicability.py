@@ -5,7 +5,8 @@ from app.services.applicability import (
 
 def test_api_only_project_excludes_ui_automation_but_keeps_api_artifacts() -> None:
     traits = derive_traits(corpus="Payments REST API microservice on Spring Boot with PostgreSQL, deployed to AWS")
-    assert traits == {"ui": False, "api": True, "database": True, "cloud": True}
+    assert (traits["ui"], traits["api"], traits["database"], traits["aws"], traits["service"]) == (
+        False, True, True, True, True)
     out = inapplicable_types(traits, 4)
     assert set(out) == {"PLAYWRIGHT_SPEC"} and "no user interface" in out["PLAYWRIGHT_SPEC"]
 
@@ -46,18 +47,14 @@ def _chat() -> ChatService:
     return ChatService.__new__(ChatService)
 
 
-def test_plan_marks_inapplicable_artifacts_not_recommended_whatever_the_llm_said() -> None:
+def test_plan_drops_inapplicable_artifacts_whatever_the_llm_said() -> None:
     chat = _chat()
     intel = {"willProduce": [
         {"output": "PLAYWRIGHT_SPEC", "recommended": True, "include": True, "reason": "llm said yes"},
         {"output": "REST_ASSURED", "recommended": True, "include": True, "reason": "ok"},
     ]}
     out = chat._apply_applicability(intel, {"PLAYWRIGHT_SPEC": "no user interface", "DBML": "no store"})
-    by = {a["output"]: a for a in out["willProduce"]}
-    assert by["PLAYWRIGHT_SPEC"]["recommended"] is False and by["PLAYWRIGHT_SPEC"]["include"] is False
-    assert by["PLAYWRIGHT_SPEC"]["reason"].startswith("Not applicable")
-    assert by["REST_ASSURED"]["recommended"] is True            # untouched
-    assert by["DBML"]["recommended"] is False                    # listed even if the LLM omitted it
+    assert [a["output"] for a in out["willProduce"]] == ["REST_ASSURED"]   # not part of the plan at all
     assert len(out["promptChecks"]) == 2
 
 
@@ -113,3 +110,53 @@ async def test_second_tab_waits_for_the_plan_instead_of_rebuilding_and_state_is_
 
 async def _noop() -> None:
     return None
+
+
+# ---- every stage, not just QA ---------------------------------------------------------
+def test_every_stage_gets_its_own_applicability_rules() -> None:
+    api_serverless = derive_traits(corpus="Orders REST API on Azure with Terraform, serverless functions, no database")
+    s2, s3 = inapplicable_types(api_serverless, 2), inapplicable_types(api_serverless, 3)
+    s4, s5 = inapplicable_types(api_serverless, 4), inapplicable_types(api_serverless, 5)
+    assert "CLOUDCRAFT_JSON" in s2                                     # stage 2: AWS topology, not AWS
+    assert {"CDK", "DBML"} <= set(s3) and "OPENAPI" not in s3          # stage 3: API stays
+    assert "PLAYWRIGHT_SPEC" in s4 and "REST_ASSURED" not in s4        # stage 4
+    assert {"DOCKERFILE", "AWS_SECRETS_CHECK"} <= set(s5)              # stage 5: serverless, not AWS
+
+
+def test_library_has_no_runtime_service_artifacts_but_keeps_core_ones() -> None:
+    t = derive_traits(corpus="Python SDK library published as a package, no UI")
+    gone = {x for n in range(1, 7) for x in inapplicable_types(t, n)}
+    assert {"K6_SCRIPT", "JMETER_PLAN", "LOCUSTFILE", "GRAFANA_DASHBOARD", "ZAP_SCAN", "PLAYWRIGHT_SPEC"} <= gone
+    core = {"PRD", "HLD", "LLD", "TEST_STRATEGY", "GITHUB_ACTIONS", "APP_CODE", "UNIT_TESTS", "PULL_REQUEST"}
+    assert not core & gone
+
+
+def test_a_full_stack_aws_project_excludes_nothing() -> None:
+    t = derive_traits(corpus="React web app with REST API, PostgreSQL, Docker on AWS ECS")
+    assert all(inapplicable_types(t, n) == {} for n in range(1, 7))
+
+
+def test_tools_are_gated_with_their_artifacts() -> None:
+    from app.services.applicability import TOOL_ARTIFACT
+    t = derive_traits(corpus="REST API only service on AWS")
+    gone = inapplicable_types(t, 4)
+    assert [x for x, a in TOOL_ARTIFACT.items() if a in gone] == ["playwright_generate_tests", "playwright_run_tests"]
+
+
+def test_generation_skips_inapplicable_fields_without_any_explicit_scope() -> None:
+    from app.agents.phase_agents import _scope_ctx, run_scope, scope_skipped_fields
+    from app.agents.schemas import PHASE_SCHEMAS
+    from app.domain.models import AgentState
+
+    st = AgentState(project_id="p", session_id="s", current_phase=3, stage_template=3,
+                    user_input="Design the orders service", tech_stack="Python FastAPI REST API on Azure, stateless")
+    token = _scope_ctx.set(run_scope(st))
+    try:
+        skipped = set(scope_skipped_fields(st, list(PHASE_SCHEMAS[3].model_fields)))
+    finally:
+        _scope_ctx.reset(token)
+    assert skipped == {"cdkStack", "dbmlSchema"}          # AWS CDK + DBML; OpenAPI and the LLD remain
+    # an explicit reviewer request always wins over inference
+    st2 = st.model_copy(update={"user_input": "x\n\n## Production scope (confirmed by the reviewer)\n"
+                                              "- Produce ONLY these artifacts: CDK, LLD.\n"})
+    assert "CDK" not in run_scope(st2)["exclude"]

@@ -1034,8 +1034,8 @@ export default function StageWorkspace({
                     )}
                     {(plan.intel.promptChecks?.length ?? 0) > 0 && (
                       <div className="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
-                        <span className="font-semibold">Validated against this project:</span>{' '}
-                        {plan.intel.promptChecks!.join('; ')}. These are excluded from generation and from the prompt.
+                        <span className="font-semibold">Left out — not applicable to this project:</span>{' '}
+                        {plan.intel.promptChecks!.join('; ')}. They are not part of this plan, the prompt or the generation.
                       </div>
                     )}
                     {(plan.intel.suggestedArtifacts?.length ?? 0) > 0 && (

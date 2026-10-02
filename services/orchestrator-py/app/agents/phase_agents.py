@@ -221,7 +221,7 @@ FIELD_ARTIFACT_TYPES: dict[int, dict[str, tuple[str, ...]]] = {
         "componentDiagram": ("COMPONENT_DIAGRAM",), "plantumlDiagrams": ("PLANTUML",),
         "mermaidSequence": ("LLD_DIAGRAM",), "openapiYaml": ("OPENAPI",), "dbmlSchema": ("DBML",),
         "cdkStack": ("CDK",)},
-    4: {"testStrategyMarkdown": ("TEST_STRATEGY",), "xrayTests": ("XRAY_TESTS",),
+    4: {"testStrategyMarkdown": ("TEST_STRATEGY",), "xrayTests": ("XRAY_TESTS",), "k6Script": ("K6_SCRIPT",),
         "postmanCollection": ("POSTMAN_COLLECTION",), "rtmMarkdown": ("RTM",)},
     5: {"workflowYaml": ("GITHUB_ACTIONS",), "dockerfiles": ("DOCKERFILE",),
         "grafanaDashboardJson": ("GRAFANA_DASHBOARD",)},
@@ -249,6 +249,12 @@ def effective_scope(state: Any) -> dict[str, Any]:
     project cannot use (auto-excluded, see services/applicability). Falls back to the
     parsed scope when no run context is active (e.g. direct helper calls)."""
     return _scope_ctx.get() or production_scope(getattr(state, "user_input", None))
+
+
+def _applies(state: Any, item: str) -> bool:
+    """False when `item` (artifact type or gated tool step) is out of the run's scope —
+    confirmed by the reviewer, or not applicable to this project."""
+    return not labels_excluded(effective_scope(state), item)
 
 
 def run_scope(state: Any) -> dict[str, Any]:
@@ -1741,17 +1747,19 @@ async def _run_phase4(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
             content=pw["specTs"], summary=f"{pw['testCount']} Playwright tests from user stories", exact=True,
         ))
 
-    jm = await _tool(deps, emit, "jmeter_generate_plan", {"openapiYaml": openapi, "serviceName": service})
-    _add(artifacts, await _save_artifact(
-        deps, state, emit, type_="JMETER_PLAN", title="JMeter load-test plan",
-        content=jm["jmxXml"], summary=f"JMX plan with {jm['samplerCount']} samplers",
-    ))
+    if _applies(state, "JMETER_PLAN"):
+        jm = await _tool(deps, emit, "jmeter_generate_plan", {"openapiYaml": openapi, "serviceName": service})
+        _add(artifacts, await _save_artifact(
+            deps, state, emit, type_="JMETER_PLAN", title="JMeter load-test plan",
+            content=jm["jmxXml"], summary=f"JMX plan with {jm['samplerCount']} samplers",
+        ))
 
-    lo = await _tool(deps, emit, "locust_generate_test", {"openapiYaml": openapi, "serviceName": service})
-    _add(artifacts, await _save_artifact(
-        deps, state, emit, type_="LOCUSTFILE", title="Locust load-test file",
-        content=lo["locustfile"], summary=f"locustfile.py with {lo['taskCount']} tasks",
-    ))
+    if _applies(state, "LOCUSTFILE"):
+        lo = await _tool(deps, emit, "locust_generate_test", {"openapiYaml": openapi, "serviceName": service})
+        _add(artifacts, await _save_artifact(
+            deps, state, emit, type_="LOCUSTFILE", title="Locust load-test file",
+            content=lo["locustfile"], summary=f"locustfile.py with {lo['taskCount']} tasks",
+        ))
 
     return PhaseAgentResult(
         summary="Phase 4 complete: " + ", ".join(sorted({a.type for a in artifacts})) + " generated"
@@ -1814,13 +1822,14 @@ async def _run_phase5(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         "imageTag": "app:candidate",
     })
     secret_rows = []
-    for secret_id in ("sdlc/jwt-secret", "sdlc/github-webhook-secret"):
+    for secret_id in (("sdlc/jwt-secret", "sdlc/github-webhook-secret") if _applies(state, "AWS_SECRETS_CHECK") else ()):
         check = await _tool(deps, emit, "aws_secrets_check", {"secretId": secret_id})
         secret_rows.append(f"| {secret_id} | {'✅ present' if check['exists'] else '❌ MISSING'} | {check['mode']} |")
     _add(artifacts, await _save_artifact(
         deps, state, emit, type_="SECURITY_SCAN", title="Pipeline security scan (Trivy + Secrets)",
-        content=f"{trivy['reportMarkdown']}\n\n## Secrets Manager verification\n\n"
-                f"| Secret | Status | Mode |\n|---|---|---|\n" + "\n".join(secret_rows),
+        content=trivy["reportMarkdown"] + (
+            "\n\n## Secrets Manager verification\n\n| Secret | Status | Mode |\n|---|---|---|\n"
+            + "\n".join(secret_rows) if secret_rows else ""),
         summary=f"Trivy {trivy['result']}: {trivy['critical']} critical / {trivy['high']} high; "
                 f"{len(secret_rows)} pipeline secrets verified",
     ))
@@ -1927,12 +1936,13 @@ async def _run_phase6(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
             k6 = await _tool(deps, emit, "k6_run_test", {"script": k6_script})
             sections.append(k6["reportMarkdown"])
             verdicts.append(f"perf p95={k6['p95Ms']}ms {'✅' if k6['thresholdsPassed'] else '❌'}")
-        zap = await _tool(deps, emit, "zap_baseline_scan", {
-            "targetUrl": "http://staging.sdlc.local",
-            **({"openapiYaml": _ctx_content(state, "OPENAPI")} if _ctx_content(state, "OPENAPI") else {}),
-        })
-        sections.append(zap["reportMarkdown"])
-        verdicts.append(f"ZAP {zap['result']}")
+        if _applies(state, "ZAP_SCAN"):
+            zap = await _tool(deps, emit, "zap_baseline_scan", {
+                "targetUrl": "http://staging.sdlc.local",
+                **({"openapiYaml": _ctx_content(state, "OPENAPI")} if _ctx_content(state, "OPENAPI") else {}),
+            })
+            sections.append(zap["reportMarkdown"])
+            verdicts.append(f"ZAP {zap['result']}")
         if sections:
             _add(artifacts, await _save_artifact(
                 deps, state, emit, type_="TEST_EXECUTION_REPORT", title="Test execution report",

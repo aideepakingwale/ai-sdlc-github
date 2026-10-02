@@ -20,7 +20,7 @@ from ..domain.errors import SdlcError
 from ..domain.models import AgentState, ContextArtifact, UserPublic
 from ..graph.pipeline import PIPELINE_NODES, build_pipeline, run_pipeline
 from ..services.applicability import (
-    GENERATED_ARTIFACTS, derive_traits, inapplicable_types, project_corpus,
+    GENERATED_ARTIFACTS, TOOL_ARTIFACT, derive_traits, inapplicable_types, project_corpus,
 )
 from ..services.model_router import classify_tier
 from ..services.skills import SKILLS
@@ -721,23 +721,17 @@ class ChatService:
         return inapplicable_types(derive_traits(corpus=corpus), stage["template"])
 
     def _apply_applicability(self, intel: dict[str, Any], excluded: dict[str, str]) -> dict[str, Any]:
-        """Force the plan to agree with the applicability rules: a not-applicable artifact is
-        never recommended or pre-ticked, whatever the LLM said, and always carries the reason."""
+        """Items the project cannot use are NOT part of the plan: they are removed from the
+        proposed outputs (whatever the LLM said), and are never generated. The reason is kept
+        only as a short note so the reviewer can see what was left out and why."""
         if not excluded:
             return intel
-        will = [dict(a) for a in intel.get("willProduce", [])]
-        seen = set()
-        for a in will:
-            t = self._norm_type(a.get("output", ""))
-            seen.add(t)
-            if t in excluded:
-                a.update(recommended=False, include=False, reason=f"Not applicable — {excluded[t]}")
-        for t, why in excluded.items():
-            if t not in seen:
-                will.append({"output": t, "recommended": False, "include": False,
-                             "reason": f"Not applicable — {why}"})
-        checks = [f"{t} excluded: {why}" for t, why in excluded.items()]
-        return {**intel, "willProduce": will, "promptChecks": checks}
+        gone = set(excluded)
+        will = [a for a in intel.get("willProduce", []) if self._norm_type(a.get("output", "")) not in gone]
+        extras = [x for x in intel.get("suggestedArtifacts", [])
+                  if self._norm_type(x.get("name", "")) not in gone]
+        checks = [f"{t} — {why}" for t, why in excluded.items()]
+        return {**intel, "willProduce": will, "suggestedArtifacts": extras, "promptChecks": checks}
 
     def _deterministic_proposal(
         self, stage: dict, overlay: dict,
@@ -976,9 +970,16 @@ class ChatService:
         # D-105: only offer tools whose integration is actually configured, so the plan
         # never proposes a tool that can't run.
         available_tools = self._configured_tools(TEMPLATE_TOOLS.get(stage["template"], []))
+        prior_for_fit = [a for a in await self._db.list_artefacts(project_id) if a["phase"] < phase]
+        fit_attachments = await self._db.list_attachments(project_id, phase)
+        not_applicable = self._applicability(project=project, stage=stage, overlay=overlay,
+                                             prior_arts=prior_for_fit, attachments=fit_attachments)
+        # Plan only what applies: drop tools and outputs the project cannot use.
+        available_tools = [t for t in available_tools if TOOL_ARTIFACT.get(t) not in not_applicable]
         steps = derive_plan_steps(
             template=stage["template"], roster=roster, step_overrides=step_overrides,
-            outputs=list(stage.get("outputs") or []), skills=skills,
+            outputs=[o for o in (stage.get("outputs") or []) if self._norm_type(o) not in not_applicable],
+            skills=skills,
             tools=available_tools,
             external_write_tools=set(EXTERNAL_WRITE_TOOLS),
             gen_prompt_tokens=(len(system) + len(user_prompt)) // 4,
@@ -1001,10 +1002,10 @@ class ChatService:
         # (e.g. UI/API test suites). Plan over everything that would actually be produced,
         # and check each against the project's real traits so none is forced onto a project
         # that cannot use it (an API-only service has no UI to automate).
-        plan_stage = {**stage, "outputs": list(dict.fromkeys(
-            [*(stage.get("outputs") or []), *GENERATED_ARTIFACTS.get(stage["template"], [])]))}
-        excluded = self._applicability(project=project, stage=stage, overlay=overlay,
-                                       prior_arts=prior_arts, attachments=attachments)
+        excluded = not_applicable
+        plan_stage = {**stage, "outputs": [o for o in dict.fromkeys(
+            [*(stage.get("outputs") or []), *GENERATED_ARTIFACTS.get(stage["template"], [])])
+            if self._norm_type(o) not in excluded]}
         intel = await self._intelligent_plan(
             applicability=excluded, project=project, phase=phase, stage=plan_stage, overlay=overlay,
             available_tools=available_tools, skills=skills, prior_arts=prior_arts, canon_applied=canon_applied,
