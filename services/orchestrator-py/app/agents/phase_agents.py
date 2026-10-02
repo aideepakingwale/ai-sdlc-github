@@ -1969,8 +1969,9 @@ async def _run_custom_format(deps: AgentDeps, state: AgentState, emit: Emit) -> 
         "PRECISELY, filling each section with content specific to THIS request. Do NOT apply any "
         "built-in template. Do NOT produce an Agile epic/feature/story backlog, a Definition of "
         "Ready/Done, or any section the attached document does not contain. If the attached document "
-        "has a section you have no input for, keep the heading and note what is needed. Return the "
-        "whole deliverable as GitHub-flavoured markdown in `markdown`, and a short `title`.",
+        "has a section you have no input for, keep the heading and note what is needed. Output the "
+        "whole deliverable as GitHub-flavoured markdown directly — no JSON, no wrapping code fence "
+        "around the document, no preamble or closing remarks. Start with a single '# ' title heading.",
         ("## The attached format and context (authoritative — mirror its structure)\n" + state.extra_context
          if state.extra_context else ""),
         (f"## Approved context from previous phases\n{context_block}" if context_block else ""),
@@ -1980,33 +1981,44 @@ async def _run_custom_format(deps: AgentDeps, state: AgentState, emit: Emit) -> 
     instruction = re.split(r"##\s*Production scope", state.user_input or "", maxsplit=1)[0].strip()
     user = instruction or f"Produce the {phase.name} document, following the attached format exactly."
 
-    data, result = await deps.llm.generate_json(
+    # PLAIN-TEXT generation (not JSON): emit the markdown directly. Wrapping a large
+    # document inside a JSON string forces the model to escape the whole thing and
+    # risks a JSON-validation retry that doubles latency — a big cost for a big doc.
+    # Here the response IS the markdown, so it is faster and cannot fail to parse.
+    result = await deps.llm.generate(
         intent="generation", tag=f"stage{state.current_phase}_custom_format",
         messages=[{"role": "system", "content": system, "cache": True},
                   {"role": "user", "content": user}],
-        schema=CustomFormatDoc,
+        json_mode=False,
         max_tokens=getattr(deps.settings, "PHASE_MAX_TOKENS", 16_000),
         model=state.model_overrides.get("generate") or None,
     )
     state.last_provider, state.last_model = result.provider, result.model
+    markdown = (result.content or "").strip()
+    # Strip a stray ```markdown fence the model may wrap the whole doc in.
+    if markdown.startswith("```"):
+        markdown = re.sub(r"^```[a-zA-Z]*\n", "", markdown)
+        markdown = re.sub(r"\n```$", "", markdown).strip()
     deps.audit.record(
         project_id=state.project_id, phase=state.current_phase, agent_role=persona,
         event="ai.generation", provider=result.provider, model=result.model,
         prompt_tokens=result.usage["promptTokens"], completion_tokens=result.usage["completionTokens"],
-        artefact_body=result.content, detail={"customFormat": True, "attachedFormat": True},
+        artefact_body=markdown, detail={"customFormat": True, "attachedFormat": True},
     )
     if result.provider == "mock" or "mock" in (result.model or "").lower():
         emit({"type": "node", "node": "guardrail",
               "label": "⚠ Served by the deterministic MOCK provider — output is placeholder."})
     doc_type = _PRIMARY_DOC_TYPE.get(state.stage_template, "DOCUMENT")
-    title = (data.title or "").strip() or (state.stage_name or phase.name)
+    # Title from the document's first H1, else the stage name.
+    m = re.search(r"^#\s+(.+)$", markdown, re.M)
+    title = (m.group(1).strip() if m else "") or (state.stage_name or phase.name)
     art = await _save_artifact(
         deps, state, emit, type_=doc_type, title=title,
-        content=data.markdown, summary=(data.markdown or "")[:300], exact=True,
+        content=markdown, summary=markdown[:300], exact=True,
     )
     arts = [art] if art is not None else []
     return PhaseAgentResult(
-        summary=f"Produced '{title}' following your attached format ({len(data.markdown or '')} chars). "
+        summary=f"Produced '{title}' following your attached format ({len(markdown)} chars). "
                 f"No default template or Agile backlog was generated — only the document you asked for.",
         new_artifacts=arts, gate_status="PENDING_REVIEW",
     )

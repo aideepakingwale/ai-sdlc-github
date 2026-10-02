@@ -146,19 +146,16 @@ function render(kind: string, topic: string, seed: string, userText: string): st
       });
 
     case 'custom_format':
-      // D-112: a single document mirroring a user-attached format (CustomFormatDoc).
-      // Deterministic placeholder with a few headings so the pipeline persists ONE
-      // document and no backlog; real providers reproduce the attached structure.
-      return JSON.stringify({
-        title: `${topic} — Requirement Specification`,
-        markdown: `# ${topic} — Requirement Specification\n\n`
-          + `_Produced following the requester's attached format (mock provider, ref ${seed})._\n\n`
-          + '## 1. Document Reference\n| Document | Version |\n|---|---|\n| This spec | v0.1 |\n\n'
-          + '## 2. Background\nContext for the requirement.\n\n'
-          + '## 3. Application Details\nSource and target systems.\n\n'
-          + '## 4. Non-Functional Requirements\nAvailability, performance, security.\n\n'
-          + '## 5. Change History\n| Version | Date | Author | Description |\n|---|---|---|---|\n',
-      });
+      // D-112: a single document mirroring a user-attached format. PLAIN markdown
+      // (text mode, not JSON) so the pipeline persists ONE document and no backlog;
+      // real providers reproduce the attached structure.
+      return `# ${topic} — Requirement Specification\n\n`
+        + `_Produced following the requester's attached format (mock provider, ref ${seed})._\n\n`
+        + '## 1. Document Reference\n| Document | Version |\n|---|---|\n| This spec | v0.1 |\n\n'
+        + '## 2. Background\nContext for the requirement.\n\n'
+        + '## 3. Application Details\nSource and target systems.\n\n'
+        + '## 4. Non-Functional Requirements\nAvailability, performance, security.\n\n'
+        + '## 5. Change History\n| Version | Date | Author | Description |\n|---|---|---|---|\n';
 
     case 'phase1':
       return corpus.phase1(topic, seed);
