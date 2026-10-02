@@ -506,6 +506,28 @@ async def retrigger_generation_part(
     return await container.gen_jobs.enqueue(project_id, phase_id, user.email)
 
 
+class RegenerateBody(BaseModel):
+    fields: list[str] = []  # artifacts to regenerate; empty = all
+
+
+@router.post("/api/projects/{project_id}/phase/{phase_id}/regenerate")
+async def regenerate_stage_artifacts(
+    project_id: str, phase_id: int, body: RegenerateBody,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Regenerate SELECTED artifacts of a stage on demand, also after approval. Only the
+    chosen parts are regenerated (the rest are reused); the stage returns to review."""
+    if not 1 <= phase_id <= 12:
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+    await container.authz.assert_project_access(project_id, user)
+    if await container.gen_jobs.is_active(project_id, phase_id):
+        raise SdlcError("GATE_CONFLICT", "This stage is already generating")
+    prep = await container.flow.regenerate_parts(project_id, phase_id, body.fields, user)
+    await container.redis.set(f"sdlc:retrigger:{project_id}:{phase_id}", json.dumps(prep["fields"]), ex=300)
+    job = await container.gen_jobs.enqueue(project_id, phase_id, user.email)
+    return {**prep, **job}
+
+
 @router.get("/api/projects/{project_id}/phase/{phase_id}/stream")
 async def stream_stage_progress(
     project_id: str, phase_id: int,

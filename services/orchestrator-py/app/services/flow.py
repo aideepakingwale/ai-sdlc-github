@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Awaitable, Callable
 
+from ..agents.schemas import PHASE_SCHEMAS
 from ..domain.errors import SdlcError
 from ..domain.models import PhaseStatus, UserPublic
 from ..repos.aws import DynamoStore
@@ -217,36 +218,7 @@ class FlowService:
     async def retrigger(self, project_id: str, phase: int, user: UserPublic) -> dict[str, Any]:
         stage = await self._workflow.stage_by_seq(project_id, phase)
 
-        # RBAC: SUPER_ADMIN, the managing PM, or the stage's own phase-role member.
-        if user.role == "SUPER_ADMIN":
-            pass
-        elif user.role == "PROJECT_MANAGER":
-            project = await self._db.get_project(project_id)
-            if not project or project["created_by"] != user.id:
-                raise SdlcError("FORBIDDEN", "Only the managing PROJECT_MANAGER can retrigger this project's stages")
-        else:
-            # Retriggering mutates the stage — it needs WRITE authority. D-90:
-            # prefer the per-user ACL when the stage defines one; otherwise fall
-            # back to the role-based writers (defaults to the whole team).
-            perms = stage.get("userPerms") or []
-            if perms:
-                email = (getattr(user, "email", "") or "").strip().lower()
-                write_emails = {(p.get("email") or "").strip().lower() for p in perms if p.get("write")}
-                if email not in write_emails:
-                    raise SdlcError(
-                        "FORBIDDEN",
-                        f"Retriggering the '{stage['name']}' stage requires write permission — "
-                        f"your account is not granted write on this stage",
-                    )
-            else:
-                writers = stage.get("writeRoles") or stage["team"]
-                membership = await self._authz.get_membership_role(project_id, user.id)
-                if membership not in writers:
-                    raise SdlcError(
-                        "FORBIDDEN",
-                        f"Retriggering the '{stage['name']}' stage requires write permission "
-                        f"({' or '.join(writers)}) — you are {membership or 'not a member'}",
-                    )
+        await self._assert_can_write(project_id, stage, user)
 
         current = await self._dynamo.get_phase_state(project_id, phase)
         if not current or current["status"] == "NOT_STARTED":
@@ -285,6 +257,90 @@ class FlowService:
         )
         return {"projectId": project_id, "phase": phase, "status": "NOT_STARTED",
                 "retriggered": True, "planReview": True, "downstreamFlaggedStale": stale}
+
+    async def _assert_can_write(self, project_id: str, stage: dict[str, Any], user: UserPublic) -> None:
+        # RBAC: SUPER_ADMIN, the managing PM, or the stage's own phase-role member.
+        if user.role == "SUPER_ADMIN":
+            pass
+        elif user.role == "PROJECT_MANAGER":
+            project = await self._db.get_project(project_id)
+            if not project or project["created_by"] != user.id:
+                raise SdlcError("FORBIDDEN", "Only the managing PROJECT_MANAGER can retrigger this project's stages")
+        else:
+            # Retriggering mutates the stage — it needs WRITE authority. D-90:
+            # prefer the per-user ACL when the stage defines one; otherwise fall
+            # back to the role-based writers (defaults to the whole team).
+            perms = stage.get("userPerms") or []
+            if perms:
+                email = (getattr(user, "email", "") or "").strip().lower()
+                write_emails = {(p.get("email") or "").strip().lower() for p in perms if p.get("write")}
+                if email not in write_emails:
+                    raise SdlcError(
+                        "FORBIDDEN",
+                        f"Retriggering the '{stage['name']}' stage requires write permission — "
+                        f"your account is not granted write on this stage",
+                    )
+            else:
+                writers = stage.get("writeRoles") or stage["team"]
+                membership = await self._authz.get_membership_role(project_id, user.id)
+                if membership not in writers:
+                    raise SdlcError(
+                        "FORBIDDEN",
+                        f"Retriggering the '{stage['name']}' stage requires write permission "
+                        f"({' or '.join(writers)}) — you are {membership or 'not a member'}",
+                    )
+
+    async def regenerate_parts(
+        self, project_id: str, phase: int, fields: list[str], user: UserPublic,
+    ) -> dict[str, Any]:
+        """Regenerate SELECTED artifacts of a stage on demand — even after approval.
+
+        Only the chosen parts are regenerated; every other part is reused from its
+        persisted value. The stage drops back to IN_PROGRESS (it returns to review
+        when done, so the changed output is re-approved) and downstream stages that
+        consumed the old output are flagged stale. An empty selection means all."""
+        stage = await self._workflow.stage_by_seq(project_id, phase)
+        await self._assert_can_write(project_id, stage, user)
+        schema = PHASE_SCHEMAS.get(stage["template"])
+        if schema is None:
+            raise SdlcError("VALIDATION_FAILED",
+                            "This stage type has no separate artifacts; use Retrigger stage instead")
+        all_fields = list(schema.model_fields)
+        selected = list(dict.fromkeys(fields)) or all_fields
+        unknown = [f for f in selected if f not in all_fields]
+        if unknown:
+            raise SdlcError("VALIDATION_FAILED", f"Unknown artifact(s): {', '.join(unknown)}")
+        current = await self._dynamo.get_phase_state(project_id, phase)
+        status = current["status"] if current else "NOT_STARTED"
+        if status == "NOT_STARTED":
+            raise SdlcError("GATE_CONFLICT", f"Stage {phase} has not run yet — nothing to regenerate")
+        if status == "IN_PROGRESS":
+            raise SdlcError("GATE_CONFLICT", f"Stage {phase} is already generating")
+        if len(selected) < len(all_fields):
+            have = {p["field"] for p in await self._db.list_generation_parts(project_id, phase)
+                    if p["status"] == "done" and p.get("value_json")}
+            missing = [f for f in all_fields if f not in selected and f not in have]
+            if missing:
+                raise SdlcError(
+                    "GATE_CONFLICT",
+                    f"Saved output for {', '.join(missing)} is missing (stage predates per-artifact "
+                    f"saving). Regenerate all artifacts once to enable selective regeneration",
+                )
+        await self._dynamo.put_phase_state(
+            project_id=project_id, phase=phase, status="IN_PROGRESS", reviewer_role=stage["reviewerRole"],
+        )
+        await self._db.set_project_phase(project_id, phase, "ACTIVE")
+        stale = await self.mark_downstream_stale(
+            project_id, phase, reason=f"Upstream stage '{stage['name']}' was partially regenerated",
+        )
+        self._audit.record(
+            project_id=project_id, phase=phase, agent_role="Orchestrator",
+            event="stage.parts_regenerated", human_reviewer=user.email,
+            detail={"fields": selected, "all": len(selected) == len(all_fields),
+                    "previousStatus": status, "downstreamFlaggedStale": stale},
+        )
+        return {"projectId": project_id, "phase": phase, "fields": selected,
+                "previousStatus": status, "downstreamFlaggedStale": stale}
 
     async def delete_project(self, project_id: str, user: UserPublic) -> dict:
         """Permanently delete a project across EVERY store (D-55): the content-store

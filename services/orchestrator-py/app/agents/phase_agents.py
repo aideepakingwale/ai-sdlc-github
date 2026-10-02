@@ -741,6 +741,16 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
             max_tokens=_max_tokens,
             model=_model,
         )
+        # Save every artifact as a part too, so any stage — however it was generated —
+        # supports selective regeneration later (the split path saves parts itself).
+        for fn, fi in type(data).model_fields.items():
+            try:
+                await deps.db.upsert_generation_part(
+                    project_id=state.project_id, phase=state.current_phase, field=fn, status="done",
+                    error=None, value_json=TypeAdapter(fi.annotation).dump_json(getattr(data, fn)).decode(),
+                )
+            except Exception:  # noqa: BLE001 — best-effort
+                log.warning("generation part upsert failed for %s", fn, exc_info=True)
     deps.audit.record(
         project_id=state.project_id, phase=state.current_phase, agent_role=phase.agent_persona,
         event="ai.generation", provider=result.provider, model=result.model,

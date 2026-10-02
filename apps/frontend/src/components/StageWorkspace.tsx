@@ -194,6 +194,10 @@ export default function StageWorkspace({
     enabled: Boolean(projectId),
   });
   const parts = partsQ.data?.parts ?? [];
+  // 'document' (single attached-format file) has no separate artifacts to pick from.
+  const regenerable = parts.filter((p) => p.field !== 'document' && p.status !== 'running');
+  const [picked, setPicked] = useState<string[]>([]);
+  useEffect(() => setPicked([]), [projectId, selectedSeq]);
 
   // D-108: pending interactive clarifying questions for this stage (answer cards).
   type ClarQ = NonNullable<StagePlan['clarification']>[number];
@@ -417,17 +421,17 @@ export default function StageWorkspace({
     }
   }
 
-  // D-107 step 2: regenerate ONE failed part and merge it. Enqueues a run that
-  // regenerates only this part (reusing the cached rest), then watches progress.
-  async function retriggerPart(field: string) {
+  // Run a part-level generation job (retrigger one part, or regenerate a selection) and
+  // watch its progress. Only the chosen parts are regenerated; the rest are reused.
+  async function runPartsJob(label: string, url: string, body: unknown) {
     if (streaming) return;
     beginStream();
-    pushEvent({ type: 'node', node: 'queue', label: `Retriggering ${field}…` } as never);
+    pushEvent({ type: 'node', node: 'queue', label } as never);
     try {
-      await api.post(`/api/projects/${projectId}/phase/${selectedSeq}/parts/${encodeURIComponent(field)}/retrigger`, {});
+      await api.post(url, body);
     } catch (err) {
       endStream();
-      window.alert(err instanceof Error ? err.message : 'Could not retrigger this part');
+      window.alert(err instanceof Error ? err.message : 'Could not start generation');
       return;
     }
     try {
@@ -440,6 +444,23 @@ export default function StageWorkspace({
       void qc.invalidateQueries({ queryKey: ['project', projectId] });
       void qc.invalidateQueries({ queryKey: ['phase', projectId] });
     }
+  }
+
+  // D-107 step 2: regenerate ONE failed part and merge it.
+  const retriggerPart = (field: string) =>
+    runPartsJob(`Retriggering ${field}…`,
+      `/api/projects/${projectId}/phase/${selectedSeq}/parts/${encodeURIComponent(field)}/retrigger`, {});
+
+  // Regenerate chosen artifacts on demand (also after approval). Empty = all.
+  async function regenerateParts(fields: string[]) {
+    const all = fields.length === 0 || fields.length === regenerable.length;
+    const what = all ? 'ALL artifacts' : `${fields.length} selected artifact(s) (${fields.join(', ')})`;
+    const note = stage?.status === 'APPROVED'
+      ? ' This stage is approved: it returns to review and downstream stages are flagged stale.' : '';
+    if (!window.confirm(`Regenerate ${what} of this stage? The other artifacts are kept.${note}`)) return;
+    setPicked([]);
+    await runPartsJob(`Regenerating ${all ? 'all artifacts' : fields.join(', ')}…`,
+      `/api/projects/${projectId}/phase/${selectedSeq}/regenerate`, { fields: all ? [] : fields });
   }
 
   // D-108: submit answers to the clarifying questions, then generate.
@@ -1259,9 +1280,41 @@ export default function StageWorkspace({
                 </span>
               )}
             </div>
+            {regenerable.length > 0 && !streaming && ['APPROVED', 'PENDING_REVIEW', 'AMEND_REQUESTED', 'ESCALATED'].includes(stage.status) && (
+              <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px]">
+                <button
+                  type="button" disabled={picked.length === 0}
+                  onClick={() => regenerateParts(picked)}
+                  className="rounded border border-brand-300 bg-brand-50 px-2 py-1 font-semibold text-brand-700 hover:bg-brand-100 disabled:opacity-40"
+                  title="Regenerate only the ticked artifacts; the rest are kept"
+                >
+                  ↺ Regenerate selected ({picked.length})
+                </button>
+                <button
+                  type="button" onClick={() => regenerateParts([])}
+                  className="rounded border border-slate-300 bg-white px-2 py-1 font-semibold text-slate-600 hover:bg-slate-50"
+                >
+                  Regenerate all
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPicked(picked.length === regenerable.length ? [] : regenerable.map((p) => p.field))}
+                  className="text-slate-500 underline"
+                >
+                  {picked.length === regenerable.length ? 'Clear' : 'Select all'}
+                </button>
+              </div>
+            )}
             <div className="space-y-1">
               {parts.map((p) => (
                 <div key={p.field} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs">
+                  {p.field !== 'document' && p.status !== 'running' && (
+                    <input
+                      type="checkbox" aria-label={`Select ${p.field}`}
+                      checked={picked.includes(p.field)}
+                      onChange={(e) => setPicked((cur) => (e.target.checked ? [...cur, p.field] : cur.filter((f) => f !== p.field)))}
+                    />
+                  )}
                   <span className={p.status === 'done' ? 'text-emerald-600' : p.status === 'running' ? 'text-blue-500' : 'text-red-600'}>
                     {p.status === 'done' ? '✓' : p.status === 'running' ? '⏳' : '✗'}
                   </span>
