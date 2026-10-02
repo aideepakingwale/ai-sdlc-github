@@ -104,7 +104,7 @@ export default function StageWorkspace({
   artefacts: Array<{ id: string; phase: number; type: string; title: string; url: string | null }>;
 }) {
   const qc = useQueryClient();
-  const { streaming, activity, liveResponse, beginStream, pushEvent, endStream } = useApp();
+  const { streaming, activity, liveResponse, liveDocument, liveDocTitle, docStreaming, beginStream, pushEvent, endStream } = useApp();
   const [prompt, setPrompt] = useState('');
   const [viewArtefactId, setViewArtefactId] = useState<string | null>(null);
   const [refIds, setRefIds] = useState<string[]>([]);
@@ -1185,6 +1185,21 @@ export default function StageWorkspace({
                 </div>
               )}
             </div>
+            {/* D-112: the artifact being written live, token-by-token */}
+            {liveDocument && (
+              <div className="mt-3 rounded-lg border border-blue-200 bg-white">
+                <div className="flex items-center justify-between border-b border-blue-100 px-3 py-1.5">
+                  <span className="text-[11px] font-semibold text-blue-800">
+                    ✍ {liveDocTitle || 'Document'} {docStreaming && <span className="text-blue-400">· writing…</span>}
+                  </span>
+                  <span className="text-[10px] text-slate-400">{liveDocument.length.toLocaleString()} chars</span>
+                </div>
+                <div className="prose-chat max-h-96 overflow-auto px-3 py-2 text-[13px] text-slate-800">
+                  <ReactMarkdown>{liveDocument}</ReactMarkdown>
+                  {docStreaming && <span className="inline-block h-3 w-1.5 animate-pulse bg-blue-500 align-middle" />}
+                </div>
+              </div>
+            )}
           </section>
         )}
 

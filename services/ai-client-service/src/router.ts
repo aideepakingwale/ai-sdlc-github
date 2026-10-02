@@ -141,6 +141,7 @@ export class LlmRouter {
     req: GenerateRequest,
     signal: AbortSignal,
     optsOverride?: { forceMock: boolean; allowMockFallback: boolean },
+    onText?: (delta: string) => void,
   ): Promise<GenerateResponse> {
     const attempts: string[] = [];
     const candidates = this.candidates(req, optsOverride ?? this.opts);
@@ -162,7 +163,7 @@ export class LlmRouter {
       }
 
       try {
-        const result = await this.callWithRetry(provider, callReq, signal);
+        const result = await this.callWithRetry(provider, callReq, signal, onText);
         return {
           provider: provider.id,
           model: result.model,
@@ -206,11 +207,13 @@ export class LlmRouter {
   }
 
   /** 429 → exponential backoff up to 3 retries; transient → 1 retry (Module 3 §2). */
-  private async callWithRetry(provider: LlmProvider, req: GenerateRequest, signal: AbortSignal) {
+  private async callWithRetry(provider: LlmProvider, req: GenerateRequest, signal: AbortSignal, onText?: (delta: string) => void) {
     let lastErr: ProviderCallError | undefined;
     for (let attempt = 0; attempt < 4; attempt++) {
       try {
-        return await provider.generate(req, signal);
+        // Only stream deltas on the first attempt, so a retry after a mid-stream
+        // failure doesn't double the text in the caller's live preview (D-112).
+        return await provider.generate(req, signal, attempt === 0 ? onText : undefined);
       } catch (err) {
         if (!(err instanceof ProviderCallError)) throw err;
         lastErr = err;

@@ -125,7 +125,7 @@ export interface AuditEvent {
   detail: Record<string, unknown>;
 }
 
-/** Viz: emitted by the planner before execution — the run's blueprint. */
+/** Viz (D-31): emitted by the planner before execution — the run's blueprint. */
 export interface PlanEvent {
   type: 'plan';
   stage: number;
@@ -166,6 +166,10 @@ export type StreamEvent =
   | PlanEvent
   | { type: 'tool_call'; tool: string; status: 'start' | 'success' | 'error'; summary?: string }
   | { type: 'token'; content: string }
+  // D-112 live streaming: the artifact document being written, token-by-token.
+  | { type: 'content_start'; title?: string; doc_type?: string }
+  | { type: 'content_delta'; text: string }
+  | { type: 'content_end' }
   | { type: 'artifact'; artifact: { type: string; title: string; url?: string; key?: string } }
   | { type: 'gate'; phase: number; status: PhaseStatus; reviewerRole: Role }
   | { type: 'done'; finalResponse: string; phase: number; gateStatus: PhaseStatus }

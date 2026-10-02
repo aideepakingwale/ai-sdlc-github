@@ -42,7 +42,7 @@ export function createBedrockProvider(opts: {
     model: opts.modelId ?? 'anthropic.claude-opus-4-8',
     vision: true, // Claude on Bedrock accepts image content blocks (D-66)
 
-    async generate(req: GenerateRequest, signal: AbortSignal): Promise<ProviderResult> {
+    async generate(req: GenerateRequest, signal: AbortSignal, onText?: (delta: string) => void): Promise<ProviderResult> {
       if (!configured) throw new ProviderCallError('bedrock', 'transient', 'bedrock not configured');
       // Standard Bedrock client: authenticates via the AWS default credential
       // chain (EC2 instance role / ECS task role / IRSA / env) and calls the
@@ -103,19 +103,20 @@ export function createBedrockProvider(opts: {
       const timeout = AbortSignal.timeout(opts.timeoutMs ?? 600_000);
       const combined = AbortSignal.any([signal, timeout]);
       try {
-        const res = await client.messages
-          .stream(
-            {
-              model: modelId,
-              max_tokens: maxTokens,
-              // system/messages carry optional cache_control blocks (D-98) that this
-              // SDK version's param types don't model; cast at this adapter boundary.
-              ...(system ? { system: system as never } : {}),
-              messages: messages as never,
-            },
-            { signal: combined },
-          )
-          .finalMessage();
+        const stream = client.messages.stream(
+          {
+            model: modelId,
+            max_tokens: maxTokens,
+            // system/messages carry optional cache_control blocks (D-98) that this
+            // SDK version's param types don't model; cast at this adapter boundary.
+            ...(system ? { system: system as never } : {}),
+            messages: messages as never,
+          },
+          { signal: combined },
+        );
+        // D-112 live streaming: forward each text delta to the caller as it arrives.
+        if (onText) stream.on('text', (delta: string) => { try { onText(delta); } catch { /* ignore */ } });
+        const res = await stream.finalMessage();
         const content = res.content
           .filter((b): b is Extract<(typeof res.content)[number], { type: 'text' }> => b.type === 'text')
           .map((b) => b.text)

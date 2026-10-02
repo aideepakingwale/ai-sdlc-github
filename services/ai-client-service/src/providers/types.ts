@@ -39,7 +39,10 @@ export interface LlmProvider {
   /** Can this provider accept inline images (vision)? Requests carrying an
    *  image are only routed to providers where this is true (D-66). */
   readonly vision?: boolean;
-  generate(req: GenerateRequest, signal: AbortSignal): Promise<ProviderResult>;
+  /** `onText`, when supplied, is invoked with each streamed text delta as the
+   *  provider generates (D-112 live streaming). Providers that can't stream simply
+   *  ignore it and return the full result; the caller then emits it as one chunk. */
+  generate(req: GenerateRequest, signal: AbortSignal, onText?: (delta: string) => void): Promise<ProviderResult>;
 }
 
 /** True when an error is an abort/cancellation (the combined signal fired: caller

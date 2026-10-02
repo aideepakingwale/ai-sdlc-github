@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, TypeVar
+from typing import Any, Callable, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -214,6 +214,83 @@ class LlmClient:
             completion_tokens=result.usage["completionTokens"],
             response_body=self._cap(result.content) if debug else None,
         )
+        return result
+
+    async def generate_stream(
+        self,
+        *,
+        intent: str,
+        messages: list[dict[str, Any]],
+        on_delta: Callable[[str], Any],
+        temperature: float = 0.2,
+        max_tokens: int = 16000,
+        tag: str | None = None,
+        tier: str = "auto",
+        model: str | None = None,
+    ) -> LlmResult:
+        """Stream a plain-text generation (D-112): calls `on_delta(text)` for each
+        chunk as the model produces it, and returns the final assembled LlmResult.
+        Falls back to a single delta for providers that can't stream."""
+        started = time.perf_counter()
+        debug = await self._debug_enabled()
+        req_body = self._cap(_sanitize_for_trace(messages)) if debug else None
+        parts: list[str] = []
+        final: dict[str, Any] = {}
+        try:
+            async with self._http.stream(
+                "POST", f"{self._base}/v1/generate/stream",
+                json={
+                    "intent": intent, "messages": messages, "json": False,
+                    "temperature": temperature, "maxTokens": max_tokens, "tier": tier,
+                    **({"tag": tag} if tag else {}),
+                    **({"model": model} if model else {}),
+                },
+                timeout=self._generate_timeout,
+            ) as res:
+                if res.status_code != 200:
+                    body = await res.aread()
+                    raise SdlcError("PROVIDER_ERROR", f"ai-client stream returned {res.status_code}: {body[:200]!r}")
+                async for line in res.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    try:
+                        obj = json.loads(line[5:].strip())
+                    except json.JSONDecodeError:
+                        continue
+                    kind = obj.get("type")
+                    if kind == "delta":
+                        t = obj.get("text") or ""
+                        if t:
+                            parts.append(t)
+                            try:
+                                on_delta(t)
+                            except Exception:  # noqa: BLE001 — a UI emit must never kill generation
+                                pass
+                    elif kind == "done":
+                        final = obj
+                    elif kind == "error":
+                        raise SdlcError("PROVIDER_ERROR", obj.get("message") or "stream error")
+        except httpx.HTTPError as err:
+            raise SdlcError("PROVIDER_ERROR", f"ai-client unreachable: {err}") from err
+        content = (final.get("content") if final.get("content") else "".join(parts)) or ""
+        usage = final.get("usage") or {}
+        result = LlmResult(
+            provider=final.get("provider", "unknown"),
+            model=final.get("model", "unknown"),
+            content=content,
+            usage={"promptTokens": usage.get("promptTokens", 0),
+                   "completionTokens": usage.get("completionTokens", len(content) // 4)},
+            attempts=[],
+            tier=final.get("tier", tier),
+            truncated=bool(final.get("truncated", False)),
+        )
+        if self.telemetry is not None:
+            await self.telemetry.record(
+                kind="llm", tag=tag, latency_ms=int((time.perf_counter() - started) * 1000),
+                provider=result.provider, model=result.model, tier=result.tier,
+                prompt_tokens=result.usage["promptTokens"], completion_tokens=result.usage["completionTokens"],
+                request_body=req_body, response_body=self._cap(content) if debug else None,
+            )
         return result
 
     async def generate_json(

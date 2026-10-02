@@ -9,7 +9,7 @@ export interface ActivityItem {
   status?: 'start' | 'success' | 'error';
 }
 
-/** Run visualizer state: live view of plan → nodes → tools for a run. */
+/** Run visualizer state (D-31): live view of plan → nodes → tools for a run. */
 export interface RunViz {
   nodes: string[];
   activeNode: string | null;
@@ -32,6 +32,11 @@ interface AppState {
   streaming: boolean;
   activity: ActivityItem[];
   liveResponse: string;
+  // D-112 live streaming: the artifact document being written in real time, plus a
+  // flag so the UI shows the live preview while it streams.
+  liveDocument: string;
+  liveDocTitle: string;
+  docStreaming: boolean;
   run: RunViz;
   beginStream: () => void;
   pushEvent: (e: StreamEvent) => void;
@@ -50,8 +55,11 @@ export const useApp = create<AppState>((set) => ({
   streaming: false,
   activity: [],
   liveResponse: '',
+  liveDocument: '',
+  liveDocTitle: '',
+  docStreaming: false,
   run: EMPTY_RUN,
-  beginStream: () => set({ streaming: true, activity: [], liveResponse: '', run: EMPTY_RUN }),
+  beginStream: () => set({ streaming: true, activity: [], liveResponse: '', liveDocument: '', liveDocTitle: '', docStreaming: false, run: EMPTY_RUN }),
   pushEvent: (e) =>
     set((s) => {
       const add = (item: Omit<ActivityItem, 'id'>) => ({ activity: [...s.activity, { ...item, id: ++activitySeq }] });
@@ -96,6 +104,15 @@ export const useApp = create<AppState>((set) => ({
           return add({ kind: 'gate', label: `Gate ${e.status} — reviewer: ${e.reviewerRole}` });
         case 'token':
           return { liveResponse: s.liveResponse + e.content };
+        case 'content_start':
+          return {
+            ...add({ kind: 'node', label: `✍ Writing ${e.title ?? 'the document'} live…` }),
+            liveDocument: '', liveDocTitle: e.title ?? 'Document', docStreaming: true,
+          };
+        case 'content_delta':
+          return { liveDocument: s.liveDocument + e.text };
+        case 'content_end':
+          return { docStreaming: false };
         case 'done':
           return { liveResponse: e.finalResponse };
         case 'error':

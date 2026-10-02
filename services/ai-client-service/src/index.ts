@@ -229,6 +229,47 @@ app.post('/v1/generate', async (req, reply) => {
   }
 });
 
+// D-112 live streaming: same body as /v1/generate, but streams the output as SSE
+// `delta` events while the model generates, then a final `done` event carrying the
+// full content + usage. Providers that can't stream emit the whole content as one
+// delta before `done`, so the contract is uniform.
+app.post('/v1/generate/stream', async (req, reply) => {
+  const parsed = GenerateRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return reply.status(400).send({
+      error: { code: 'VALIDATION_FAILED', message: parsed.error.issues.map((i) => i.message).join('; ') },
+    });
+  }
+  reply.raw.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-cache',
+    connection: 'keep-alive',
+    'x-accel-buffering': 'no',
+  });
+  const write = (obj: unknown) => reply.raw.write(`data: ${JSON.stringify(obj)}\n\n`);
+  const controller = new AbortController();
+  reply.raw.on('close', () => { if (!reply.raw.writableFinished) controller.abort(); });
+  const started = Date.now();
+  try {
+    const c = await ensureCurrent();
+    let streamed = false;
+    const onText = (t: string) => { if (t) { streamed = true; write({ type: 'delta', text: t }); } };
+    const res = await c.router.generate(parsed.data, controller.signal, optsFor(c.mode, c.active), onText);
+    if (!streamed && res.content) write({ type: 'delta', text: res.content }); // non-streaming provider
+    write({
+      type: 'done', provider: res.provider, model: res.model, usage: res.usage,
+      tier: res.tier, truncated: res.truncated ?? false, content: res.content,
+    });
+    log.info({ provider: res.provider, model: res.model, tag: parsed.data.tag, ms: Date.now() - started, streamed }, 'generate/stream ok');
+    reply.raw.end();
+  } catch (err) {
+    const msg = isSdlcError(err) ? err.message : 'Internal error';
+    log.error({ err }, 'generate/stream failed');
+    try { write({ type: 'error', message: msg }); } catch { /* client gone */ }
+    reply.raw.end();
+  }
+});
+
 async function main() {
   await app.listen({ port: env.AI_CLIENT_PORT, host: '0.0.0.0' });
   log.info({ port: env.AI_CLIENT_PORT }, 'ai-client-service listening');

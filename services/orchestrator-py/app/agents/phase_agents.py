@@ -1981,18 +1981,23 @@ async def _run_custom_format(deps: AgentDeps, state: AgentState, emit: Emit) -> 
     instruction = re.split(r"##\s*Production scope", state.user_input or "", maxsplit=1)[0].strip()
     user = instruction or f"Produce the {phase.name} document, following the attached format exactly."
 
-    # PLAIN-TEXT generation (not JSON): emit the markdown directly. Wrapping a large
-    # document inside a JSON string forces the model to escape the whole thing and
-    # risks a JSON-validation retry that doubles latency — a big cost for a big doc.
-    # Here the response IS the markdown, so it is faster and cannot fail to parse.
-    result = await deps.llm.generate(
+    # PLAIN-TEXT STREAMING generation (D-112): the response IS the markdown (no JSON
+    # escaping / retry), and it STREAMS to the workspace token-by-token so the reviewer
+    # watches the document being written live instead of waiting behind a spinner.
+    emit({"type": "content_start", "title": f"{phase.name} document", "doc_type": _PRIMARY_DOC_TYPE.get(state.stage_template, "DOCUMENT")})
+
+    def _on_delta(t: str) -> None:
+        emit({"type": "content_delta", "text": t})
+
+    result = await deps.llm.generate_stream(
         intent="generation", tag=f"stage{state.current_phase}_custom_format",
         messages=[{"role": "system", "content": system, "cache": True},
                   {"role": "user", "content": user}],
-        json_mode=False,
+        on_delta=_on_delta,
         max_tokens=getattr(deps.settings, "PHASE_MAX_TOKENS", 16_000),
         model=state.model_overrides.get("generate") or None,
     )
+    emit({"type": "content_end"})
     state.last_provider, state.last_model = result.provider, result.model
     markdown = (result.content or "").strip()
     # Strip a stray ```markdown fence the model may wrap the whole doc in.
