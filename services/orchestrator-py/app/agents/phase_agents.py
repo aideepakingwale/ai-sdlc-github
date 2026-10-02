@@ -172,12 +172,27 @@ def _concepts(text: str) -> set[str]:
     return {key for key, words in _CONCEPTS if any(w in t for w in words)}
 
 
+def _norm_token(text: str) -> str:
+    return re.sub(r"[^A-Z0-9]+", "_", (text or "").upper()).strip("_")
+
+
 def labels_excluded(scope: dict[str, Any], *labels: str) -> bool:
     """True when the artifact described by `labels` (type, title, …) belongs to a
     concept the reviewer excluded and NOT to one they included (include wins)."""
     exc = scope.get("exclude") or []
     if not exc:
         return False
+    # An EXACT artifact-type name (e.g. LLD_DIAGRAM, PLANTUML) the reviewer listed decides
+    # on its own. The coarser concept match below would otherwise let an included
+    # COMPONENT_DIAGRAM "win" for every other diagram and silently keep excluded ones.
+    inc_tokens = {_norm_token(x) for x in (scope.get("include") or [])}
+    exc_tokens = {_norm_token(x) for x in exc}
+    for lab in labels:
+        tok = _norm_token(lab)
+        if tok in inc_tokens:
+            return False
+        if tok in exc_tokens:
+            return True
     mine = set()
     for lab in labels:
         mine |= _concepts(lab)
@@ -187,6 +202,38 @@ def labels_excluded(scope: dict[str, Any], *labels: str) -> bool:
     included = set().union(*(_concepts(p) for p in (scope.get("include") or []))) or set()
     return bool(mine & excluded) and not bool(mine & included)
 
+
+
+# Which artifact TYPE(s) each top-level schema field of a stage produces. Lets the
+# reviewer's confirmed scope decide, BEFORE any model call, which fields are worth
+# generating — an excluded artifact is never generated (and never judged by the
+# validator) instead of being generated and discarded at save time.
+FIELD_ARTIFACT_TYPES: dict[int, dict[str, tuple[str, ...]]] = {
+    1: {"epics": ("EPIC", "FEATURE", "USER_STORY"), "prdMarkdown": ("PRD",)},
+    2: {"hldNarrative": ("HLD",), "architecturePrinciples": ("HLD",), "components": ("HLD",),
+        "designPatterns": ("HLD",), "qualityAttributes": ("HLD",),
+        "structurizrDsl": ("STRUCTURIZR_DSL",), "mermaidArchitecture": ("HLD_DIAGRAM",),
+        "deploymentArchitecture": ("ARCH_DIAGRAM", "CLOUDCRAFT_JSON"), "adrs": ("ADR",)},
+    3: {"lldMarkdown": ("LLD",), "components": ("LLD",), "errorTaxonomy": ("LLD",), "resilience": ("LLD",),
+        "componentDiagram": ("COMPONENT_DIAGRAM",), "plantumlDiagrams": ("PLANTUML",),
+        "mermaidSequence": ("LLD_DIAGRAM",), "openapiYaml": ("OPENAPI",), "dbmlSchema": ("DBML",),
+        "cdkStack": ("CDK",)},
+    4: {"testStrategyMarkdown": ("TEST_STRATEGY",), "xrayTests": ("XRAY_TESTS",),
+        "postmanCollection": ("POSTMAN_COLLECTION",), "rtmMarkdown": ("RTM",)},
+    5: {"workflowYaml": ("GITHUB_ACTIONS",), "dockerfiles": ("DOCKERFILE",),
+        "grafanaDashboardJson": ("GRAFANA_DASHBOARD",)},
+}
+
+
+def scope_skipped_fields(state: Any, fields: list[str]) -> list[str]:
+    """Schema fields whose artifact types are ALL excluded by the reviewer's confirmed
+    production scope. Never skips every field (something must be generated)."""
+    scope = production_scope(getattr(state, "user_input", None))
+    if not scope.get("exclude"):
+        return []
+    ftypes = FIELD_ARTIFACT_TYPES.get(state.stage_template, {})
+    skipped = [f for f in fields if f in ftypes and all(labels_excluded(scope, t) for t in ftypes[f])]
+    return [] if len(skipped) >= len(fields) else skipped
 
 # The confirmed production scope for the stage currently running, so the
 # side-effecting helpers (_save_artifact, _publish) can honour it without threading
@@ -307,7 +354,17 @@ async def _generate_phase_split(
 
     reused_status: dict[str, str] = {}
     to_gen: list[str] = []
+    out_of_scope = scope_skipped_fields(state, fields)
+    for fn in out_of_scope:
+        # Excluded by the confirmed scope → no model call. A minimal, clearly-labelled
+        # value keeps the combined object valid; it is never saved as an artifact.
+        fi = schema.model_fields[fn]
+        values[fn] = _minimal_value(fi.annotation, "Not produced — outside the confirmed production scope",
+                                    _min_len(fi))
+        emit({"type": "node", "node": "agent", "label": f"⏭ {fn} skipped — outside the confirmed scope"})
     for fn in fields:
+        if fn in out_of_scope:
+            continue
         rv = reuse_value(fn)
         if rv is _NO_REUSE:
             to_gen.append(fn)
@@ -770,7 +827,7 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
 
 
 # ---------------------------------------------------------------- Validation agent (D-52)
-def _output_digest(out: BaseModel, *, limit: int = 3_000) -> str:
+def _output_digest(out: BaseModel, *, limit: int = 3_000, skipped: tuple[str, ...] = ()) -> str:
     """A compact, token-frugal digest of a generated phase output so the
     validation agent can judge it without re-sending the whole payload. Strings
     are truncated; lists are summarised by count + first item's headline."""
@@ -784,7 +841,9 @@ def _output_digest(out: BaseModel, *, limit: int = 3_000) -> str:
 
     lines: list[str] = []
     for field, value in out.model_dump().items():
-        if isinstance(value, str):
+        if field in skipped:
+            lines.append(f"- {field}: (intentionally not produced — outside the reviewer's confirmed scope)")
+        elif isinstance(value, str):
             text = value.strip().replace("\n", " ")
             lines.append(f"- {field}: {text[:240]}" + ("…" if len(text) > 240 else ""))
         elif isinstance(value, list):
@@ -887,7 +946,8 @@ async def _validate_output(
                     quality_bar=render_prompt(f"phase.quality.{phase.id}")[:1_800],
                     user_intent=state.user_input[:1_500] or "(carry the previous phases forward)",
                     amend_comments=(state.amend_comments or "(none)")[:1_200],
-                    output_digest=_output_digest(out),
+                    output_digest=_output_digest(out, skipped=tuple(
+                        scope_skipped_fields(state, list(type(out).model_fields)))),
                     context_digest=context_digest[:2_500],
                     syntax_errors=format_issues(syntactic) or "(none)",
                 )},
