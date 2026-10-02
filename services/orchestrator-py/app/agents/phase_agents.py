@@ -100,11 +100,17 @@ def _format_directive(scope: dict[str, Any], has_attachment: bool) -> str:
     fmt = (scope.get("format") or "").strip()
     if not fmt:
         return ""
-    # A default-template choice is NOT an override — let the stage rubric stand.
-    if re.search(r"\bdefault\b|standard template|built-?in template", fmt, re.I):
+    up = fmt.upper()
+    # The reviewer picked the System's default template → no override; stage rubric stands.
+    if up.startswith("SYSTEM_DEFAULT") or re.search(r"\bdefault\b|standard template|built-?in template", fmt, re.I):
         return ""
-    lines = [f"The requester chose this output format: **{fmt}**."]
-    if has_attachment or re.search(r"attach|sample|provided|uploaded|their|above", fmt, re.I):
+    # ATTACHED_DOCUMENT token → follow the uploaded file(s). Extract the filename tail
+    # after the em dash / colon for the human-readable note.
+    files = ""
+    if up.startswith("ATTACHED_DOCUMENT"):
+        files = fmt.split("—", 1)[1].strip() if "—" in fmt else (fmt.split(":", 1)[1].strip() if ":" in fmt else "")
+    lines = [f"The requester chose to follow their ATTACHED document's format{f' ({files})' if files else ''}."]
+    if up.startswith("ATTACHED_DOCUMENT") or has_attachment or re.search(r"attach|sample|provided|uploaded|their|above", fmt, re.I):
         lines.append(
             "Treat the attached document above as the FORMAT TEMPLATE: reproduce its exact "
             "section headings, order and table layout, filling them with content for THIS "
@@ -634,8 +640,10 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
     scope = production_scope(state.user_input)
     fmt_directive = _format_directive(scope, has_attachment=bool((state.extra_context or "").strip()))
     if fmt_directive:
-        emit({"type": "node", "node": "agent",
-              "label": f"Honouring the confirmed output format: {scope['format'][:80]}"})
+        _raw = (scope.get("format") or "")
+        _label = ("your attached document(s)" + (f" — {_raw.split('—', 1)[1].strip()}" if "—" in _raw else "")
+                  if _raw.upper().startswith("ATTACHED_DOCUMENT") else _raw[:80])
+        emit({"type": "node", "node": "agent", "label": f"Honouring the confirmed output format: {_label}"})
 
     system, user = build_phase_prompt(
         phase=state.stage_template,
@@ -1918,14 +1926,16 @@ def _wants_attached_format(state: "AgentState") -> bool:
     stage's rigid schema/rubric and reproduce that document's structure instead."""
     if not (state.extra_context or "").strip():
         return False  # nothing attached to mirror
-    # Strongest signal (robust, phrasing-independent): the CONFIRMED proposal format
-    # points at an attached document — the reviewer saw and accepted "Format: the
-    # attached document(s): <file>" in the plan. Honour that regardless of how the
-    # free-text instruction was worded.
-    fmt = (production_scope(state.user_input).get("format") or "").lower()
-    if fmt and re.search(r"attach|sample|uploaded|provided file|\.docx?\b|\.pdf\b|\.xlsx?\b|\.pptx?\b", fmt):
+    # Deterministic: the reviewer EXPLICITLY picked the output format in the plan
+    # (radio choice), which the UI folds in as a machine token — ATTACHED_DOCUMENT or
+    # SYSTEM_DEFAULT. No prose inference, no regex guessing on free text.
+    fmt = (production_scope(state.user_input).get("format") or "").strip().upper()
+    if fmt.startswith("ATTACHED_DOCUMENT"):
         return True
-    # Fallback: an explicit free-text ask in the user's own instruction.
+    if fmt.startswith("SYSTEM_DEFAULT"):
+        return False
+    # Back-compat for overlays written before the explicit choice existed: fall back
+    # to the free-text patterns in the user's own instruction.
     text = re.split(r"##\s*(?:Production scope|Clarifications)", state.user_input or "", maxsplit=1)[0]
     return any(p.search(text) for p in _ATTACHED_FORMAT_PATTERNS)
 

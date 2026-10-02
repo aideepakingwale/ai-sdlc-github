@@ -134,7 +134,7 @@ export default function StageWorkspace({
     threadEndRef.current?.scrollIntoView({ block: 'nearest' });
   }, [thread]);
   // Reset the discussion when the selected stage changes.
-  useEffect(() => { setThread([]); setRefineText(''); }, [selectedSeq]);
+  useEffect(() => { setThread([]); setRefineText(''); setFormatMode(null); }, [selectedSeq]);
   // Inline "@" mention autosuggest (D-56).
   const [mention, setMention] = useState<{ open: boolean; query: string; at: number }>({
     open: false, query: '', at: 0,
@@ -155,6 +155,11 @@ export default function StageWorkspace({
     enabled: Boolean(projectId),
   });
   const attachments = attachmentsQ.data?.attachments ?? [];
+  // D-112: explicit output-format CHOICE (no prose inference). null = use the default
+  // (follow the attachment when one is present, else the system template).
+  const [formatMode, setFormatMode] = useState<'system' | 'attached' | null>(null);
+  const effectiveFormatMode: 'system' | 'attached' =
+    formatMode ?? (attachments.length > 0 ? 'attached' : 'system');
 
   // D-56: templates (formworks) available to @-reference — project + platform.
   const formworksQ = useQuery({
@@ -273,7 +278,14 @@ export default function StageWorkspace({
     const lines: string[] = [];
     if (include.length) lines.push(`Produce ONLY these artifacts: ${include.join(', ')}.`);
     if (exclude.length) lines.push(`Do NOT produce: ${exclude.join(', ')}.`);
-    if (intel.formatSource) lines.push(`Follow this output format: ${intel.formatSource}.`);
+    // D-112: the format is an explicit reviewer CHOICE, not inferred from prose. We emit
+    // a deterministic machine token the backend switches on — ATTACHED_DOCUMENT (follow
+    // the uploaded file's structure) or SYSTEM_DEFAULT (the stage's recommended template).
+    if (effectiveFormatMode === 'attached' && attachments.length) {
+      lines.push(`Follow this output format: ATTACHED_DOCUMENT — ${attachments.map((a) => a.filename).join(', ')}`);
+    } else {
+      lines.push('Follow this output format: SYSTEM_DEFAULT');
+    }
     return lines.length ? `\n\n## Production scope (confirmed by the reviewer)\n${lines.map((l) => `- ${l}`).join('\n')}` : '';
   };
 
@@ -931,9 +943,40 @@ export default function StageWorkspace({
                         </div>
                       </div>
                     )}
-                    {plan.intel.formatSource && (
-                      <div className="mb-1 text-[11px] text-slate-600"><span className="font-semibold">Format:</span> {plan.intel.formatSource}</div>
-                    )}
+                    {/* D-112: explicit output-format choice — System vs the attached file.
+                         The selection drives generation deterministically (no prose inference). */}
+                    <div className="mb-2">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Output format — choose one</div>
+                      <div className="mt-1 space-y-1">
+                        <label className="flex items-start gap-2 text-[12px] text-slate-700">
+                          <input
+                            type="radio" name="formatMode" className="mt-0.5"
+                            checked={effectiveFormatMode === 'system'}
+                            onChange={() => setFormatMode('system')}
+                          />
+                          <span>
+                            <span className="font-semibold">⚙ System’s intelligent format</span>
+                            <span className="text-slate-500"> — the recommended template for this stage</span>
+                          </span>
+                        </label>
+                        <label className={`flex items-start gap-2 text-[12px] ${attachments.length ? 'text-slate-700' : 'text-slate-400'}`}>
+                          <input
+                            type="radio" name="formatMode" className="mt-0.5"
+                            disabled={!attachments.length}
+                            checked={effectiveFormatMode === 'attached'}
+                            onChange={() => setFormatMode('attached')}
+                          />
+                          <span>
+                            <span className="font-semibold">📎 Follow my attached document’s format</span>
+                            <span className="text-slate-500">
+                              {attachments.length
+                                ? ` — mirror ${attachments.map((a) => a.filename).join(', ')} exactly (no default template, no backlog)`
+                                : ' — attach a document above to enable'}
+                            </span>
+                          </span>
+                        </label>
+                      </div>
+                    </div>
                     {plan.intel.recommendation && (
                       <div className="mb-1 rounded bg-white px-2 py-1 text-[11px] text-brand-800"><span className="font-semibold">Advice:</span> {plan.intel.recommendation}</div>
                     )}
