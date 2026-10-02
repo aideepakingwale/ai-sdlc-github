@@ -757,6 +757,8 @@ class ChatService:
         if value not in (None, "present", "absent"):
             raise SdlcError("VALIDATION_FAILED", "value must be present, absent or null")
         await CanonService(self._db, self._authz, self._audit).assert_can_author(project_id, user)
+        if await self._redis.keys(f"run:{project_id}:*"):
+            raise SdlcError("GATE_CONFLICT", "A stage is generating — project settings are locked until it finishes")
         await self._db.set_trait_override(project_id, trait, value, user.id)
         self._audit.record(project_id=project_id, phase=0, agent_role="Orchestrator",
                            event="project.trait_overridden", human_reviewer=user.email,
@@ -901,13 +903,70 @@ class ChatService:
             except Exception:  # noqa: BLE001
                 pass
 
+    # ------------------------------------------------------------ plan lifecycle
+    # draft → building → ready(fresh) → generating. A plan is FRESH only while the inputs it was
+    # built for are unchanged; any edit (instructions, references, templates, attachments, trait
+    # overrides, upstream outputs) makes it STALE, and generating needs a fresh plan. While a
+    # stage is generating, editing and re-planning are locked. All enforced here, not just in the UI.
+    @staticmethod
+    def _plan_sig(project: dict, row: Any, attachments: list[dict], prior_arts: list[dict],
+                  trait_overrides: dict[str, str], step_overrides: dict[str, Any]) -> str:
+        from .applicability import strip_scope_block
+
+        src = {
+            "ov": strip_scope_block((row["prompt_overlay"] if row else "") or "").strip(),
+            "ref": sorted((row["referenced_artifact_ids"] if row else []) or []),
+            "fw": sorted((row["formwork_ids"] if row else []) or []),
+            "att": sorted(a["id"] for a in attachments),
+            "so": step_overrides, "to": trait_overrides,
+            "stack": project.get("tech_stack"), "name": project.get("name"),
+            "arts": sorted(str(a["id"]) for a in prior_arts),
+        }
+        return hashlib.sha256(json.dumps(src, sort_keys=True, default=str).encode()).hexdigest()[:20]
+
+    async def _is_generating(self, project_id: str, phase: int) -> bool:
+        return bool(await self._redis.exists(f"run:{project_id}:{phase}"))
+
+    async def assert_not_generating(self, project_id: str, phase: int) -> None:
+        if await self._is_generating(project_id, phase):
+            raise SdlcError("GATE_CONFLICT", "Generation is in progress for this stage — editing is locked until it finishes")
+
+    async def _plan_status(self, project_id: str, phase: int, *, project: dict | None = None) -> dict[str, Any]:
+        project = project or await self._db.get_project(project_id)
+        row = await self._db.get_stage_plan(project_id, phase)
+        attachments = await self._db.list_attachments(project_id, phase)
+        prior = [a for a in await self._db.list_artefacts(project_id) if a["phase"] < phase]
+        sig = self._plan_sig(project, row, attachments, prior,
+                             await self._db.get_trait_overrides(project_id), self._step_overrides(row))
+        planned = bool(row and row["plan_sig"])
+        generating = await self._is_generating(project_id, phase)
+        return {
+            "building": bool(await self._redis.exists(f"sdlc:planbuild:{project_id}:{phase}")),
+            "ready": bool(await self._redis.exists(f"sdlc:planintel:{project_id}:{phase}")),
+            "planned": planned, "stale": planned and row["plan_sig"] != sig,
+            "fresh": planned and row["plan_sig"] == sig, "generating": generating, "locked": generating,
+            "_sig": sig,
+        }
+
     async def plan_state(self, *, project_id: str, phase: int, user: UserPublic) -> dict[str, Any]:
-        """Is a plan being built / already built for this stage? Lets any tab or session
-        of the same project show the same state instead of offering Review plan again."""
+        """Shared across tabs/sessions: is a plan building / built / stale, is generation running?"""
         await self._authz.assert_project_access(project_id, user)
-        building = bool(await self._redis.exists(f"sdlc:planbuild:{project_id}:{phase}"))
-        ready = bool(await self._redis.exists(f"sdlc:planintel:{project_id}:{phase}"))
-        return {"building": building, "ready": ready}
+        st = await self._plan_status(project_id, phase)
+        st.pop("_sig", None)
+        return st
+
+    async def assert_plan_ready(self, project_id: str, phase: int, user: UserPublic) -> None:
+        """Generation gate: only a finished, up-to-date plan may start a run."""
+        await self._authz.assert_project_access(project_id, user)
+        st = await self._plan_status(project_id, phase)
+        if st["generating"]:
+            raise SdlcError("GATE_CONFLICT", "This stage is already generating")
+        if st["building"]:
+            raise SdlcError("GATE_CONFLICT", "The plan is still being built — wait for it to finish")
+        if not st["planned"]:
+            raise SdlcError("GATE_CONFLICT", "Review the plan before generating")
+        if st["stale"]:
+            raise SdlcError("GATE_CONFLICT", "Your inputs changed after the plan was reviewed — update the plan before generating")
 
     async def _compute_intelligent_plan(
         self, *, ckey: str, sig: str, stage: dict, outputs: list[str], available_tools: list[str],
@@ -986,6 +1045,9 @@ class ChatService:
         session = await self._db.get_session(project_id)
         st = await self._dynamo.get_phase_state(project_id, phase)
         status = st["status"] if st else "NOT_STARTED"
+        # While the stage generates, re-planning is locked: serve the stored plan, compute nothing.
+        if run_intel and await self._is_generating(project_id, phase):
+            run_intel = False
 
         row = await self._db.get_stage_plan(project_id, phase)
         overlay = {
@@ -1085,7 +1147,17 @@ class ChatService:
             }
         intel = self._apply_applicability(intel, excluded)
 
+        if run_intel:  # an explicit plan display = the reviewed plan now matches the saved inputs
+            try:
+                await self._db.set_stage_plan_sig(project_id, phase, self._plan_sig(
+                    project, row, attachments, prior_for_fit, await self._db.get_trait_overrides(project_id),
+                    step_overrides))
+            except Exception:  # noqa: BLE001
+                log.warning("could not record plan signature", exc_info=True)
+        plan_state = await self._plan_status(project_id, phase, project=project)
+        plan_state.pop("_sig", None)
         return {
+            "planState": plan_state,
             "projectId": project_id, "phase": phase, "status": status,
             "canEdit": await self._can_write_stage(project_id, stage, user),
             "blockedOn": blocked_on,
@@ -1134,6 +1206,7 @@ class ChatService:
         _, stage = await self._stage_for(project_id, phase)
         if not await self._can_write_stage(project_id, stage, user):
             raise SdlcError("FORBIDDEN", f"Editing the '{stage['name']}' plan requires write permission ({' or '.join(self._stage_writers(stage))})")
+        await self.assert_not_generating(project_id, phase)
         row = await self._db.get_stage_plan(project_id, phase)
         await self._db.upsert_stage_plan(
             project_id=project_id, phase=phase, prompt_overlay=overlay.get("promptOverlay", ""),

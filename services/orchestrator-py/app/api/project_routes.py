@@ -431,6 +431,8 @@ async def trigger_stage_plan(
     is already queued/running). The result goes to gate review when it completes."""
     if not 1 <= phase_id <= 12:
         raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+    # Generation needs a finished, up-to-date plan; edits after the review make it stale.
+    await container.chat.assert_plan_ready(project_id, phase_id, user)
     return await container.gen_jobs.enqueue(project_id, phase_id, user.email)
 
 
@@ -1179,6 +1181,7 @@ async def upload_attachment(
 ) -> dict:
     """Attach a file to a stage's compose context (D-54). Text is decoded and
     stored for inlining into the prompt; binary is kept but flagged not-inlined."""
+    await container.chat.assert_not_generating(project_id, phase_id)
     from starlette.datastructures import UploadFile as StarletteUploadFile
 
     from ..repos.pg import new_id
@@ -1264,6 +1267,7 @@ async def delete_attachment(
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
     await container.authz.assert_project_access(project_id, user)
+    await container.chat.assert_not_generating(project_id, phase_id)
     row = await container.db.delete_attachment(attachment_id)
     if row and row["storage_key"]:
         try:

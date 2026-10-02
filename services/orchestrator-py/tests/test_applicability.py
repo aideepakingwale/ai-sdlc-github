@@ -40,6 +40,7 @@ def test_harness_extras_are_visible_to_planning_and_constraints_render() -> None
 import asyncio  # noqa: E402
 import json  # noqa: E402
 
+from app.domain.errors import SdlcError  # noqa: E402
 from app.services.chat import ChatService  # noqa: E402
 
 
@@ -78,6 +79,7 @@ async def test_second_tab_waits_for_the_plan_instead_of_rebuilding_and_state_is_
 
     chat = _chat()
     chat._redis = _Redis()
+    chat._db = PlanDb()
     chat._settings = SimpleNamespace(INTELLIGENT_PLANNING=True)
     chat._authz = SimpleNamespace(assert_project_access=lambda *a: _noop())
     computes: list[int] = []
@@ -94,10 +96,11 @@ async def test_second_tab_waits_for_the_plan_instead_of_rebuilding_and_state_is_
     a = asyncio.create_task(chat._intelligent_plan(**kwargs))
     await asyncio.sleep(0.05)
     state = await chat.plan_state(project_id="p", phase=4, user=None)
-    assert state == {"building": True, "ready": False}           # visible to another tab
+    assert state["building"] is True and state["ready"] is False   # visible to another tab
     b = await chat._intelligent_plan(**kwargs)                   # second tab: waits, no 2nd LLM call
     assert (await a)["understood"] == "u" and b["cached"] is True and len(computes) == 1
-    assert await chat.plan_state(project_id="p", phase=4, user=None) == {"building": False, "ready": True}
+    final = await chat.plan_state(project_id="p", phase=4, user=None)
+    assert final["building"] is False and final["ready"] is True
 
 
 async def _noop() -> None:
@@ -242,3 +245,81 @@ def test_generation_uses_the_resolved_traits_not_its_own_guess() -> None:
     assert "PLAYWRIGHT_SPEC" in run_scope(st)["exclude"]        # the AI/override decision is enforced
     st2 = st.model_copy(update={"project_traits": {}})
     assert "PLAYWRIGHT_SPEC" not in run_scope(st2)["exclude"]   # no resolved traits ⇒ keyword rules
+
+
+# ---- plan lifecycle: stale detection + generation lock -------------------------------
+class PlanDb:
+    def __init__(self) -> None:
+        self.row = None
+        self.attachments: list[dict] = []
+        self.prior: list[dict] = []
+        self.overrides: dict[str, str] = {}
+
+    async def get_project(self, pid): return {"id": pid, "name": "Orders", "tech_stack": "Java"}
+    async def get_stage_plan(self, *_): return self.row
+    async def list_attachments(self, *_): return self.attachments
+    async def list_artefacts(self, *_): return self.prior
+    async def get_trait_overrides(self, *_): return self.overrides
+
+
+def _plan_chat():
+    from types import SimpleNamespace
+
+    chat = _chat()
+    chat._redis, chat._db = _Redis(), PlanDb()
+    chat._authz = SimpleNamespace(assert_project_access=lambda *a: _noop())
+    return chat
+
+
+def _built(chat, overlay="Add tests"):
+    """Simulate Review plan: save the overlay, then record the signature the plan was built for."""
+    row = {"prompt_overlay": overlay, "referenced_artifact_ids": [], "formwork_ids": [], "plan_sig": None,
+           "step_overrides": None}
+    chat._db.row = row
+    return row
+
+
+async def _record_plan_built(chat) -> None:
+    st = await chat._plan_status("p", 4)
+    chat._db.row["plan_sig"] = st["_sig"]
+
+
+async def test_plan_is_stale_after_any_input_change_and_generation_needs_a_fresh_plan() -> None:
+    import pytest as _pt
+
+    chat = _plan_chat()
+    row = _built(chat)
+    with _pt.raises(SdlcError, match="Review the plan"):
+        await chat.assert_plan_ready("p", 4, None)                       # never reviewed
+    await _record_plan_built(chat)
+    assert (await chat._plan_status("p", 4))["fresh"] is True
+    await chat.assert_plan_ready("p", 4, None)                           # reviewed + unchanged ⇒ allowed
+    row["prompt_overlay"] = "Add tests\n\n## Production scope (confirmed by the reviewer)\n- Produce ONLY: A."
+    assert (await chat._plan_status("p", 4))["fresh"] is True            # the scope block is not an edit
+    for change in (lambda: row.update(prompt_overlay="Add MORE tests"),
+                   lambda: chat._db.attachments.append({"id": "a1"}),
+                   lambda: chat._db.overrides.update(ui="present"),
+                   lambda: chat._db.prior.append({"id": "art1", "phase": 1})):
+        await _record_plan_built(chat)
+        change()
+        st = await chat._plan_status("p", 4)
+        assert st["stale"] is True and st["fresh"] is False
+        with _pt.raises(SdlcError, match="update the plan"):
+            await chat.assert_plan_ready("p", 4, None)
+
+
+async def test_editing_and_replanning_are_locked_while_generating() -> None:
+    import pytest as _pt
+
+    chat = _plan_chat()
+    _built(chat)
+    await _record_plan_built(chat)
+    await chat._redis.set("run:p:4", "1")                                # a generation job holds the lock
+    st = await chat.plan_state(project_id="p", phase=4, user=None)
+    assert st["generating"] is True and st["locked"] is True
+    with _pt.raises(SdlcError, match="locked"):
+        await chat.assert_not_generating("p", 4)
+    with _pt.raises(SdlcError, match="already generating"):
+        await chat.assert_plan_ready("p", 4, None)
+    await chat._redis.delete("run:p:4")
+    await chat.assert_not_generating("p", 4)                             # unlocked afterwards

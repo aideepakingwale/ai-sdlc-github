@@ -507,6 +507,15 @@ class Database:
             "SELECT * FROM stage_plans WHERE project_id=$1 AND phase=$2", project_id, phase
         )
 
+    async def set_stage_plan_sig(self, project_id: str, phase: int, sig: str | None) -> None:
+        """Remember the input signature the plan was last built for; a later difference means
+        the plan is stale and must be reviewed again before generating."""
+        assert self.pool
+        await self.pool.execute(
+            """INSERT INTO stage_plans (project_id, phase, plan_sig) VALUES ($1,$2,$3)
+               ON CONFLICT (project_id, phase) DO UPDATE SET plan_sig=EXCLUDED.plan_sig""",
+            project_id, phase, sig)
+
     async def upsert_stage_plan(
         self, *, project_id: str, phase: int, prompt_overlay: str,
         referenced_artifact_ids: list[str], attachment_ids: list[str],

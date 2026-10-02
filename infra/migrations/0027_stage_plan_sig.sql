@@ -1,0 +1,1 @@
+ALTER TABLE stage_plans ADD COLUMN IF NOT EXISTS plan_sig TEXT;

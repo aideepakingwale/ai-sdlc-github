@@ -244,6 +244,8 @@ class FlowService:
             formwork_ids=(existing["formwork_ids"] if existing else []) or [],
             origin="retrigger", updated_by=user.id,
         )
+        # A re-run must go through Plan Review again: the previous plan no longer counts as final.
+        await self._db.set_stage_plan_sig(project_id, phase, None)
         # Impact propagation: re-running this stage will produce a new version of
         # its outputs, so any downstream stage that already consumed the old ones is
         # now potentially stale. Flag them immediately (advisory — statuses kept).

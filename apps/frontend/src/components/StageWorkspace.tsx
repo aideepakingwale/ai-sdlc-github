@@ -53,6 +53,7 @@ interface StagePlan {
   }> | null;
   // Intelligent, context-aware plan (D-105); null when disabled/unavailable.
   // AI-judged project traits (code enforces them); a project lead can override each.
+  planState?: PlanState;
   traits?: Array<{ trait: string; value: boolean | null; source: string; evidence: string; confidence: number }>;
   intel?: {
     understood: string;
@@ -100,6 +101,12 @@ function isRunnable(stage: ProjectFlow['stages'][number], byKey: Map<string, Pro
  * the produced output files, and the stage's own conversation thread. Upstream
  * navigation is the Pipeline Rail; prev/next moves along the pipeline here.
  */
+/** Server-side plan lifecycle (shared by every tab/session of the project). */
+type PlanState = {
+  building: boolean; ready: boolean; planned: boolean; stale: boolean; fresh: boolean;
+  generating: boolean; locked: boolean;
+};
+
 export default function StageWorkspace({
   projectId,
   flow,
@@ -381,7 +388,7 @@ export default function StageWorkspace({
   // so earlier guidance is kept) and `logTurns` records the exchange in the thread.
   async function reviewPlan(e?: FormEvent, opts?: { append?: string; logTurns?: boolean; userMessage?: string }) {
     e?.preventDefault();
-    if (planBusy || streaming || promptError) return;
+    if (planBusy || locked || promptError) return;
     setPlanBusy(true);
     setMention({ open: false, query: '', at: 0 });
     const append = opts?.append?.trim();
@@ -420,7 +427,7 @@ export default function StageWorkspace({
   // to the overlay, and re-plans so the agent responds with an updated proposal.
   async function sendRefinement() {
     const text = refineText.trim();
-    if (!text || planBusy || streaming) return;
+    if (!text || planBusy || locked) return;
     setThread((t) => [...t, { role: 'you', text, ts: Date.now() }]);
     setRefineText('');
     await reviewPlan(undefined, { append: text, logTurns: true, userMessage: text });
@@ -439,7 +446,7 @@ export default function StageWorkspace({
   // executed by a background worker — decoupled from this request — so navigating
   // away never cancels it; the progress stream is just a viewer.
   async function triggerPlan() {
-    if (streaming || !plan?.canEdit) return;
+    if (streaming || !plan?.canEdit || !planFresh) return;
     // D-100: flip to the "Generating…" view SYNCHRONOUSLY, before the enqueue
     // round-trips, so the click is never a dead no-op. Without this the two awaits
     // below (save overlay + enqueue) leave the plan sitting unchanged for a beat,
@@ -667,7 +674,28 @@ export default function StageWorkspace({
     : promptTooShort
       ? 'Add a bit more detail — at least 12 characters — so the agent has something to work with.'
       : '';
-  const canReviewPlan = !planBusy && !streaming && !promptError;
+  // ---- plan lifecycle: draft → building → ready(fresh) ⇄ out-of-date → generating(locked) ----
+  // Server-owned (so every tab agrees); the local edit check just reacts instantly before the
+  // next poll. Generation needs a FRESH plan; while generating, editing/re-planning is locked.
+  const planStateQ = useQuery({
+    queryKey: ['planState', projectId, selectedSeq],
+    queryFn: () => api.get<PlanState>(`/api/projects/${projectId}/phase/${selectedSeq}/plan/state`),
+    enabled: Boolean(projectId && selectedSeq),
+    refetchInterval: 3000,
+  });
+  const ps: PlanState | undefined = planStateQ.data ?? plan?.planState;
+  const locked = streaming || Boolean(ps?.generating);
+  const sameIds = (a: string[], b: string[]) => a.length === b.length && [...a].sort().every((x, i) => x === [...b].sort()[i]);
+  const planBaseline = (plan?.overlay.promptOverlay ?? '').split(/##\s*Production scope/)[0]!.trim();
+  const localDirty = plan
+    ? prompt.trim() !== planBaseline
+      || !sameIds(refIds, plan.overlay.referencedArtifactIds ?? [])
+      || !sameIds(formworkIds, plan.overlay.formworkIds ?? [])
+    : false;
+  const planBuilding = planBusy || Boolean(ps?.building);
+  const planOutdated = Boolean(plan) && !planBuilding && !locked && (localDirty || Boolean(ps?.stale));
+  const planFresh = Boolean(plan) && !planBuilding && !locked && !localDirty && Boolean(ps?.fresh);
+  const canReviewPlan = !planBusy && !locked && !promptError;
 
   return (
     <div className="flex h-full flex-col bg-slate-50">
@@ -891,6 +919,30 @@ export default function StageWorkspace({
                 ↺ Changes were requested at gate review. The reviewer's feedback is pre-filled into the plan below — review it and trigger a fresh generation.
               </div>
             )}
+            {/* Plan lifecycle: always shows whether the plan is final, out of date, building or locked */}
+            <div
+              role="status" data-testid="plan-status"
+              className={`mb-2 flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2 text-[11px] ${
+                locked ? 'border-blue-200 bg-blue-50 text-blue-800'
+                : planBuilding ? 'border-slate-200 bg-slate-50 text-slate-700'
+                : planOutdated ? 'border-amber-300 bg-amber-50 text-amber-900'
+                : planFresh ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                : 'border-slate-200 bg-slate-50 text-slate-600'}`}
+            >
+              {locked ? <span>🔒 <b>Generation in progress</b> — editing and re-planning are locked until it finishes.</span>
+                : planBuilding ? <span>⏳ <b>Building the plan…</b> (this can take ~30s; it is shared with every open tab)</span>
+                : planOutdated ? (
+                  <>
+                    <span>✎ <b>Plan out of date</b> — {localDirty ? 'you changed the instructions or context' : 'inputs changed (another tab, an attachment, a setting or an upstream stage)'}. Generation stays off until you update the plan.</span>
+                    <button type="button" onClick={() => void reviewPlan()} disabled={!canReviewPlan}
+                      className="ml-auto rounded border border-amber-400 bg-white px-2 py-0.5 font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-40">
+                      ↻ Update plan
+                    </button>
+                  </>
+                )
+                : planFresh ? <span>✓ <b>Plan is final and up to date</b> — ready to generate. Any change will require updating the plan first.</span>
+                : <span>Describe the stage, then <b>Review plan</b>. Nothing generates until the plan is final.</span>}
+            </div>
             <form onSubmit={onReviewSubmit}>
               <div className="relative">
                 <textarea
@@ -907,7 +959,7 @@ export default function StageWorkspace({
                   onKeyDown={(e) => {
                     if (e.key === 'Escape' && mention.open) setMention({ open: false, query: '', at: 0 });
                   }}
-                  disabled={streaming}
+                  disabled={locked}
                 />
                 {/* inline @ autosuggest (D-56) */}
                 {mention.open && mentionMatches.length > 0 && (
@@ -942,7 +994,7 @@ export default function StageWorkspace({
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={uploading || streaming}
+                  disabled={uploading || locked}
                   className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:border-brand-400 hover:text-brand-700 disabled:opacity-40"
                 >
                   {uploading ? 'Uploading…' : '📎 Attach files'}
@@ -967,7 +1019,7 @@ export default function StageWorkspace({
                   {attachments.map((a) => (
                     <span key={`a-${a.id}`} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600" title={a.isText ? 'Inlined into the prompt' : 'Binary — kept but not inlined'}>
                       📎 {a.filename}{!a.isText && <span className="text-amber-600">(binary)</span>}
-                      <button type="button" onClick={() => removeAttachment(a.id)} className="ml-0.5 text-slate-400 hover:text-red-600">✕</button>
+                      <button type="button" onClick={() => removeAttachment(a.id)} disabled={locked} className="ml-0.5 text-slate-400 hover:text-red-600 disabled:opacity-30">✕</button>
                     </span>
                   ))}
                 </div>
@@ -1191,12 +1243,12 @@ export default function StageWorkspace({
                           void sendRefinement();
                         }
                       }}
-                      disabled={planBusy || streaming}
+                      disabled={planBusy || locked}
                     />
                     <button
                       type="button"
                       onClick={() => void sendRefinement()}
-                      disabled={planBusy || streaming || !refineText.trim()}
+                      disabled={planBusy || locked || !refineText.trim()}
                       className="shrink-0 rounded-lg border border-brand-300 bg-brand-50 px-3 py-2 text-[12px] font-semibold text-brand-700 hover:bg-brand-100 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       {planBusy ? '…' : 'Send'}
@@ -1304,11 +1356,14 @@ export default function StageWorkspace({
                   <button
                     type="button"
                     onClick={triggerPlan}
-                    disabled={streaming || !plan.canEdit}
+                    disabled={locked || !plan.canEdit || !planFresh}
                     className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-40"
-                    title={plan.canEdit ? 'Run this stage using the reviewed plan' : 'You need write permission to trigger this stage'}
+                    title={!plan.canEdit ? 'You need write permission to trigger this stage'
+                      : locked ? 'Generation is in progress'
+                      : !planFresh ? 'Update the plan first — generation uses only a final, up-to-date plan'
+                      : 'Run this stage using the reviewed plan'}
                   >
-                    {streaming ? 'Agents working…' : '▶ Trigger generation'}
+                    {locked ? 'Agents working…' : planOutdated ? '▶ Trigger (update plan first)' : '▶ Trigger generation'}
                   </button>
                   <span className="text-[11px] text-slate-400">
                     {plan.canEdit ? 'Edit the instructions/context above, press "Update plan" to re-render, then trigger.' : `Requires write permission (${plan.stage.writeRoles.join(', ')}).`}
