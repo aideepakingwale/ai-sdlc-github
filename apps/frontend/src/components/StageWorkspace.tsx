@@ -55,6 +55,8 @@ interface StagePlan {
   intel?: {
     understood: string;
     willProduce: Array<{ output: string; recommended: boolean; include: boolean; reason: string }>;
+    suggestedArtifacts?: Array<{ name: string; reason: string; include: boolean }>;
+    promptChecks?: string[];
     formatSource: string;
     outOfScope: string[];
     recommendation: string;
@@ -134,6 +136,9 @@ export default function StageWorkspace({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plan]);
+  // Planner-suggested artifacts that are NOT in the standard template (opt-in).
+  const [suggestSel, setSuggestSel] = useState<Record<string, boolean>>({});
+  useEffect(() => setSuggestSel({}), [plan?.intel?.suggestedArtifacts]);
   const [showSystemPrompt, setShowSystemPrompt] = useState(false);
   // D-112 Phase C: a conversational thread for the plan. The agent's proposal and
   // the reviewer's free-form refinements render as chat turns; each refinement is
@@ -227,6 +232,43 @@ export default function StageWorkspace({
     setShowSystemPrompt(false);
   }, [selectedSeq]);
 
+  // The plan lives on the SERVER (building flag + cached result), not in this tab: opening
+  // the same project in another tab/session shows the same state — "Building plan…" while a
+  // plan is being built elsewhere, and the built plan (with the saved instructions) once ready.
+  useEffect(() => {
+    if (!selectedSeq) return;
+    let cancelled = false;
+    let markedBusy = false;
+    const base = `/api/projects/${projectId}/phase/${selectedSeq}/plan`;
+    (async () => {
+      try {
+        let st = await api.get<{ building: boolean; ready: boolean }>(`${base}/state`);
+        const wasBuilding = st.building;
+        if (st.building) {
+          markedBusy = true;
+          setPlanBusy(true);
+          while (!cancelled && st.building) {
+            await new Promise((r) => setTimeout(r, 2000));
+            st = await api.get<{ building: boolean; ready: boolean }>(`${base}/state`);
+          }
+        }
+        if (cancelled || (!st.ready && !wasBuilding)) return;
+        const p = await api.get<StagePlan>(`${base}?cached=true`);
+        if (cancelled) return;
+        setPlan(p);
+        const ov = p.overlay;
+        if (ov) {
+          setPrompt((cur) => cur || (ov.promptOverlay ?? '').split(/##\s*Production scope/)[0]!.trim());
+          setRefIds((cur) => (cur.length ? cur : ov.referencedArtifactIds ?? []));
+          setFormworkIds((cur) => (cur.length ? cur : ov.formworkIds ?? []));
+        }
+      } catch { /* no shared plan state — the normal Review plan flow applies */ }
+      finally { if (markedBusy && !cancelled) setPlanBusy(false); }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, selectedSeq]);
+
   /** Clear the compose box, pinned references/templates and the rendered plan —
    *  called after a stage runs so the fields don't retain the last submission. */
   function resetComposer() {
@@ -294,6 +336,8 @@ export default function StageWorkspace({
     const lines: string[] = [];
     if (include.length) lines.push(`Produce ONLY these artifacts: ${include.join(', ')}.`);
     if (exclude.length) lines.push(`Do NOT produce: ${exclude.join(', ')}.`);
+    const extras = (intel.suggestedArtifacts ?? []).filter((x) => suggestSel[x.name]).map((x) => x.name);
+    if (extras.length) lines.push(`Also include (approved additions to the standard template): ${extras.join(', ')}.`);
     // D-112: the format is an explicit reviewer CHOICE, not inferred from prose. We emit
     // a deterministic machine token the backend switches on — ATTACHED_DOCUMENT (follow
     // the uploaded file's structure) or SYSTEM_DEFAULT (the stage's recommended template).
@@ -982,6 +1026,33 @@ export default function StageWorkspace({
                                   ? <span className="ml-1 rounded bg-emerald-100 px-1 text-[9px] font-semibold text-emerald-700">recommended</span>
                                   : <span className="ml-1 rounded bg-slate-100 px-1 text-[9px] text-slate-500">optional</span>}
                                 {a.reason && <span className="text-slate-500"> — {a.reason}</span>}
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {(plan.intel.promptChecks?.length ?? 0) > 0 && (
+                      <div className="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+                        <span className="font-semibold">Validated against this project:</span>{' '}
+                        {plan.intel.promptChecks!.join('; ')}. These are excluded from generation and from the prompt.
+                      </div>
+                    )}
+                    {(plan.intel.suggestedArtifacts?.length ?? 0) > 0 && (
+                      <div className="mb-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                          Suggested additions <span className="normal-case text-slate-400">— not in the standard template; tick to include (added to the stage’s main document)</span>
+                        </div>
+                        <div className="mt-1 space-y-1">
+                          {plan.intel.suggestedArtifacts!.map((x) => (
+                            <label key={x.name} className="flex items-start gap-2 text-[12px] text-slate-700">
+                              <input
+                                type="checkbox" className="mt-0.5"
+                                checked={Boolean(suggestSel[x.name])}
+                                onChange={(e) => setSuggestSel((p) => ({ ...p, [x.name]: e.target.checked }))}
+                              />
+                              <span><span className="font-semibold">{x.name}</span>
+                                {x.reason && <span className="text-slate-500"> — {x.reason}</span>}
                               </span>
                             </label>
                           ))}

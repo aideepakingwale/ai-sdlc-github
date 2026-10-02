@@ -3,6 +3,7 @@ LangGraph invocation → output guardrail → persistence → audit → SSE stre
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -18,6 +19,9 @@ from ..config import Settings
 from ..domain.errors import SdlcError
 from ..domain.models import AgentState, ContextArtifact, UserPublic
 from ..graph.pipeline import PIPELINE_NODES, build_pipeline, run_pipeline
+from ..services.applicability import (
+    GENERATED_ARTIFACTS, derive_traits, inapplicable_types, project_corpus,
+)
 from ..services.model_router import classify_tier
 from ..services.skills import SKILLS
 from ..repos.aws import DynamoStore
@@ -703,6 +707,38 @@ class ChatService:
 
         return [t for t in tools if available(t)]
 
+    @staticmethod
+    def _norm_type(text: str) -> str:
+        return re.sub(r"[^A-Z0-9]+", "_", (text or "").upper()).strip("_")
+
+    def _applicability(self, *, project: dict, stage: dict, overlay: dict, prior_arts: list[dict],
+                       attachments: list[dict]) -> dict[str, str]:
+        """Artifact types of this stage the project cannot use (deterministic, zero-token)."""
+        upstream = [f"{a['type']} {a['title']}" for a in prior_arts[:30]]
+        upstream += [a.get("filename", "") for a in attachments]
+        upstream.append(self._project_profile(project))
+        corpus = project_corpus(project=project, user_text=overlay.get("promptOverlay", ""), upstream=upstream)
+        return inapplicable_types(derive_traits(corpus=corpus), stage["template"])
+
+    def _apply_applicability(self, intel: dict[str, Any], excluded: dict[str, str]) -> dict[str, Any]:
+        """Force the plan to agree with the applicability rules: a not-applicable artifact is
+        never recommended or pre-ticked, whatever the LLM said, and always carries the reason."""
+        if not excluded:
+            return intel
+        will = [dict(a) for a in intel.get("willProduce", [])]
+        seen = set()
+        for a in will:
+            t = self._norm_type(a.get("output", ""))
+            seen.add(t)
+            if t in excluded:
+                a.update(recommended=False, include=False, reason=f"Not applicable — {excluded[t]}")
+        for t, why in excluded.items():
+            if t not in seen:
+                will.append({"output": t, "recommended": False, "include": False,
+                             "reason": f"Not applicable — {why}"})
+        checks = [f"{t} excluded: {why}" for t, why in excluded.items()]
+        return {**intel, "willProduce": will, "promptChecks": checks}
+
     def _deterministic_proposal(
         self, stage: dict, overlay: dict,
         attachments: list[dict] | None = None, formworks: list[dict] | None = None,
@@ -740,7 +776,7 @@ class ChatService:
         self, *, project: dict, phase: int, stage: dict, overlay: dict,
         available_tools: list[str], skills: list[dict], prior_arts: list[dict], canon_applied: bool,
         attachments: list[dict] | None = None, formworks: list[dict] | None = None,
-        allow_compute: bool = True,
+        allow_compute: bool = True, applicability: dict[str, str] | None = None,
     ) -> dict[str, Any] | None:
         """LLM-built, context-aware plan for a stage (D-105). Fed the input, tech
         stack, project profile, prior artifacts, configured tools/skills/outputs and
@@ -769,7 +805,7 @@ class ChatService:
             "fw": overlay.get("formworkIds", []), "stack": stack, "profile": profile,
             "tools": sorted(available_tools), "outputs": sorted(outputs),
             "arts": art_digest, "canon": canon_applied, "persona": stage.get("persona"),
-            "attn": sorted(att_names), "fwn": sorted(fw_names),
+            "attn": sorted(att_names), "fwn": sorted(fw_names), "na": sorted(applicability or {}),
         }, sort_keys=True)
         sig = hashlib.sha256(sig_src.encode()).hexdigest()[:16]
         ckey = f"sdlc:planintel:{project['id']}:{phase}"
@@ -791,6 +827,57 @@ class ChatService:
         if not allow_compute:
             return None
 
+        # Shared build state: if another tab/session is already building THIS plan, wait for
+        # its result instead of starting a duplicate ~30s planner call (and let /plan/state
+        # report "building" so every view shows the same thing).
+        bkey = f"sdlc:planbuild:{project['id']}:{phase}"
+        try:
+            got = await self._redis.set(bkey, "1", nx=True, ex=180)
+        except Exception:  # noqa: BLE001
+            got = True
+        if not got:
+            for _ in range(360):
+                await asyncio.sleep(0.5)
+                try:
+                    cached = await self._redis.get(ckey)
+                    if cached:
+                        obj = json.loads(cached.decode() if isinstance(cached, (bytes, bytearray)) else cached)
+                        if obj.get("sig") == sig:
+                            return {**obj["plan"], "cached": True}
+                    if not await self._redis.exists(bkey):
+                        break
+                except Exception:  # noqa: BLE001
+                    break
+            try:
+                await self._redis.set(bkey, "1", nx=True, ex=180)
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            return await self._compute_intelligent_plan(
+                ckey=ckey, sig=sig, stage=stage, outputs=outputs, available_tools=available_tools,
+                skills=skills, fw_names=fw_names, att_names=att_names, stack=stack, profile=profile,
+                art_digest=art_digest, canon_applied=canon_applied, overlay=overlay, applicability=applicability,
+            )
+        finally:
+            try:
+                await self._redis.delete(bkey)
+            except Exception:  # noqa: BLE001
+                pass
+
+    async def plan_state(self, *, project_id: str, phase: int, user: UserPublic) -> dict[str, Any]:
+        """Is a plan being built / already built for this stage? Lets any tab or session
+        of the same project show the same state instead of offering Review plan again."""
+        await self._authz.assert_project_access(project_id, user)
+        building = bool(await self._redis.exists(f"sdlc:planbuild:{project_id}:{phase}"))
+        ready = bool(await self._redis.exists(f"sdlc:planintel:{project_id}:{phase}"))
+        return {"building": building, "ready": ready}
+
+    async def _compute_intelligent_plan(
+        self, *, ckey: str, sig: str, stage: dict, outputs: list[str], available_tools: list[str],
+        skills: list[dict], fw_names: list[str], att_names: list[str], stack: str, profile: str,
+        art_digest: str, canon_applied: bool, overlay: dict, applicability: dict[str, str] | None,
+    ) -> dict[str, Any] | None:
+        from ..agents.schemas import StagePlanIntel
         from .prompt_library import render as render_prompt
         sys_p = render_prompt("policy.clarification") + "\n\n" + (
             "You are the planning brain for one stage of an enterprise AI-SDLC pipeline. You do NOT "
@@ -812,6 +899,13 @@ class ChatService:
             f"AVAILABLE OUTPUT TEMPLATES (formworks): {', '.join(n for n in fw_names if n) or 'none'}.\n"
             f"ATTACHED DOCUMENTS (user-provided; may define the desired format): {', '.join(n for n in att_names if n) or 'none'}.\n"
             f"TECH STACK: {stack}.\n{profile}\n"
+            + ("NOT APPLICABLE to this project (verified from its configuration — mark recommended=false "
+               "with this reason, never recommend): "
+               + "; ".join(f"{t} ({w})" for t, w in (applicability or {}).items()) + ".\n"
+               if applicability else "")
+            + "Think about THIS project's type (API/service vs UI app, data store, cloud). Recommend only "
+              "artifacts that genuinely apply; list in `suggestedArtifacts` (max 4) anything NOT in the "
+              "standard output list that this project would clearly need, each with a one-line reason.\n"
             f"PRIOR-STAGE ARTIFACTS: {art_digest}.\n"
             f"CANON RULES APPLIED: {'yes' if canon_applied else 'no'}.\n\n"
             f"USER INPUT / INSTRUCTIONS for this stage:\n"
@@ -903,8 +997,16 @@ class ChatService:
         # D-105: intelligent, context-aware plan (advisory). None on any failure or in
         # mock mode → the deterministic plan above stands unchanged. D-109: only the
         # explicit plan DISPLAY computes it (run_intel); persist paths reuse the cache.
+        # The harness template ALSO derives toolchain artifacts beyond the declared outputs
+        # (e.g. UI/API test suites). Plan over everything that would actually be produced,
+        # and check each against the project's real traits so none is forced onto a project
+        # that cannot use it (an API-only service has no UI to automate).
+        plan_stage = {**stage, "outputs": list(dict.fromkeys(
+            [*(stage.get("outputs") or []), *GENERATED_ARTIFACTS.get(stage["template"], [])]))}
+        excluded = self._applicability(project=project, stage=stage, overlay=overlay,
+                                       prior_arts=prior_arts, attachments=attachments)
         intel = await self._intelligent_plan(
-            project=project, phase=phase, stage=stage, overlay=overlay,
+            applicability=excluded, project=project, phase=phase, stage=plan_stage, overlay=overlay,
             available_tools=available_tools, skills=skills, prior_arts=prior_arts, canon_applied=canon_applied,
             attachments=attachments, formworks=formworks, allow_compute=run_intel,
         )
@@ -920,7 +1022,7 @@ class ChatService:
         # truncated/failed call) or returned no proposal, synthesise a deterministic
         # proposal from the stage's declared outputs + attachments so the reviewer can
         # still see what will be produced and choose/skip outputs before triggering.
-        det = self._deterministic_proposal(stage, overlay, attachments, formworks)
+        det = self._deterministic_proposal(plan_stage, overlay, attachments, formworks)
         if not intel:
             intel = det
         elif not intel.get("willProduce"):
@@ -931,6 +1033,7 @@ class ChatService:
                 "formatSource": intel.get("formatSource") or det["formatSource"],
                 "recommendation": intel.get("recommendation") or det["recommendation"],
             }
+        intel = self._apply_applicability(intel, excluded)
 
         return {
             "projectId": project_id, "phase": phase, "status": status,

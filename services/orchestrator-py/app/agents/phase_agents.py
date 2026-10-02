@@ -21,6 +21,9 @@ from ..domain.models import AgentState, ArtifactRef, ContextArtifact, PhaseStatu
 from ..integrations.llm import LlmClient, LlmResult
 from ..integrations.mcp_client import McpToolClient
 from ..repos.pg import Database, new_id
+from ..services.applicability import (
+    constraints_block, derive_traits, inapplicable_types, project_corpus,
+)
 from ..services.audit import AuditService
 from ..services.content_store import ContentStore, artifact_key, source_key
 from ..services.content_validators import format_issues, syntactic_issues
@@ -228,7 +231,7 @@ FIELD_ARTIFACT_TYPES: dict[int, dict[str, tuple[str, ...]]] = {
 def scope_skipped_fields(state: Any, fields: list[str]) -> list[str]:
     """Schema fields whose artifact types are ALL excluded by the reviewer's confirmed
     production scope. Never skips every field (something must be generated)."""
-    scope = production_scope(getattr(state, "user_input", None))
+    scope = effective_scope(state)
     if not scope.get("exclude"):
         return []
     ftypes = FIELD_ARTIFACT_TYPES.get(state.stage_template, {})
@@ -239,6 +242,27 @@ def scope_skipped_fields(state: Any, fields: list[str]) -> list[str]:
 # side-effecting helpers (_save_artifact, _publish) can honour it without threading
 # a new parameter through every call site. Set per-run in run_phase_agent.
 _scope_ctx: ContextVar[dict[str, Any]] = ContextVar("production_scope", default={})
+
+
+def effective_scope(state: Any) -> dict[str, Any]:
+    """The scope this run enforces: the reviewer's confirmed scope PLUS artifacts the
+    project cannot use (auto-excluded, see services/applicability). Falls back to the
+    parsed scope when no run context is active (e.g. direct helper calls)."""
+    return _scope_ctx.get() or production_scope(getattr(state, "user_input", None))
+
+
+def run_scope(state: Any) -> dict[str, Any]:
+    """Build the run's effective scope: confirmed scope + auto-excluded inapplicable
+    artifacts. Anything the reviewer explicitly asked to produce is never auto-excluded."""
+    scope = production_scope(state.user_input)
+    upstream = [state.project_profile or "", (state.extra_context or "")[:2_000]]
+    upstream += [f"{a.type} {a.title} {a.summary}" for a in state.context_window[-30:]]
+    corpus = project_corpus(project={"tech_stack": state.tech_stack}, user_text=state.user_input,
+                            upstream=upstream)
+    auto = inapplicable_types(derive_traits(corpus=corpus), state.stage_template)
+    wanted = {re.sub(r"[^A-Z0-9]+", "_", x.upper()).strip("_") for x in scope.get("include") or []}
+    auto = {t: why for t, why in auto.items() if t not in wanted}
+    return {**scope, "exclude": [*scope.get("exclude", []), *auto], "auto": auto}
 
 # A human label per external-write tool, so an excluded concept also suppresses the
 # matching external write (no empty Jira epic created on approval, etc.).
@@ -630,7 +654,7 @@ async def _save_artifact(
     # D-112 Phase B-ii: honour the reviewer's confirmed scope. If this artifact's
     # concept was explicitly excluded (and not included), skip it entirely — do not
     # persist, index or surface it — so generation produces only what was confirmed.
-    scope = production_scope(state.user_input)
+    scope = effective_scope(state)
     if labels_excluded(scope, type_, title):
         emit({"type": "node", "node": "agent",
               "label": f"Skipped {type_} '{title[:60]}' — not in the confirmed output scope"})
@@ -766,6 +790,14 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
         lint_required=getattr(deps.settings, "LINT_REQUIRED", True),
         format_directive=fmt_directive,
     )
+    # Prompt-vs-intent validation (before any model call): the harness template lists a
+    # fixed artifact set; strip what does not apply to THIS project from the prompt too.
+    auto = (_scope_ctx.get() or {}).get("auto") or {}
+    if auto:
+        system = f"{system}\n\n{constraints_block(auto)}"
+        emit({"type": "node", "node": "agent",
+              "label": "Prompt validated against project & intent — not applicable: "
+                       + "; ".join(f"{t} ({why.split(' — ')[0]})" for t, why in auto.items())})
     if state.extra_context:
         emit({"type": "node", "node": "agent",
               "label": "Using the context you attached (references + files) for this stage"})
@@ -1687,11 +1719,12 @@ async def _run_phase4(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     service = state.user_input[:60] or "Service"
     openapi = _ctx_content(state, "OPENAPI") or "openapi: 3.0.3\npaths:\n  /healthz:\n    get:\n      summary: health\n"
 
-    ra = await _tool(deps, emit, "restassured_generate_tests", {"openapiYaml": openapi, "serviceName": service})
-    _add(artifacts, await _save_artifact(
-        deps, state, emit, type_="REST_ASSURED", title="REST Assured API tests (Java)",
-        content=ra["javaClass"], summary=f"{ra['testCount']} REST Assured tests for {ra['path']}", exact=True,
-    ))
+    if not labels_excluded(effective_scope(state), "REST_ASSURED"):
+        ra = await _tool(deps, emit, "restassured_generate_tests", {"openapiYaml": openapi, "serviceName": service})
+        _add(artifacts, await _save_artifact(
+            deps, state, emit, type_="REST_ASSURED", title="REST Assured API tests (Java)",
+            content=ra["javaClass"], summary=f"{ra['testCount']} REST Assured tests for {ra['path']}", exact=True,
+        ))
 
     stories = [
         {"key": a.ref.key or f"S{n + 1}", "text": a.title.split(": ", 1)[-1], "criteria": []}
@@ -1701,11 +1734,12 @@ async def _run_phase4(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         {"key": f"XT-{n + 1}", "text": t.title, "criteria": [s.action for s in t.steps][:3]}
         for n, t in enumerate(out.xrayTests)
     ]
-    pw = await _tool(deps, emit, "playwright_generate_tests", {"stories": stories})
-    _add(artifacts, await _save_artifact(
-        deps, state, emit, type_="PLAYWRIGHT_SPEC", title="Playwright UI tests",
-        content=pw["specTs"], summary=f"{pw['testCount']} Playwright tests from user stories", exact=True,
-    ))
+    if not labels_excluded(effective_scope(state), "PLAYWRIGHT_SPEC"):
+        pw = await _tool(deps, emit, "playwright_generate_tests", {"stories": stories})
+        _add(artifacts, await _save_artifact(
+            deps, state, emit, type_="PLAYWRIGHT_SPEC", title="Playwright UI tests",
+            content=pw["specTs"], summary=f"{pw['testCount']} Playwright tests from user stories", exact=True,
+        ))
 
     jm = await _tool(deps, emit, "jmeter_generate_plan", {"openapiYaml": openapi, "serviceName": service})
     _add(artifacts, await _save_artifact(
@@ -1720,9 +1754,10 @@ async def _run_phase4(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     ))
 
     return PhaseAgentResult(
-        summary=f"Phase 4 complete: Test Strategy, {len(xray_keys)} Xray test cases, k6 script, "
-                "Postman collection, RTM, REST Assured suite, Playwright spec, JMeter plan and "
-                "Locust file generated.",
+        summary="Phase 4 complete: " + ", ".join(sorted({a.type for a in artifacts})) + " generated"
+                + f" ({len(xray_keys)} Xray test cases)."
+                + (" Skipped as not applicable: " + ", ".join((_scope_ctx.get() or {}).get("auto", {})) + "."
+                   if (_scope_ctx.get() or {}).get("auto") else ""),
         new_artifacts=artifacts, gate_status="PENDING_REVIEW",
     )
 
@@ -2221,7 +2256,7 @@ async def run_phase_agent(deps: AgentDeps, state: AgentState, emit: Emit) -> Pha
     defer = getattr(deps.settings, "PUBLISH_ON_APPROVAL", True)
     token = _publish_sink.set([] if defer else None)
     # D-112 Phase B-ii: expose the confirmed scope to the side-effecting helpers.
-    scope_token = _scope_ctx.set(production_scope(state.user_input))
+    scope_token = _scope_ctx.set(run_scope(state))
     try:
         result = await runner(deps, state, emit)
     finally:

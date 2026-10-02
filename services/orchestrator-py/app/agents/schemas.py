@@ -407,12 +407,21 @@ class ProposedArtifact(BaseModel):
     reason: str = Field(default="", description="One line: why it's recommended or not, per the user's intent.")
 
 
+class SuggestedArtifact(BaseModel):
+    """An artifact NOT in the stage's standard template that the planner thinks this
+    particular project needs. The user opts in; selected ones are added as instructions."""
+    name: str = Field(default="", description="Artifact/document name, e.g. 'Threat model' or 'Data retention policy'.")
+    reason: str = Field(default="", description="One line: why THIS project needs it.")
+    include: bool = Field(default=False, description="Opt-in; the user ticks it.")
+
+
 class StagePlanIntel(BaseModel):
     # D-112 intent reconciliation: restate the intent, reconcile it with the stage's
     # declared outputs/steering/templates, advise what's best, and let the user decide.
     understood: str = Field(default="", description="Plain-language restatement of what the user is asking this stage to do.")
     willProduce: list[ProposedArtifact] = Field(default_factory=list, description="The stage's outputs, each with a produce/skip recommendation per intent.")
     formatSource: str = Field(default="", description="The output format to follow: the default template, an attached file's sections, or a named formwork — whichever best matches the intent.")
+    suggestedArtifacts: list[SuggestedArtifact] = Field(default_factory=list, description="Up to 4 artifacts missing from the standard template that this specific project would benefit from. Empty if none.")
     outOfScope: list[str] = Field(default_factory=list, description="What is deliberately NOT produced, including anything the intent asks for that belongs to a different stage.")
     recommendation: str = Field(default="", description="One or two sentences advising the best course for this request.")
     summary: str = Field(default="", description="1-3 sentences: the tailored approach for this stage.")

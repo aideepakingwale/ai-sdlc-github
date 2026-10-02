@@ -371,14 +371,27 @@ async def retrigger_stage(
 # ------------------------------------------------------------------ Plan Review & Edit gate (D-56)
 @router.get("/api/projects/{project_id}/phase/{phase_id}/plan")
 async def get_stage_plan(
-    project_id: str, phase_id: int,
+    project_id: str, phase_id: int, cached: bool = False,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
     """Full pre-generation plan for a stage: agent, skills, expected tools, model
     tier, context inventory and the actual system-generated prompt (D-56)."""
     if not 1 <= phase_id <= 12:
         raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
-    return await container.chat.build_plan(project_id=project_id, phase=phase_id, user=user)
+    return await container.chat.build_plan(project_id=project_id, phase=phase_id, user=user,
+                                           run_intel=not cached)
+
+
+@router.get("/api/projects/{project_id}/phase/{phase_id}/plan/state")
+async def get_stage_plan_state(
+    project_id: str, phase_id: int,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """{building, ready}: shared across tabs/sessions so every view of the project shows the
+    same plan state (a plan being built, or one already built and cached)."""
+    if not 1 <= phase_id <= 12:
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+    return await container.chat.plan_state(project_id=project_id, phase=phase_id, user=user)
 
 
 @router.put("/api/projects/{project_id}/phase/{phase_id}/plan")
