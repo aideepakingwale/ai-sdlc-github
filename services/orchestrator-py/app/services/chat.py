@@ -595,6 +595,19 @@ class ChatService:
             origin="clarification", updated_by=user.email,
         )
         await self._db.set_stage_clarification(project_id, phase, None)  # clear pending questions
+        # Persist the clarification exchange into the discussion history (D-112) so it
+        # is visible, timestamped, and survives navigation — not just folded into the
+        # overlay. Best-effort: never block answering on a history write.
+        try:
+            session = await self._db.get_session(project_id)
+            if session and lines:
+                await self._db.insert_chat_turn(
+                    session["id"], phase,
+                    "Answered the clarifying questions:\n" + "\n".join(lines),
+                    "Thanks — your answers are recorded and will guide generation.",
+                )
+        except Exception:  # noqa: BLE001
+            log.warning("could not persist clarification turn", exc_info=True)
         self._audit.record(project_id=project_id, phase=phase, agent_role="Orchestrator",
                            event="clarification.answered", human_reviewer=user.email,
                            detail={"stage": stage["key"], "count": len(lines)})

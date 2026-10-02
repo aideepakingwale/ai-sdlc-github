@@ -20,6 +20,17 @@ const STATUS_META: Record<string, { label: string; cls: string; icon: string }> 
 
 const ACTIVITY_ICON: Record<ActivityItem['kind'], string> = { node: '⚙️', tool: '🔌', artifact: '📄', gate: '⛔' };
 
+// D-112: compact, locale-aware timestamp for the discussion history.
+function fmtTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  return sameDay
+    ? d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
 // D-56 Plan Review & Edit gate
 interface StagePlan {
   phase: number;
@@ -1296,25 +1307,29 @@ export default function StageWorkspace({
         {/* ---- stage thread ---- */}
         <section>
           <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
-            Stage conversation ({stageMessages.length})
+            Discussion history ({stageMessages.length}) — saved, with timestamps
           </div>
           {stageMessages.length === 0 && !streamingHere ? (
             <div className="rounded-lg border border-dashed border-slate-300 p-4 text-center text-xs text-slate-400">
-              The stage's prompts, agent summaries and review feedback will appear here and are fed back to the agent on re-runs.
+              The full discussion — your instructions, clarifications, agent summaries and review feedback — is saved here with timestamps and fed back to the agent on re-runs.
             </div>
           ) : (
             <div className="space-y-2">
               {stageMessages.map((m) => (
-                <div
-                  key={m.id}
-                  className={`rounded-xl px-3 py-2 text-sm ${
-                    m.role === 'user'
-                      ? 'ml-8 bg-brand-600 text-white'
-                      : 'mr-8 border border-slate-200 bg-white text-slate-800'
-                  }`}
-                >
-                  <div className="prose-chat">
-                    <ReactMarkdown>{m.content}</ReactMarkdown>
+                <div key={m.id} className={m.role === 'user' ? 'ml-8' : 'mr-8'}>
+                  <div className={`flex items-center gap-1.5 px-1 text-[10px] text-slate-400 ${m.role === 'user' ? 'justify-end' : ''}`}>
+                    <span className="font-semibold uppercase tracking-wide">{m.role === 'user' ? 'You' : m.role === 'system' ? 'System' : `${stage.persona} agent`}</span>
+                    <span>·</span>
+                    <span>{fmtTime(m.createdAt)}</span>
+                  </div>
+                  <div
+                    className={`mt-0.5 rounded-xl px-3 py-2 text-sm ${
+                      m.role === 'user' ? 'bg-brand-600 text-white' : 'border border-slate-200 bg-white text-slate-800'
+                    }`}
+                  >
+                    <div className="prose-chat">
+                      <ReactMarkdown>{m.content}</ReactMarkdown>
+                    </div>
                   </div>
                 </div>
               ))}
