@@ -318,7 +318,7 @@ export default function StageWorkspace({
   // D-56: save the overlay and (re-)render the full plan — "Review / Update plan".
   // D-112 Phase C: `append` folds a free-form refinement into the overlay (additive,
   // so earlier guidance is kept) and `logTurns` records the exchange in the thread.
-  async function reviewPlan(e?: FormEvent, opts?: { append?: string; logTurns?: boolean }) {
+  async function reviewPlan(e?: FormEvent, opts?: { append?: string; logTurns?: boolean; userMessage?: string }) {
     e?.preventDefault();
     if (planBusy || streaming || promptError) return;
     setPlanBusy(true);
@@ -333,7 +333,19 @@ export default function StageWorkspace({
       await api.put<StagePlan>(`/api/projects/${projectId}/phase/${selectedSeq}/plan`, { ...overlayBody(), promptOverlay: nextPrompt });
       const p = await api.get<StagePlan>(`/api/projects/${projectId}/phase/${selectedSeq}/plan`);
       setPlan(p);
-      if (opts?.logTurns) setThread((t) => [...t, { role: 'agent', text: proposalSummary(p.intel), ts: Date.now() }]);
+      if (opts?.logTurns) {
+        const summary = proposalSummary(p.intel);
+        setThread((t) => [...t, { role: 'agent', text: summary, ts: Date.now() }]);
+        // D-112: persist the planning exchange so it survives navigation and shows
+        // in the timestamped Discussion history (best-effort — never block planning).
+        const um = (opts.userMessage ?? '').trim();
+        if (um || summary) {
+          try {
+            await api.post(`/api/projects/${projectId}/phase/${selectedSeq}/discuss`, { userMessage: um, agentMessage: summary });
+            void qc.invalidateQueries({ queryKey: ['project', projectId] });
+          } catch { /* history is best-effort */ }
+        }
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Could not build the plan';
       if (opts?.logTurns) setThread((t) => [...t, { role: 'agent', text: `⚠ ${msg}`, ts: Date.now() }]);
@@ -350,7 +362,7 @@ export default function StageWorkspace({
     if (!text || planBusy || streaming) return;
     setThread((t) => [...t, { role: 'you', text, ts: Date.now() }]);
     setRefineText('');
-    await reviewPlan(undefined, { append: text, logTurns: true });
+    await reviewPlan(undefined, { append: text, logTurns: true, userMessage: text });
   }
 
   // D-112 Phase C: the composer's "Review / Update plan" — seeds the discussion with
@@ -359,7 +371,7 @@ export default function StageWorkspace({
     e?.preventDefault();
     const p = prompt.trim();
     if (p && thread.length === 0) setThread([{ role: 'you', text: p, ts: Date.now() }]);
-    await reviewPlan(undefined, { logTurns: true });
+    await reviewPlan(undefined, { logTurns: true, userMessage: p });
   }
 
   // D-99: ENQUEUE the run (returns immediately) then watch its progress. The run is

@@ -612,6 +612,26 @@ class ChatService:
                            event="clarification.answered", human_reviewer=user.email,
                            detail={"stage": stage["key"], "count": len(lines)})
 
+    async def save_discussion_turn(
+        self, *, project_id: str, phase: int, user: UserPublic,
+        user_message: str, agent_message: str = "",
+    ) -> None:
+        """Persist one turn of the pre-generation planning discussion (Discuss & refine)
+        into the saved history (D-112), so the back-and-forth before triggering survives
+        navigation and is timestamped. Write-permission required; best-effort body."""
+        _, stage = await self._stage_for(project_id, phase)
+        if not await self._can_write_stage(project_id, stage, user):
+            raise SdlcError("FORBIDDEN", f"Posting to the '{stage['name']}' discussion requires write permission ({' or '.join(self._stage_writers(stage))})")
+        um = (user_message or "").strip()
+        if um:
+            enforce_input(um, channel="plan")
+        if not um and not (agent_message or "").strip():
+            return
+        session = await self._db.get_session(project_id)
+        if not session:
+            return
+        await self._db.insert_chat_turn(session["id"], phase, um, (agent_message or "").strip())
+
     @staticmethod
     def _custom_fields(stage: dict) -> dict[str, Any]:
         """Custom-phase config → AgentState fields (D-74). Only for template 7; the

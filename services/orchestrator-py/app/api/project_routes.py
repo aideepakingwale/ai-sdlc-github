@@ -414,6 +414,11 @@ class ClarificationAnswersBody(BaseModel):
     answers: list[_ClarificationAnswer] = []
 
 
+class DiscussTurnBody(BaseModel):
+    userMessage: str = ""
+    agentMessage: str = ""
+
+
 @router.get("/api/projects/{project_id}/phase/{phase_id}/clarification")
 async def get_clarification(
     project_id: str, phase_id: int,
@@ -446,6 +451,22 @@ async def answer_clarification(
         project_id=project_id, phase=phase_id, user=user, answers=[a.model_dump() for a in body.answers],
     )
     return await container.gen_jobs.enqueue(project_id, phase_id, user.email)
+
+
+@router.post("/api/projects/{project_id}/phase/{phase_id}/discuss")
+async def save_discussion_turn(
+    project_id: str, phase_id: int, body: DiscussTurnBody,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Persist one turn of the pre-generation planning discussion (Discuss & refine)
+    into the saved, timestamped history (D-112) so it survives navigation."""
+    if not 1 <= phase_id <= 12:
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+    await container.chat.save_discussion_turn(
+        project_id=project_id, phase=phase_id, user=user,
+        user_message=body.userMessage, agent_message=body.agentMessage,
+    )
+    return {"ok": True}
 
 
 @router.get("/api/projects/{project_id}/phase/{phase_id}/parts")
