@@ -5,6 +5,7 @@ the Build Recovery Loop. `emit` streams progress into the chat SSE."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -56,6 +57,17 @@ Emit = Callable[[dict[str, Any]], None]
 
 # Sentinel: "no cached value to reuse for this part" (D-107 step 2 retrigger).
 _NO_REUSE = object()
+
+
+def _part_text(value_json: str | None) -> str:
+    """Human-readable file text for a persisted part (pretty JSON; plain strings as-is)."""
+    if not value_json:
+        return ""
+    try:
+        v = json.loads(value_json)
+    except Exception:  # noqa: BLE001
+        return value_json
+    return v if isinstance(v, str) else json.dumps(v, indent=2, ensure_ascii=False)
 
 
 # ---- D-112 Phase B: the reviewer's confirmed production scope -------------------
@@ -220,7 +232,24 @@ async def _generate_phase_split(
     if len(fields) <= 1:
         raise ValueError("schema has nothing to split")
 
+    async def _persist_part(fn: str, status: str, value: Any = None, error: str | None = None) -> None:
+        """Write a part the moment it finishes so a crash/restart/navigation never loses it."""
+        try:
+            vj = TypeAdapter(schema.model_fields[fn].annotation).dump_json(value).decode() if value is not None else None
+        except Exception:  # noqa: BLE001
+            vj = None
+        try:
+            await deps.db.upsert_generation_part(
+                project_id=state.project_id, phase=state.current_phase, field=fn,
+                status=status, error=error, value_json=vj,
+            )
+        except Exception:  # noqa: BLE001 — best-effort
+            log.warning("generation part upsert failed for %s", fn, exc_info=True)
+        emit({"type": "part", "part": fn, "status": status, "error": error,
+              "text": _part_text(vj) if status == "done" else ""})
+
     async def gen_field(field_name: str) -> tuple[str, Any, LlmResult]:
+        emit({"type": "part", "part": field_name, "status": "running", "text": ""})
         fi = schema.model_fields[field_name]
         wrapper = create_model(f"{schema.__name__}__{field_name}", **{field_name: (fi.annotation, fi)})
         instruction = (
@@ -245,12 +274,24 @@ async def _generate_phase_split(
     # (generation_parts), so a failed part can be retried as its own cheap request
     # while the rest are untouched. On a normal run every field is generated.
     retrigger = set(getattr(state, "retrigger_fields", []) or [])
+    resume = bool(getattr(state, "resume", False))
     cache: dict[str, dict] = {}
-    if retrigger:
+    if retrigger or resume:
         try:
             cache = {p["field"]: p for p in await deps.db.list_generation_parts(state.project_id, state.current_phase)}
         except Exception:  # noqa: BLE001 — no cache → just regenerate
             cache = {}
+        if resume and not retrigger:
+            # RESUME (interrupted run): keep every part that finished, regenerate the rest.
+            retrigger = {fn for fn in fields if (cache.get(fn) or {}).get("status") != "done"}
+            emit({"type": "node", "node": "agent",
+                  "label": f"↻ Resuming interrupted run — {len(fields) - len(retrigger)} part(s) already done, "
+                           f"{len(retrigger)} to generate"})
+    else:
+        try:  # a fresh full run starts clean so a later resume never reuses stale parts
+            await deps.db.clear_generation_parts(state.project_id, state.current_phase)
+        except Exception:  # noqa: BLE001
+            log.warning("could not clear stale generation parts", exc_info=True)
 
     def reuse_value(fn: str) -> Any:
         """Cached value to reuse for `fn` (retrigger of a DIFFERENT field), or _NO_REUSE."""
@@ -276,6 +317,8 @@ async def _generate_phase_split(
             if reused_status[fn] == "failed":
                 failures[fn] = cache[fn].get("error") or "still failed (not retriggered)"
             emit({"type": "node", "node": "agent", "label": f"↺ {fn} reused from last run"})
+            emit({"type": "part", "part": fn, "status": reused_status[fn],
+                  "text": _part_text(cache[fn].get("value_json")) if reused_status[fn] == "done" else ""})
 
     # Anchor first → warms the cached system prefix the parallel calls reuse. A failed
     # anchor is non-fatal (the rest just don't get the cache benefit).
@@ -286,9 +329,11 @@ async def _generate_phase_split(
             n, v, r = await gen_field(anchor)
             values[n] = v
             results.append(r)
+            await _persist_part(n, "done", v)
             emit({"type": "node", "node": "agent", "label": f"✓ {anchor} generated"})
         except Exception as err:  # noqa: BLE001
             failures[anchor] = str(err)
+            await _persist_part(anchor, "failed", error=str(err))
             emit({"type": "node", "node": "guardrail", "status": "error", "label": f"✗ {anchor} failed — {str(err)[:160]}"})
 
         rest = to_gen[1:]
@@ -300,9 +345,11 @@ async def _generate_phase_split(
                 async with sem:
                     try:
                         n, v, r = await gen_field(fn)
+                        await _persist_part(fn, "done", v)
                         emit({"type": "node", "node": "agent", "label": f"✓ {fn} generated"})
                         return ("ok", fn, (v, r))
                     except Exception as err:  # noqa: BLE001 — one part's failure must not sink the rest
+                        await _persist_part(fn, "failed", error=str(err))
                         emit({"type": "node", "node": "guardrail", "status": "error",
                               "label": f"✗ {fn} failed — {str(err)[:160]}"})
                         return ("err", fn, err)
@@ -1984,10 +2031,31 @@ async def _run_custom_format(deps: AgentDeps, state: AgentState, emit: Emit) -> 
     # PLAIN-TEXT STREAMING generation (D-112): the response IS the markdown (no JSON
     # escaping / retry), and it STREAMS to the workspace token-by-token so the reviewer
     # watches the document being written live instead of waiting behind a spinner.
-    emit({"type": "content_start", "title": f"{phase.name} document", "doc_type": _PRIMARY_DOC_TYPE.get(state.stage_template, "DOCUMENT")})
+    emit({"type": "content_start", "part": "document", "title": f"{phase.name} document",
+          "doc_type": _PRIMARY_DOC_TYPE.get(state.stage_template, "DOCUMENT")})
+
+    # Persist the partial document every few seconds so it survives navigation/restart.
+    written: list[str] = []
+    last_save = [time.monotonic()]
+    saves: set[asyncio.Task[None]] = set()
+
+    async def _save_partial(text: str) -> None:
+        try:
+            await deps.db.upsert_generation_part(
+                project_id=state.project_id, phase=state.current_phase, field="document",
+                status="running", error=None, value_json=None, partial_text=text,
+            )
+        except Exception:  # noqa: BLE001
+            log.warning("partial document save failed", exc_info=True)
 
     def _on_delta(t: str) -> None:
-        emit({"type": "content_delta", "text": t})
+        emit({"type": "content_delta", "part": "document", "text": t})
+        written.append(t)
+        if time.monotonic() - last_save[0] >= 3:
+            last_save[0] = time.monotonic()
+            task = asyncio.get_running_loop().create_task(_save_partial("".join(written)))
+            saves.add(task)
+            task.add_done_callback(saves.discard)
 
     result = await deps.llm.generate_stream(
         intent="generation", tag=f"stage{state.current_phase}_custom_format",
@@ -1997,9 +2065,19 @@ async def _run_custom_format(deps: AgentDeps, state: AgentState, emit: Emit) -> 
         max_tokens=getattr(deps.settings, "PHASE_MAX_TOKENS", 16_000),
         model=state.model_overrides.get("generate") or None,
     )
-    emit({"type": "content_end"})
+    emit({"type": "content_end", "part": "document"})
     state.last_provider, state.last_model = result.provider, result.model
     markdown = (result.content or "").strip()
+    if saves:
+        await asyncio.gather(*saves, return_exceptions=True)
+    try:
+        await deps.db.upsert_generation_part(
+            project_id=state.project_id, phase=state.current_phase, field="document",
+            status="done", error=None, value_json=json.dumps(markdown), partial_text=None,
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("document part save failed", exc_info=True)
+    emit({"type": "part", "part": "document", "status": "done", "text": markdown})
     # Strip a stray ```markdown fence the model may wrap the whole doc in.
     if markdown.startswith("```"):
         markdown = re.sub(r"^```[a-zA-Z]*\n", "", markdown)

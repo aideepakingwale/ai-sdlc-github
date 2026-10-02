@@ -167,9 +167,11 @@ export type StreamEvent =
   | { type: 'tool_call'; tool: string; status: 'start' | 'success' | 'error'; summary?: string }
   | { type: 'token'; content: string }
   // D-112 live streaming: the artifact document being written, token-by-token.
-  | { type: 'content_start'; title?: string; doc_type?: string }
-  | { type: 'content_delta'; text: string }
-  | { type: 'content_end' }
+  | { type: 'content_start'; part?: string; title?: string; doc_type?: string }
+  | { type: 'content_delta'; part?: string; text: string }
+  | { type: 'content_end'; part?: string }
+  // One generated file (per-artifact split): running → done|failed, with its text once done.
+  | { type: 'part'; part: string; status: 'running' | 'done' | 'failed'; text?: string; error?: string | null }
   | { type: 'artifact'; artifact: { type: string; title: string; url?: string; key?: string } }
   | { type: 'gate'; phase: number; status: PhaseStatus; reviewerRole: Role }
   | { type: 'done'; finalResponse: string; phase: number; gateStatus: PhaseStatus }
