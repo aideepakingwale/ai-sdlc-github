@@ -889,6 +889,42 @@ class Database:
             "DELETE FROM generation_parts WHERE project_id=$1 AND phase=$2", project_id, phase,
         )
 
+    # ---- project traits: AI judgement + human overrides ("LLM decides, code enforces") ----
+    async def get_stage_traits(self, project_id: str, phase: int) -> dict | None:
+        assert self.pool
+        row = await self.pool.fetchrow(
+            "SELECT sig, traits_json FROM stage_traits WHERE project_id=$1 AND phase=$2", project_id, phase)
+        return dict(row) if row else None
+
+    async def upsert_stage_traits(self, project_id: str, phase: int, sig: str, traits_json: str) -> None:
+        assert self.pool
+        await self.pool.execute(
+            """INSERT INTO stage_traits (project_id, phase, sig, traits_json, updated_at)
+               VALUES ($1,$2,$3,$4, now())
+               ON CONFLICT (project_id, phase) DO UPDATE
+                 SET sig=EXCLUDED.sig, traits_json=EXCLUDED.traits_json, updated_at=now()""",
+            project_id, phase, sig, traits_json)
+
+    async def get_trait_overrides(self, project_id: str) -> dict[str, str]:
+        assert self.pool
+        rows = await self.pool.fetch(
+            "SELECT trait, value FROM project_trait_overrides WHERE project_id=$1", project_id)
+        return {r["trait"]: r["value"] for r in rows}
+
+    async def set_trait_override(self, project_id: str, trait: str, value: str | None, by: str | None) -> None:
+        """value None clears the override (back to the AI's judgement)."""
+        assert self.pool
+        if value is None:
+            await self.pool.execute(
+                "DELETE FROM project_trait_overrides WHERE project_id=$1 AND trait=$2", project_id, trait)
+            return
+        await self.pool.execute(
+            """INSERT INTO project_trait_overrides (project_id, trait, value, updated_by, updated_at)
+               VALUES ($1,$2,$3,$4, now())
+               ON CONFLICT (project_id, trait) DO UPDATE
+                 SET value=EXCLUDED.value, updated_by=EXCLUDED.updated_by, updated_at=now()""",
+            project_id, trait, value, by)
+
     async def obs_summary(self, days: int) -> dict:
         assert self.pool
         totals = await self.pool.fetchrow(

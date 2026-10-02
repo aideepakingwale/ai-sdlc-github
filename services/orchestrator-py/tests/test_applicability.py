@@ -58,14 +58,6 @@ def test_plan_drops_inapplicable_artifacts_whatever_the_llm_said() -> None:
     assert len(out["promptChecks"]) == 2
 
 
-def test_applicability_reads_project_config_not_the_scope_block() -> None:
-    chat = _chat()
-    project = {"name": "Orders", "tech_stack": "Java Spring Boot REST API, PostgreSQL", "github_repo": "x/y"}
-    out = chat._applicability(project=project, stage={"template": 4},
-                              overlay={"promptOverlay": "Add tests"}, prior_arts=[], attachments=[])
-    assert list(out) == ["PLAYWRIGHT_SPEC"]
-
-
 class _Redis:
     def __init__(self) -> None:
         self.kv: dict[str, str] = {}
@@ -160,3 +152,93 @@ def test_generation_skips_inapplicable_fields_without_any_explicit_scope() -> No
     st2 = st.model_copy(update={"user_input": "x\n\n## Production scope (confirmed by the reviewer)\n"
                                               "- Produce ONLY these artifacts: CDK, LLD.\n"})
     assert "CDK" not in run_scope(st2)["exclude"]
+
+
+# ---- LLM decides, code enforces ------------------------------------------------------
+from types import SimpleNamespace  # noqa: E402
+
+from app.services.applicability import resolve_traits, trait_values  # noqa: E402
+
+
+def J(value, conf=0.9, ev="quoted"):
+    return {"value": value, "confidence": conf, "evidence": ev}
+
+
+def test_precedence_override_beats_ai_beats_rules_and_unknown_never_excludes() -> None:
+    llm = {"ui": J("absent"), "api": J("present"), "database": J("absent", conf=0.4),
+           "cloud": J("unknown", conf=0.0), "aws": J("unknown"), "container": J("present"), "service": J("unknown")}
+    rules = {"ui": True, "api": False, "database": True, "cloud": True, "aws": True, "container": False}
+    d = resolve_traits(llm, {"ui": "present"}, rules)
+    assert (d["ui"]["value"], d["ui"]["source"]) == (True, "override")           # human wins over AI
+    assert (d["api"]["value"], d["api"]["source"]) == (True, "ai")               # AI wins over rules
+    assert d["database"]["value"] is None                                         # low confidence = unknown
+    assert d["cloud"]["value"] is None and d["aws"]["value"] is None              # NOT back-filled by regex
+    assert d["service"]["value"] is True and d["service"]["source"] == "derived"  # api present ⇒ service
+    assert resolve_traits(None, {}, rules)["ui"]["source"] == "rules"             # AI unavailable ⇒ rules
+
+
+class FakeDb:
+    def __init__(self) -> None:
+        self.row, self.overrides = None, {}
+
+    async def get_stage_traits(self, *_): return self.row
+    async def upsert_stage_traits(self, pid, phase, sig, tj): self.row = {"sig": sig, "traits_json": tj}
+    async def get_trait_overrides(self, *_): return self.overrides
+
+
+class FakeLlm:
+    def __init__(self, result=None, fail=False) -> None:
+        self.calls, self.result, self.fail = 0, result, fail
+
+    async def generate_json(self, *, schema, **_):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("provider down")
+        return schema(**self.result), None
+
+
+API_ONLY = {"projectType": "REST API", "ui": J("absent", ev="REST-only microservice"), "api": J("present"),
+            "database": J("present"), "cloud": J("present"), "aws": J("present"), "container": J("present"),
+            "service": J("present")}
+
+
+def _svc(llm, db):
+    chat = ChatService.__new__(ChatService)
+    chat._db, chat._deps, chat._settings = db, SimpleNamespace(llm=llm), SimpleNamespace(INTELLIGENT_PLANNING=True)
+    return chat
+
+
+async def test_ai_judges_once_plan_and_generation_read_the_same_answer() -> None:
+    db, llm = FakeDb(), FakeLlm(API_ONLY)
+    chat = _svc(llm, db)
+    kw = dict(project={"id": "p", "name": "Orders", "tech_stack": "Java"}, phase=4, user_text="Add tests", upstream=[])
+    shown = await chat.resolve_project_traits(**kw, allow_llm=True)             # plan display
+    assert llm.calls == 1 and shown["ui"]["value"] is False and shown["ui"]["evidence"] == "REST-only microservice"
+    run = await chat.resolve_project_traits(**{**kw, "user_text": "edited later"}, allow_llm=False)   # trigger
+    assert llm.calls == 1 and trait_values(run) == trait_values(shown)          # no new call, same decision
+    assert "PLAYWRIGHT_SPEC" in inapplicable_types({k: v for k, v in trait_values(run).items() if k[0] != "_"}, 4)
+
+
+async def test_override_wins_and_ai_failure_falls_back_to_rules() -> None:
+    db = FakeDb()
+    db.overrides = {"ui": "present"}
+    chat = _svc(FakeLlm(API_ONLY), db)
+    d = await chat.resolve_project_traits(project={"id": "p", "name": "x"}, phase=4, user_text="", upstream=[],
+                                          allow_llm=True)
+    assert d["ui"]["value"] is True and "PLAYWRIGHT_SPEC" not in inapplicable_types(trait_values(d), 4)
+    down = _svc(FakeLlm(fail=True), FakeDb())
+    d2 = await down.resolve_project_traits(project={"id": "p", "name": "x", "tech_stack": "REST API"}, phase=4,
+                                           user_text="", upstream=[], allow_llm=True)
+    assert d2["ui"]["source"] == "rules" and d2["ui"]["value"] is False       # graceful fallback
+
+
+def test_generation_uses_the_resolved_traits_not_its_own_guess() -> None:
+    from app.agents.phase_agents import run_scope
+    from app.domain.models import AgentState
+
+    st = AgentState(project_id="p", session_id="s", current_phase=4, stage_template=4,
+                    user_input="build a React web app with Playwright", tech_stack="React",
+                    project_traits={"ui": False, "api": True, "service": True})
+    assert "PLAYWRIGHT_SPEC" in run_scope(st)["exclude"]        # the AI/override decision is enforced
+    st2 = st.model_copy(update={"project_traits": {}})
+    assert "PLAYWRIGHT_SPEC" not in run_scope(st2)["exclude"]   # no resolved traits ⇒ keyword rules

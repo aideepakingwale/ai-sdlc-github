@@ -155,6 +155,9 @@ class AgentState(BaseModel):
     # RESUME after an interrupted run (restart/crash): reuse every part already persisted
     # as `done` and regenerate only the rest.
     resume: bool = False
+    # Resolved project traits for THIS run (AI judgement + overrides, see services/applicability);
+    # empty = fall back to the keyword rules. Same answer the plan showed.
+    project_traits: dict[str, bool | None] = Field(default_factory=dict)
     # Custom phase (D-74, workflow v2 template 7): the PM-defined phase config the
     # generic runner uses. Ignored by the six built-in engines.
     custom_persona: str = ""

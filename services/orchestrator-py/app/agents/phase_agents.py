@@ -265,7 +265,8 @@ def run_scope(state: Any) -> dict[str, Any]:
     upstream += [f"{a.type} {a.title} {a.summary}" for a in state.context_window[-30:]]
     corpus = project_corpus(project={"tech_stack": state.tech_stack}, user_text=state.user_input,
                             upstream=upstream)
-    auto = inapplicable_types(derive_traits(corpus=corpus), state.stage_template)
+    traits = state.project_traits or derive_traits(corpus=corpus)   # AI-resolved, else keyword rules
+    auto = inapplicable_types(traits, state.stage_template)
     wanted = {re.sub(r"[^A-Z0-9]+", "_", x.upper()).strip("_") for x in scope.get("include") or []}
     auto = {t: why for t, why in auto.items() if t not in wanted}
     return {**scope, "exclude": [*scope.get("exclude", []), *auto], "auto": auto}

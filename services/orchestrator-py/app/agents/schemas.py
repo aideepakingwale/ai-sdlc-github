@@ -407,6 +407,26 @@ class ProposedArtifact(BaseModel):
     reason: str = Field(default="", description="One line: why it's recommended or not, per the user's intent.")
 
 
+class TraitJudgement(BaseModel):
+    """The AI's call on ONE project characteristic, with the evidence it relied on."""
+    value: Literal["present", "absent", "unknown"] = Field(default="unknown", description="present | absent | unknown. Use unknown unless the input states or clearly implies it — never guess.")
+    evidence: str = Field(default="", description="A short quote or fact from the input that justifies the call.")
+    confidence: float = Field(default=0.0, description="0.0-1.0 certainty in the call.")
+
+
+class ProjectTraitsIntel(BaseModel):
+    """What kind of project this is. Lenient defaults (single-shot, advisory). Code, not the
+    model, decides what to do with these (services/applicability)."""
+    projectType: str = Field(default="", description="One line, e.g. 'REST API microservice' or 'React web app'.")
+    ui: TraitJudgement = Field(default_factory=TraitJudgement, description="Has a user interface (web/mobile/desktop screens).")
+    api: TraitJudgement = Field(default_factory=TraitJudgement, description="Exposes or consumes an HTTP/RPC API as a core part.")
+    database: TraitJudgement = Field(default_factory=TraitJudgement, description="Persists data in a database / data store.")
+    cloud: TraitJudgement = Field(default_factory=TraitJudgement, description="Targets a cloud platform.")
+    aws: TraitJudgement = Field(default_factory=TraitJudgement, description="Targets AWS specifically.")
+    container: TraitJudgement = Field(default_factory=TraitJudgement, description="Ships as containers (Docker/Kubernetes).")
+    service: TraitJudgement = Field(default_factory=TraitJudgement, description="A long-running service (API and/or UI) that can be load- or security-tested at runtime; absent for libraries, CLIs, batch jobs.")
+
+
 class SuggestedArtifact(BaseModel):
     """An artifact NOT in the stage's standard template that the planner thinks this
     particular project needs. The user opts in; selected ones are added as instructions."""

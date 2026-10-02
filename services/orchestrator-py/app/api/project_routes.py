@@ -394,6 +394,21 @@ async def get_stage_plan_state(
     return await container.chat.plan_state(project_id=project_id, phase=phase_id, user=user)
 
 
+class TraitOverrideBody(BaseModel):
+    value: str | None = None  # present | absent | null (clear → back to the AI's judgement)
+
+
+@router.put("/api/projects/{project_id}/traits/{trait}")
+async def override_project_trait(
+    project_id: str, trait: str, body: TraitOverrideBody,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Pin a project trait (ui/api/database/cloud/aws/container/service) to present/absent, or
+    clear it. A human override always wins over the AI's judgement; re-plan to see the effect.
+    Same authority as editing the project Canon (managing PM, SA/TA member, SUPER_ADMIN)."""
+    return await container.chat.set_trait_override(project_id=project_id, trait=trait, value=body.value, user=user)
+
+
 @router.put("/api/projects/{project_id}/phase/{phase_id}/plan")
 async def update_stage_plan(
     project_id: str, phase_id: int, body: StagePlanUpdate,

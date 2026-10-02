@@ -21,6 +21,7 @@ from ..domain.models import AgentState, ContextArtifact, UserPublic
 from ..graph.pipeline import PIPELINE_NODES, build_pipeline, run_pipeline
 from ..services.applicability import (
     GENERATED_ARTIFACTS, TOOL_ARTIFACT, derive_traits, inapplicable_types, project_corpus,
+    resolve_traits, trait_values, traits_prompt,
 )
 from ..services.model_router import classify_tier
 from ..services.skills import SKILLS
@@ -711,14 +712,56 @@ class ChatService:
     def _norm_type(text: str) -> str:
         return re.sub(r"[^A-Z0-9]+", "_", (text or "").upper()).strip("_")
 
-    def _applicability(self, *, project: dict, stage: dict, overlay: dict, prior_arts: list[dict],
-                       attachments: list[dict]) -> dict[str, str]:
-        """Artifact types of this stage the project cannot use (deterministic, zero-token)."""
-        upstream = [f"{a['type']} {a['title']}" for a in prior_arts[:30]]
-        upstream += [a.get("filename", "") for a in attachments]
-        upstream.append(self._project_profile(project))
-        corpus = project_corpus(project=project, user_text=overlay.get("promptOverlay", ""), upstream=upstream)
-        return inapplicable_types(derive_traits(corpus=corpus), stage["template"])
+    async def resolve_project_traits(
+        self, *, project: dict, phase: int, user_text: str, upstream: list[str], allow_llm: bool,
+    ) -> dict[str, dict[str, Any]]:
+        """LLM decides, code enforces. The model JUDGES what the project is (ui/api/database/
+        cloud/aws/container/service, each with evidence + confidence); this code turns that into
+        decisions. Precedence per trait: human override > AI judgement > keyword rules (only when
+        the AI is unavailable). The AI call happens only on an explicit plan display (allow_llm);
+        trigger/persist paths reuse the stored judgement, so the plan and the generation agree."""
+        from ..agents.schemas import ProjectTraitsIntel
+
+        corpus = project_corpus(project=project, user_text=user_text, upstream=upstream)
+        sig = hashlib.sha256(corpus.encode()).hexdigest()[:16]
+        row = await self._db.get_stage_traits(project["id"], phase)
+        llm: dict[str, Any] | None = json.loads(row["traits_json"]) if row else None
+        if (allow_llm and getattr(self._settings, "INTELLIGENT_PLANNING", True)
+                and (row is None or row["sig"] != sig)):
+            try:
+                system, usr = traits_prompt(project=project, user_text=user_text, upstream=upstream)
+                data, _ = await self._deps.llm.generate_json(
+                    intent="standard", tag="project_traits", temperature=0, max_tokens=900,
+                    schema=ProjectTraitsIntel, max_attempts=1,
+                    messages=[{"role": "system", "content": system}, {"role": "user", "content": usr}],
+                )
+                llm = data.model_dump()
+                await self._db.upsert_stage_traits(project["id"], phase, sig, json.dumps(llm))
+            except Exception as err:  # noqa: BLE001 — advisory; keep any stored judgement, else rules
+                log.info("trait classification unavailable (%s); using stored/keyword traits", err)
+        overrides = await self._db.get_trait_overrides(project["id"])
+        detail = resolve_traits(llm, overrides, derive_traits(corpus=corpus))
+        if llm and llm.get("projectType"):
+            detail["_projectType"] = {"value": None, "source": "ai", "evidence": llm["projectType"], "confidence": 1.0}
+        return detail
+
+    async def set_trait_override(self, *, project_id: str, trait: str, value: str | None,
+                                 user: UserPublic) -> dict[str, Any]:
+        """A project lead pins a trait to present/absent (or clears it with None). Wins over the AI."""
+        from .applicability import TRAIT_NAMES
+        from .canon import CanonService
+
+        await self._authz.assert_project_access(project_id, user)
+        if trait not in TRAIT_NAMES:
+            raise SdlcError("VALIDATION_FAILED", f"Unknown trait '{trait}'")
+        if value not in (None, "present", "absent"):
+            raise SdlcError("VALIDATION_FAILED", "value must be present, absent or null")
+        await CanonService(self._db, self._authz, self._audit).assert_can_author(project_id, user)
+        await self._db.set_trait_override(project_id, trait, value, user.id)
+        self._audit.record(project_id=project_id, phase=0, agent_role="Orchestrator",
+                           event="project.trait_overridden", human_reviewer=user.email,
+                           detail={"trait": trait, "value": value})
+        return {"projectId": project_id, "trait": trait, "value": value}
 
     def _apply_applicability(self, intel: dict[str, Any], excluded: dict[str, str]) -> dict[str, Any]:
         """Items the project cannot use are NOT part of the plan: they are removed from the
@@ -972,8 +1015,14 @@ class ChatService:
         available_tools = self._configured_tools(TEMPLATE_TOOLS.get(stage["template"], []))
         prior_for_fit = [a for a in await self._db.list_artefacts(project_id) if a["phase"] < phase]
         fit_attachments = await self._db.list_attachments(project_id, phase)
-        not_applicable = self._applicability(project=project, stage=stage, overlay=overlay,
-                                             prior_arts=prior_for_fit, attachments=fit_attachments)
+        fit_upstream = [f"{a['type']} {a['title']}" for a in prior_for_fit[:30]]
+        fit_upstream += [a.get("filename", "") for a in fit_attachments]
+        fit_upstream.append(self._project_profile(project))
+        trait_detail = await self.resolve_project_traits(
+            project=project, phase=phase, user_text=overlay.get("promptOverlay", ""),
+            upstream=fit_upstream, allow_llm=run_intel)
+        not_applicable = inapplicable_types(trait_values({k: v for k, v in trait_detail.items() if k[0] != "_"}),
+                                            stage["template"])
         # Plan only what applies: drop tools and outputs the project cannot use.
         available_tools = [t for t in available_tools if TOOL_ARTIFACT.get(t) not in not_applicable]
         steps = derive_plan_steps(
@@ -1060,6 +1109,9 @@ class ChatService:
             # rationale/tier, tool/skill recommendations, assumptions & risks. Null
             # when disabled or unavailable (deterministic plan stands).
             "intel": intel,
+            # What the AI (or a project lead's override) decided the project is — each trait
+            # with its source and evidence. Code enforces it; the user can override it.
+            "traits": [{"trait": k, **v} for k, v in trait_detail.items()],
             "catalog": build_model_catalog(roster),
             "context": {
                 "priorArtifacts": [{"id": a["id"], "phase": a["phase"], "type": a["type"], "title": a["title"]} for a in prior_arts],
@@ -1200,7 +1252,12 @@ class ChatService:
         emit({"type": "session", "projectId": project_id, "sessionId": session["id"], "phase": phase})
         emit({"type": "node", "node": "executor", "label": f"Triggering reviewed plan — {stage['name']}"})
 
+        trig_traits = await self.resolve_project_traits(
+            project=project, phase=phase, user_text=prompt_overlay,
+            upstream=[f"{a.type} {a.title}" for a in context[-30:]] + [self._project_profile(project)],
+            allow_llm=False)
         state = AgentState(
+            project_traits=trait_values({k: v for k, v in trig_traits.items() if k[0] != "_"}),
             project_id=project_id, session_id=session["id"], current_phase=phase,
             stage_template=stage["template"], stage_name=stage["name"], stage_reviewer=stage["reviewerRole"],
             user_input=prompt_overlay or f"Generate {', '.join(stage.get('outputs') or [])} for '{stage['name']}'.",

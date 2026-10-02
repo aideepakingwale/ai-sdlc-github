@@ -52,6 +52,8 @@ interface StagePlan {
     rationale?: string;
   }> | null;
   // Intelligent, context-aware plan (D-105); null when disabled/unavailable.
+  // AI-judged project traits (code enforces them); a project lead can override each.
+  traits?: Array<{ trait: string; value: boolean | null; source: string; evidence: string; confidence: number }>;
   intel?: {
     understood: string;
     willProduce: Array<{ output: string; recommended: boolean; include: boolean; reason: string }>;
@@ -363,6 +365,16 @@ export default function StageWorkspace({
     if (intel.recommendation) parts.push(intel.recommendation);
     return parts.join(' ') || (intel.summary ?? 'Plan ready.');
   };
+
+  // Pin a project trait (or clear it) — wins over the AI's judgement — then re-plan.
+  async function overrideTrait(trait: string, value: 'present' | 'absent' | null) {
+    try {
+      await api.put(`/api/projects/${projectId}/traits/${trait}`, { value });
+      await reviewPlan();
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : 'Could not change this setting');
+    }
+  }
 
   // D-56: save the overlay and (re-)render the full plan — "Review / Update plan".
   // D-112 Phase C: `append` folds a free-form refinement into the overlay (additive,
@@ -1028,6 +1040,37 @@ export default function StageWorkspace({
                                 {a.reason && <span className="text-slate-500"> — {a.reason}</span>}
                               </span>
                             </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {(plan.traits?.filter((t) => !t.trait.startsWith('_')).length ?? 0) > 0 && (
+                      <div className="mb-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                          Project fit <span className="normal-case text-slate-400">— what the AI judged this project to be; only artifacts that apply are planned. Override if it is wrong.</span>
+                        </div>
+                        <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                          {plan.traits!.filter((t) => !t.trait.startsWith('_')).map((t) => (
+                            <div key={t.trait} className="flex items-center gap-1.5 rounded border border-slate-200 bg-white px-2 py-1 text-[11px]" title={t.evidence}>
+                              <span className={t.value === true ? 'text-emerald-600' : t.value === false ? 'text-red-500' : 'text-slate-400'}>
+                                {t.value === true ? '✓' : t.value === false ? '✗' : '?'}
+                              </span>
+                              <span className="font-semibold capitalize">{t.trait}</span>
+                              <span className="rounded bg-slate-100 px-1 text-[9px] text-slate-500">
+                                {t.source === 'ai' ? `AI ${Math.round(t.confidence * 100)}%` : t.source === 'override' ? 'you' : t.source}
+                              </span>
+                              <span className="min-w-0 flex-1 truncate text-slate-400">{t.evidence}</span>
+                              <select
+                                aria-label={`Override ${t.trait}`} disabled={planBusy || streaming}
+                                value={t.source === 'override' ? (t.value ? 'present' : 'absent') : ''}
+                                onChange={(e) => overrideTrait(t.trait, (e.target.value || null) as 'present' | 'absent' | null)}
+                                className="rounded border border-slate-200 bg-white px-1 text-[10px]"
+                              >
+                                <option value="">Auto</option>
+                                <option value="present">Present</option>
+                                <option value="absent">Absent</option>
+                              </select>
+                            </div>
                           ))}
                         </div>
                       </div>

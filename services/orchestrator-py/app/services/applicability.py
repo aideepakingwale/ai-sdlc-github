@@ -194,3 +194,61 @@ def constraints_block(excluded: dict[str, str]) -> str:
         "reference or design for any of these; where the schema still needs a field, return one "
         "minimal placeholder:\n" + "\n".join(lines)
     )
+
+
+# --------------------------------------------------------------------------------------
+# "LLM decides, code enforces": the model JUDGES the traits (with evidence); this code
+# decides what each judgement means. Humans can override a trait and always win.
+TRAIT_NAMES: tuple[str, ...] = ("ui", "api", "database", "cloud", "aws", "container", "service")
+MIN_CONFIDENCE = 0.7   # a judgement below this is treated as unknown (never excludes)
+
+
+def resolve_traits(
+    llm: dict[str, Any] | None, overrides: dict[str, str], rules: dict[str, bool | None],
+) -> dict[str, dict[str, Any]]:
+    """Merge the three sources per trait. Precedence: human override > AI judgement >
+    keyword rules. When the AI answered, its `unknown`/low-confidence calls stay unknown
+    (the brittle keyword rules are only used when the AI is unavailable)."""
+    out: dict[str, dict[str, Any]] = {}
+    for name in TRAIT_NAMES:
+        if name in overrides:
+            out[name] = {"value": overrides[name] == "present", "source": "override",
+                         "evidence": "Set by a project lead", "confidence": 1.0}
+        elif llm is not None:
+            j = llm.get(name) or {}
+            conf = float(j.get("confidence") or 0.0)
+            val = j.get("value", "unknown")
+            known = val in ("present", "absent") and conf >= MIN_CONFIDENCE
+            out[name] = {"value": (val == "present") if known else None, "source": "ai",
+                         "evidence": j.get("evidence") or "not stated in the project inputs", "confidence": conf}
+        else:
+            out[name] = {"value": rules.get(name), "source": "rules", "confidence": 0.0,
+                         "evidence": "keyword rules (AI classification unavailable)"}
+    # Consistency (only fills unknowns): no cloud ⇒ not AWS; an API or UI ⇒ a running service.
+    if out["aws"]["value"] is None and out["cloud"]["value"] is False:
+        out["aws"].update(value=False, source="derived", evidence="no cloud target")
+    if out["service"]["value"] is None and (out["api"]["value"] or out["ui"]["value"]):
+        out["service"].update(value=True, source="derived", evidence="has an API or UI")
+    return out
+
+
+def trait_values(detail: dict[str, dict[str, Any]]) -> dict[str, bool | None]:
+    return {k: v["value"] for k, v in detail.items()}
+
+
+def traits_prompt(*, project: dict[str, Any], user_text: str, upstream: list[str]) -> tuple[str, str]:
+    system = (
+        "You classify what kind of software project this is, so an SDLC pipeline only plans and "
+        "generates artifacts that apply to it. For each characteristic answer present, absent or "
+        "unknown, quote the evidence from the input, and give a confidence 0-1. Say `unknown` unless "
+        "the input states or clearly implies it — NEVER guess, and absence of a mention is not "
+        "absence of the trait. Judge the project as described, not the generic pipeline."
+    )
+    context = "\n".join(u[:300] for u in upstream[:30] if u.strip())[:4000]
+    user = (
+        f"PROJECT: {project.get('name') or '(unnamed)'}\n"
+        f"TECH STACK: {project.get('tech_stack') or '(not stated)'}\n"
+        f"USER INSTRUCTIONS: {strip_scope_block(user_text)[:3000] or '(none)'}\n"
+        f"UPSTREAM OUTPUTS / CONTEXT:\n{context or '(none)'}"
+    )
+    return system, user
