@@ -1020,6 +1020,15 @@ class ChatService:
         except Exception:  # noqa: BLE001
             retrigger_fields = []
 
+        resume = False
+        try:
+            _rsk = f"sdlc:resume:{project_id}:{phase}"
+            if await self._redis.get(_rsk):
+                await self._redis.delete(_rsk)
+                resume = True
+        except Exception:  # noqa: BLE001
+            resume = False
+
         states = {s["SK"]: s for s in await self._dynamo.list_phase_states(project_id)}
         status = (states.get(f"PHASE#{phase}") or {}).get("status", "NOT_STARTED")
         if status == "APPROVED" or (status == "PENDING_REVIEW" and not retrigger_fields):
@@ -1097,8 +1106,9 @@ class ChatService:
             has_codebase=(await self._db.count_codebase_files(project_id)) > 0, extra_context=extra_context,
             model_overrides=self._model_overrides_from(self._step_overrides(row)),  # per-step model (D-68)
             # Retrigger implies the split (parts only exist under it); force it on then.
-            per_artifact=(await self._per_artifact_enabled()) or bool(retrigger_fields),  # D-106
+            per_artifact=(await self._per_artifact_enabled()) or bool(retrigger_fields) or resume,  # D-106
             retrigger_fields=retrigger_fields,  # D-107 step 2: regenerate only these parts
+            resume=resume,  # continue an interrupted run from its persisted parts
             **self._custom_fields(stage),  # custom phase config (D-74)
         )
         await self._dynamo.put_phase_state(project_id=project_id, phase=phase, status="IN_PROGRESS", reviewer_role=stage["reviewerRole"])

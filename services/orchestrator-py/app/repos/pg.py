@@ -151,15 +151,19 @@ class Database:
             project_id, phase,
         )
 
-    async def fail_stale_generation_jobs(self) -> int:
-        """On boot, any job still 'running' belongs to a dead process — fail it."""
+    async def claim_stale_generation_jobs(self, keep_ids: set[str] | None = None) -> list[dict]:
+        """On boot, fail every job a dead process left behind: 'running' ones, and
+        'queued' ones whose queue item is gone (`keep_ids` = ids still in the queue).
+        Returns the claimed rows so the caller can resume them."""
         assert self.pool
         rows = await self.pool.fetch(
             "UPDATE generation_jobs SET status='failed', "
             "error=COALESCE(error, 'orchestrator restarted mid-run'), updated_at=now() "
-            "WHERE status='running' RETURNING id"
+            "WHERE (status='running' OR status='queued') AND NOT (id = ANY($1::text[])) "
+            "RETURNING id, project_id, phase, started_by",
+            list(keep_ids or ()),
         )
-        return len(rows)
+        return [dict(r) for r in rows]
 
     # ------------------------------------------------------------ projects & sessions
     async def create_project(
@@ -855,28 +859,35 @@ class Database:
     # ---- per-artifact generation parts (D-107 step 2) -------------------------
     async def upsert_generation_part(
         self, *, project_id: str, phase: int, field: str, status: str,
-        error: str | None, value_json: str | None,
+        error: str | None, value_json: str | None, partial_text: str | None = None,
     ) -> None:
         assert self.pool
         await self.pool.execute(
             """
-            INSERT INTO generation_parts (project_id, phase, field, status, error, value_json, updated_at)
-            VALUES ($1,$2,$3,$4,$5,$6, now())
+            INSERT INTO generation_parts (project_id, phase, field, status, error, value_json, partial_text, updated_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7, now())
             ON CONFLICT (project_id, phase, field) DO UPDATE
-              SET status=EXCLUDED.status, error=EXCLUDED.error,
-                  value_json=EXCLUDED.value_json, updated_at=now()
+              SET status=EXCLUDED.status, error=EXCLUDED.error, value_json=EXCLUDED.value_json,
+                  partial_text=EXCLUDED.partial_text, updated_at=now()
             """,
-            project_id, phase, field, status, (error or None), value_json,
+            project_id, phase, field, status, (error or None), value_json, partial_text,
         )
 
     async def list_generation_parts(self, project_id: str, phase: int) -> list[dict]:
         assert self.pool
         rows = await self.pool.fetch(
-            "SELECT field, status, error, value_json, updated_at FROM generation_parts "
-            "WHERE project_id=$1 AND phase=$2 ORDER BY field",
+            "SELECT field, status, error, value_json, partial_text, updated_at FROM generation_parts "
+            "WHERE project_id=$1 AND phase=$2 ORDER BY updated_at, field",
             project_id, phase,
         )
         return [dict(r) for r in rows]
+
+    async def clear_generation_parts(self, project_id: str, phase: int) -> None:
+        """A fresh full run starts from a clean slate (a resume or retrigger does not)."""
+        assert self.pool
+        await self.pool.execute(
+            "DELETE FROM generation_parts WHERE project_id=$1 AND phase=$2", project_id, phase,
+        )
 
     async def obs_summary(self, days: int) -> dict:
         assert self.pool

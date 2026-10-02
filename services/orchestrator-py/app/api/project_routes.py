@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
+from ..agents.phase_agents import _part_text
 from ..domain.errors import SdlcError
 from ..services import guardrails as guardrails_svc
 from ..services import prompt_library
@@ -482,6 +483,7 @@ async def get_generation_parts(
     return {
         "parts": [
             {"field": p["field"], "status": p["status"], "error": p["error"],
+             "text": p.get("partial_text") or _part_text(p.get("value_json")),
              "updatedAt": p["updated_at"].isoformat()}
             for p in parts
         ]

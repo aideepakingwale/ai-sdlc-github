@@ -20,6 +20,21 @@ export interface RunViz {
   tier: string | null;
 }
 
+/** One generated file shown as a tab while a stage generates (and after reconnecting). */
+export interface LivePart {
+  field: string;
+  title: string;
+  text: string;
+  status: 'running' | 'done' | 'failed';
+  error?: string | null;
+}
+
+const upsertPart = (parts: LivePart[], field: string, patch: Partial<LivePart>): LivePart[] => {
+  const i = parts.findIndex((p) => p.field === field);
+  if (i < 0) return [...parts, { field, title: field, text: '', status: 'running', ...patch }];
+  return parts.map((p, j) => (j === i ? { ...p, ...patch } : p));
+};
+
 const EMPTY_RUN: RunViz = { nodes: [], activeNode: null, visitedNodes: [], plans: [], tools: {}, tier: null };
 
 interface AppState {
@@ -34,9 +49,7 @@ interface AppState {
   liveResponse: string;
   // D-112 live streaming: the artifact document being written in real time, plus a
   // flag so the UI shows the live preview while it streams.
-  liveDocument: string;
-  liveDocTitle: string;
-  docStreaming: boolean;
+  liveParts: LivePart[];
   run: RunViz;
   beginStream: () => void;
   pushEvent: (e: StreamEvent) => void;
@@ -55,11 +68,9 @@ export const useApp = create<AppState>((set) => ({
   streaming: false,
   activity: [],
   liveResponse: '',
-  liveDocument: '',
-  liveDocTitle: '',
-  docStreaming: false,
+  liveParts: [],
   run: EMPTY_RUN,
-  beginStream: () => set({ streaming: true, activity: [], liveResponse: '', liveDocument: '', liveDocTitle: '', docStreaming: false, run: EMPTY_RUN }),
+  beginStream: () => set({ streaming: true, activity: [], liveResponse: '', liveParts: [], run: EMPTY_RUN }),
   pushEvent: (e) =>
     set((s) => {
       const add = (item: Omit<ActivityItem, 'id'>) => ({ activity: [...s.activity, { ...item, id: ++activitySeq }] });
@@ -104,15 +115,28 @@ export const useApp = create<AppState>((set) => ({
           return add({ kind: 'gate', label: `Gate ${e.status} — reviewer: ${e.reviewerRole}` });
         case 'token':
           return { liveResponse: s.liveResponse + e.content };
-        case 'content_start':
+        case 'content_start': {
+          const field = e.part ?? 'document';
           return {
             ...add({ kind: 'node', label: `✍ Writing ${e.title ?? 'the document'} live…` }),
-            liveDocument: '', liveDocTitle: e.title ?? 'Document', docStreaming: true,
+            liveParts: upsertPart(s.liveParts, field, { title: e.title ?? field, text: '', status: 'running' }),
           };
-        case 'content_delta':
-          return { liveDocument: s.liveDocument + e.text };
+        }
+        case 'content_delta': {
+          const field = e.part ?? 'document';
+          const cur = s.liveParts.find((p) => p.field === field)?.text ?? '';
+          return { liveParts: upsertPart(s.liveParts, field, { text: cur + e.text, status: 'running' }) };
+        }
         case 'content_end':
-          return { docStreaming: false };
+          return {};
+        case 'part':
+          // A finished part carries its full text; a running one keeps what streamed so far.
+          return {
+            liveParts: upsertPart(s.liveParts, e.part, {
+              status: e.status, error: e.error,
+              ...(e.status === 'done' && e.text ? { text: e.text } : {}),
+            }),
+          };
         case 'done':
           return { liveResponse: e.finalResponse };
         case 'error':

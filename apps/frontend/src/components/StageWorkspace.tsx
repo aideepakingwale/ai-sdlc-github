@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { api, streamStageProgress } from '../api/client';
+import { PartTabs } from './PartTabs';
 import type { ProjectFlow } from '../api/flow';
 import type { ChatMessage, PhaseStateView, User } from '../api/types';
 import { useApp, type ActivityItem } from '../store';
@@ -115,7 +116,7 @@ export default function StageWorkspace({
   artefacts: Array<{ id: string; phase: number; type: string; title: string; url: string | null }>;
 }) {
   const qc = useQueryClient();
-  const { streaming, activity, liveResponse, liveDocument, liveDocTitle, docStreaming, beginStream, pushEvent, endStream } = useApp();
+  const { streaming, activity, liveResponse, liveParts, beginStream, pushEvent, endStream } = useApp();
   const [prompt, setPrompt] = useState('');
   const [viewArtefactId, setViewArtefactId] = useState<string | null>(null);
   const [refIds, setRefIds] = useState<string[]>([]);
@@ -187,7 +188,7 @@ export default function StageWorkspace({
   const partsQ = useQuery({
     queryKey: ['parts', projectId, selectedSeq],
     queryFn: () =>
-      api.get<{ parts: Array<{ field: string; status: string; error: string | null; updatedAt: string }> }>(
+      api.get<{ parts: Array<{ field: string; status: 'running' | 'done' | 'failed'; error: string | null; text: string; updatedAt: string }> }>(
         `/api/projects/${projectId}/phase/${selectedSeq}/parts`,
       ),
     enabled: Boolean(projectId),
@@ -1208,20 +1209,9 @@ export default function StageWorkspace({
                 </div>
               )}
             </div>
-            {/* D-112: the artifact being written live, token-by-token */}
-            {liveDocument && (
-              <div className="mt-3 rounded-lg border border-blue-200 bg-white">
-                <div className="flex items-center justify-between border-b border-blue-100 px-3 py-1.5">
-                  <span className="text-[11px] font-semibold text-blue-800">
-                    ✍ {liveDocTitle || 'Document'} {docStreaming && <span className="text-blue-400">· writing…</span>}
-                  </span>
-                  <span className="text-[10px] text-slate-400">{liveDocument.length.toLocaleString()} chars</span>
-                </div>
-                <div className="prose-chat max-h-96 overflow-auto px-3 py-2 text-[13px] text-slate-800">
-                  <ReactMarkdown>{liveDocument}</ReactMarkdown>
-                  {docStreaming && <span className="inline-block h-3 w-1.5 animate-pulse bg-blue-500 align-middle" />}
-                </div>
-              </div>
+            {/* Every file being generated, one tab each (parallel per-artifact generation) */}
+            {liveParts.length > 0 && (
+              <div className="mt-3"><PartTabs parts={liveParts} /></div>
             )}
           </section>
         )}
@@ -1253,6 +1243,14 @@ export default function StageWorkspace({
         {/* ---- generation parts (D-107 step 2): per-part ✓/✗ + retrigger ---- */}
         {parts.length > 0 && (
           <section>
+            {/* Files survive navigating away, closing the browser and orchestrator restarts */}
+            {!streamingHere && parts.some((p) => p.text) && (
+              <div className="mb-3"><PartTabs
+                  parts={parts.map((p) => (p.status === 'running'
+                    ? { ...p, status: 'failed' as const, error: 'Interrupted — partial text kept' } : p))}
+                  retrigger={retriggerPart}
+                /></div>
+            )}
             <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
               Generation parts ({parts.filter((p) => p.status === 'done').length}/{parts.length})
               {parts.some((p) => p.status === 'failed') && (
@@ -1264,8 +1262,8 @@ export default function StageWorkspace({
             <div className="space-y-1">
               {parts.map((p) => (
                 <div key={p.field} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs">
-                  <span className={p.status === 'done' ? 'text-emerald-600' : 'text-red-600'}>
-                    {p.status === 'done' ? '✓' : '✗'}
+                  <span className={p.status === 'done' ? 'text-emerald-600' : p.status === 'running' ? 'text-blue-500' : 'text-red-600'}>
+                    {p.status === 'done' ? '✓' : p.status === 'running' ? '⏳' : '✗'}
                   </span>
                   <span className="font-mono text-slate-700">{p.field}</span>
                   {p.status === 'failed' && p.error && (
