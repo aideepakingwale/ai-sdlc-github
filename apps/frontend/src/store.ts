@@ -32,7 +32,11 @@ export interface LivePart {
 const upsertPart = (parts: LivePart[], field: string, patch: Partial<LivePart>): LivePart[] => {
   const i = parts.findIndex((p) => p.field === field);
   if (i < 0) return [...parts, { field, title: field, text: '', status: 'running', ...patch }];
-  return parts.map((p, j) => (j === i ? { ...p, ...patch } : p));
+  const next = { ...parts[i]!, ...patch };
+  const rest = parts.filter((_, j) => j !== i);
+  // A part that just finished goes to the END, so the finished group reads in completion order
+  // (newest last) and the tab bar can keep what is still being written up front.
+  return patch.status === 'done' && parts[i]!.status !== 'done' ? [...rest, next] : parts.map((p, j) => (j === i ? next : p));
 };
 
 const EMPTY_RUN: RunViz = { nodes: [], activeNode: null, visitedNodes: [], plans: [], tools: {}, tier: null };

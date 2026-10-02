@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { orderParts } from '../lib/partOrder';
 
 export interface PartTab {
   field: string;
@@ -20,19 +21,26 @@ const isStructured = (t: string) => /^\s*[{[]/.test(t);
  * user navigated away / the app restarted come back from the server with their text.
  */
 export function PartTabs({ parts, retrigger }: { parts: PartTab[]; retrigger?: (field: string) => void }) {
+  // Active work first, failed next, finished last — so a regeneration of a few artifacts shows
+  // the ones being written right now up front instead of buried behind the reused ones.
+  const ordered = useMemo(() => orderParts(parts), [parts]);
   const [active, setActive] = useState<string>('');
+  const manual = useRef(false);            // the user picked a tab themselves
+  const anyRunning = ordered.some((p) => p.status === 'running');
+  useEffect(() => { if (!anyRunning) manual.current = false; }, [anyRunning]);
   useEffect(() => {
-    if (!parts.some((p) => p.field === active)) setActive(parts[0]?.field ?? '');
-  }, [parts, active]);
-  const cur = parts.find((p) => p.field === active) ?? parts[0];
+    // Follow the first (active) tab until the user picks one; keep their pick if it still exists.
+    if (!manual.current || !ordered.some((p) => p.field === active)) setActive(ordered[0]?.field ?? '');
+  }, [ordered, active]);
+  const cur = ordered.find((p) => p.field === active) ?? ordered[0];
   if (!cur) return null;
   return (
     <div className="rounded-lg border border-blue-200 bg-white" data-testid="part-tabs">
       <div role="tablist" className="flex gap-1 overflow-x-auto border-b border-blue-100 px-2 pt-1.5">
-        {parts.map((p) => (
+        {ordered.map((p) => (
           <button
             key={p.field} type="button" role="tab" aria-selected={p.field === cur.field}
-            onClick={() => setActive(p.field)}
+            onClick={() => { manual.current = true; setActive(p.field); }}
             className={`shrink-0 rounded-t-md border border-b-0 px-2.5 py-1 text-[11px] font-semibold ${
               p.field === cur.field ? 'border-blue-200 bg-blue-50 text-blue-800' : 'border-transparent text-slate-500 hover:text-slate-700'
             }`}

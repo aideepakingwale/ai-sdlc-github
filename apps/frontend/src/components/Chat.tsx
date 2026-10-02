@@ -1,4 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
+import { useStickToBottom } from '../hooks/useStickToBottom';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { streamChat } from '../api/client';
@@ -56,9 +57,7 @@ export default function Chat({ messages, locked, lockedReason }: Props) {
   const [localTurns, setLocalTurns] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length, localTurns.length, activity.length, liveResponse]);
+  useStickToBottom(bottomRef, [messages.length, localTurns.length, activity.length, liveResponse]);
 
   // Server transcript replaces optimistic local turns once refetched.
   useEffect(() => setLocalTurns([]), [messages.length, activeProjectId]);

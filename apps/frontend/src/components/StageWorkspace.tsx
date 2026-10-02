@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent 
 import ReactMarkdown from 'react-markdown';
 import { api, streamStageProgress } from '../api/client';
 import { PartTabs } from './PartTabs';
+import { useStickToBottom } from '../hooks/useStickToBottom';
 import type { ProjectFlow } from '../api/flow';
 import type { ChatMessage, PhaseStateView, User } from '../api/types';
 import { useApp, type ActivityItem } from '../store';
@@ -311,9 +312,9 @@ export default function StageWorkspace({
   );
   const streamingHere = streaming && stage?.phase === flow.currentPhase;
 
-  useEffect(() => {
-    threadRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [stageMessages.length, activity.length, liveResponse]);
+  // Follow new output only while the user is already at the bottom — never yank them down
+  // while they are reading a tab/log higher up (this used to scroll on every streamed update).
+  useStickToBottom(threadRef, [stageMessages.length, activity.length, liveResponse]);
 
   if (!stage) return null;
 
