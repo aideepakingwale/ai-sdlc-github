@@ -153,6 +153,44 @@ async def _validate_drawio_pack(ctx: SkillContext) -> dict[str, Any]:
                      "warnings": len(result["warnings"]), **result.get("stats", {})}}
 
 
+async def _drawio_architecture(ctx: SkillContext) -> dict[str, Any]:
+    """LLM decides, code enforces: the model designs the architecture as a structured spec; the
+    platform draws it (provider-correct icons, flow layout, routed edges, title, legend) and
+    validates it. The model never writes draw.io XML, so it cannot pick wrong-cloud icons or
+    produce an unreadable layout."""
+    from ..agents.schemas import CloudArchitecture
+    from .drawio import cloud_arch_to_drawio, format_findings, validate_drawio
+
+    body = next((p["body"] for p in SKILL_PACKS if p["id"] == "drawio_architecture"), "")
+    system = render_prompt(
+        "skill.system.wrapper", policy=render_prompt("policy.responsible_ai"), instruction=body,
+        tech_stack=ctx.tech_stack, mock_kind="drawio",
+    )
+    try:
+        spec, res = await ctx.deps.llm.generate_json(
+            intent="architecture", tag="skill:drawio_spec", temperature=0.2, max_tokens=3000,
+            schema=CloudArchitecture, max_attempts=2,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": f"{ctx.user_input or '(describe the current solution)'}\n\n"
+                                            f"Project tech stack: {ctx.tech_stack}"},
+            ],
+        )
+    except Exception as err:  # noqa: BLE001 — a model failure is reported, not raised
+        return {"output": f"The model could not produce a valid architecture spec ({str(err)[:200]}). "
+                          "Describe the cloud platform and the main components, then run it again.",
+                "meta": {"valid": False, "error": True}}
+    context = [ctx.tech_stack, ctx.user_input]
+    xml = cloud_arch_to_drawio(spec.model_dump(), context=context)
+    result = validate_drawio(xml)
+    provider = xml.split('provider="', 1)[1].split('"', 1)[0] if 'provider="' in xml else "generic"
+    return {
+        "output": f"```drawio\n{xml}\n```\n\n{format_findings(result)}\n\nTarget platform: **{provider}**",
+        "meta": {"provider": res.provider, "model": res.model, "tier": res.tier, "valid": result["ok"],
+                 "cloud": provider, **result.get("stats", {})},
+    }
+
+
 async def _latest_artifact_body(ctx: SkillContext, type_: str) -> str | None:
     """Newest artifact body of a type — content-store first, DB fallback."""
     rows = await ctx.deps.db.list_artefacts(ctx.project_id)
@@ -221,6 +259,7 @@ BUILTIN_EXECUTORS: dict[str, Callable[[SkillContext], Awaitable[dict[str, Any]]]
     "validate_pipeline": _validate_pipeline,
     "validate_diagram": _validate_diagram,
     "validate_drawio": _validate_drawio_pack,
+    "drawio_architecture": _drawio_architecture,
 }
 
 

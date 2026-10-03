@@ -24,45 +24,24 @@ from typing import Any, Callable
 log = logging.getLogger("diagrams")
 
 
-def _node_catalog() -> dict[str, Callable[..., Any]]:
-    """service-key → diagrams Node class. Imported lazily so the module loads
-    even when `diagrams` is absent. Unknown keys fall back to a labelled box."""
-    from diagrams.aws.compute import EC2, ECS, EKS, Fargate, Lambda
-    from diagrams.aws.database import Aurora, Dynamodb, ElastiCache, RDS
-    from diagrams.aws.integration import Eventbridge, SNS, SQS
-    from diagrams.aws.network import (
-        ALB, APIGateway, CloudFront, ELB, InternetGateway, NATGateway, Route53, VPC,
-    )
-    from diagrams.aws.security import WAF, Cognito, SecretsManager
-    from diagrams.aws.storage import S3
+def _node_factory(provider: str) -> Callable[[dict], Any]:
+    """Build nodes whose icon comes from the diagram's TARGET CLOUD (cloud_catalog). A service
+    with no icon on that cloud becomes a neutral box — never another cloud's icon."""
+    from diagrams.custom import Custom
     from diagrams.generic.blank import Blank
-    from diagrams.onprem.client import Client, User, Users
-    from diagrams.onprem.container import Docker
-    from diagrams.onprem.database import PostgreSQL
-    from diagrams.onprem.inmemory import Redis
-    from diagrams.onprem.queue import Kafka
 
-    return {
-        # compute
-        "ec2": EC2, "ecs": ECS, "fargate": Fargate, "eks": EKS, "lambda": Lambda,
-        "container": Docker, "service": Fargate, "microservice": Fargate, "worker": Fargate,
-        # network / edge
-        "alb": ALB, "elb": ELB, "nlb": ELB, "loadbalancer": ELB, "nat": NATGateway,
-        "natgateway": NATGateway, "cloudfront": CloudFront, "cdn": CloudFront,
-        "apigateway": APIGateway, "api": APIGateway, "igw": InternetGateway,
-        "internetgateway": InternetGateway, "route53": Route53, "dns": Route53,
-        # data
-        "rds": RDS, "aurora": Aurora, "postgres": PostgreSQL, "postgresql": PostgreSQL,
-        "dynamodb": Dynamodb, "elasticache": ElastiCache, "redis": Redis, "cache": Redis,
-        "database": RDS, "db": RDS, "s3": S3, "bucket": S3, "storage": S3,
-        # integration
-        "sqs": SQS, "queue": SQS, "sns": SNS, "eventbridge": Eventbridge, "kafka": Kafka,
-        # security
-        "waf": WAF, "cognito": Cognito, "auth": Cognito, "secretsmanager": SecretsManager,
-        # actors / generic
-        "user": User, "users": Users, "customer": Users, "client": Client,
-        "component": Blank, "generic": Blank,
-    }
+    from . import cloud_catalog as cat
+
+    def make(n: dict) -> Any:
+        label = str(n.get("label", n["id"]))
+        r = cat.resolve(provider, str(n.get("service", "")))
+        icon = cat.icon_file(r.icon_path) if r.icon_path else None
+        if icon:
+            sub = r.service_name if r.service_name and r.service_name.lower() != label.lower() else ""
+            return Custom(f"{label}\n{sub}" if sub else label, icon)
+        return Blank(label)
+
+    return make
 
 
 def _svg_with_inlined_icons(svg_path: Path) -> str:
@@ -82,7 +61,7 @@ def _svg_with_inlined_icons(svg_path: Path) -> str:
     return re.sub(r'(xlink:href|href)="([^"]+\.png)"', repl, svg)
 
 
-def render_architecture(spec: dict[str, Any]) -> str | None:
+def render_architecture(spec: dict[str, Any], *, context: list[str] | None = None) -> str | None:
     """Render a cloud-architecture spec to a self-contained SVG string, or None
     if the renderer is unavailable or the spec is empty/invalid."""
     nodes = spec.get("nodes") or []
@@ -95,8 +74,14 @@ def render_architecture(spec: dict[str, Any]) -> str | None:
         return None
 
     try:
-        catalog = _node_catalog()
-        fallback = catalog["generic"]
+        from . import cloud_catalog as cat
+
+        provider = cat.infer_provider(
+            spec.get("provider"),
+            [spec.get("title", ""), *(context or []), *(c.get("label", "") for c in spec.get("clusters") or [])],
+            [n.get("service", "") for n in nodes],
+        ).provider
+        factory = _node_factory(provider)
         clusters = spec.get("clusters") or []
         edges = spec.get("edges") or []
         by_parent: dict[str, list[dict]] = {}
@@ -111,8 +96,7 @@ def render_architecture(spec: dict[str, Any]) -> str | None:
             node_objs: dict[str, Any] = {}
 
             def make_node(n: dict) -> None:
-                cls = catalog.get(str(n.get("service", "")).lower().replace(" ", ""), fallback)
-                node_objs[n["id"]] = cls(n.get("label", n["id"]))
+                node_objs[n["id"]] = factory(n)
 
             def build(parent_id: str) -> None:
                 for c in by_parent.get(parent_id, []):
@@ -126,7 +110,7 @@ def render_architecture(spec: dict[str, Any]) -> str | None:
                 filename=str(out),
                 outformat="svg",
                 show=False,
-                direction=spec.get("direction", "TB"),
+                direction=spec.get("direction", "LR"),
                 graph_attr={"splines": "spline", "fontsize": "14", "pad": "0.4", "nodesep": "0.5", "ranksep": "0.7"},
             ):
                 for n in nodes_by_group.get("", []):  # top-level (ungrouped) nodes

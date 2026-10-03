@@ -118,9 +118,11 @@ class DiagramCluster(BaseModel):
 
 
 class DiagramNode(BaseModel):
-    """A typed node placed on the diagram. `service` selects the icon (aws or
-    generic key, e.g. alb, ecs, fargate, rds, s3, sqs, cloudfront, user, cache,
-    database, component); `group` is the cluster id it sits in ("" = top level)."""
+    """A typed node placed on the diagram. `service` selects the icon of the diagram's target
+    cloud: a vendor-neutral key (user, cdn, loadbalancer, api, service, function, database,
+    postgres, nosql, cache, queue, topic, stream, storage, identity, secrets, waf, monitoring …) or a
+    service of THAT cloud (aks, cosmosdb, servicebus, keyvault / ecs, dynamodb, sqs / gke, bigquery).
+    `group` is the cluster id it sits in ("" = top level)."""
     id: str
     label: str
     service: str = "component"
@@ -137,7 +139,10 @@ class CloudArchitecture(BaseModel):
     """A professional architecture diagram spec (D-51), rendered server-side to
     an SVG with real AWS icons and nested clusters."""
     title: str = "Architecture"
-    direction: Literal["TB", "LR"] = "TB"
+    # The CONFIRMED target cloud. Icons are chosen from this cloud only — an Azure solution
+    # never gets AWS icons. "auto" = infer from the service keys and the project's tech stack.
+    provider: Literal["auto", "aws", "azure", "gcp", "onprem"] = "auto"
+    direction: Literal["TB", "LR"] = "LR"
     clusters: list[DiagramCluster] = Field(default_factory=list)
     nodes: list[DiagramNode] = Field(default_factory=list)
     edges: list[DiagramEdge] = Field(default_factory=list)

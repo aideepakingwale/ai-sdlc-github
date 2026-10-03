@@ -1288,6 +1288,14 @@ def _render_story_md(story: Any, story_key: str) -> str:
     return "\n".join(lines)
 
 
+def _arch_context(state: Any) -> list[str]:
+    """Project text the diagram generators use ONLY to infer the target cloud (zero-token)."""
+    ctx = [state.tech_stack or "", state.project_profile or "", re.split(r"##\s*Production scope", state.user_input or "")[0][:1500],
+           (state.extra_context or "")[:1500]]
+    ctx += [f"{a.type} {a.title} {a.summary}"[:300] for a in state.context_window[-8:]]
+    return [c for c in ctx if c]
+
+
 async def _save_architecture_svg(
     deps: AgentDeps, state: AgentState, emit: Emit, *, spec: Any, type_: str, title: str, summary: str,
 ) -> ContextArtifact | None:
@@ -1296,7 +1304,7 @@ async def _save_architecture_svg(
     is absent or the renderer is unavailable — generation continues either way."""
     if spec is None:
         return None
-    svg = await asyncio.to_thread(render_architecture, spec.model_dump())
+    svg = await asyncio.to_thread(render_architecture, spec.model_dump(), context=_arch_context(state))
     if not svg:
         return None
     return await _save_artifact(
@@ -1315,7 +1323,7 @@ async def _save_architecture_drawio(
         return None
     from ..services.drawio import cloud_arch_to_drawio, validate_drawio
     try:
-        xml = cloud_arch_to_drawio(spec.model_dump(), title=title)
+        xml = cloud_arch_to_drawio(spec.model_dump(), title=title, context=_arch_context(state))
         verdict = validate_drawio(xml)
         if not verdict["ok"]:
             log.warning("generated draw.io failed validation: %s", verdict["errors"][:3])

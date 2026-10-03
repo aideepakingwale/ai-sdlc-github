@@ -967,18 +967,20 @@ _ARCH_SPEC = {
 
 
 def test_cloud_arch_to_drawio_produces_valid_editable_diagram():
+    from app.services import cloud_catalog as cat
     from app.services.drawio import cloud_arch_to_drawio, validate_drawio
 
     xml = cloud_arch_to_drawio(_ARCH_SPEC)
     assert xml.startswith("<mxfile") and xml.endswith("</mxfile>")
     v = validate_drawio(xml)
     assert v["ok"] is True, v["errors"]
-    # real AWS stencils for known services, generic box for unknown
-    assert "resIcon=mxgraph.aws4.application_load_balancer" in xml
-    assert "resIcon=mxgraph.aws4.rds" in xml and "resIcon=mxgraph.aws4.fargate" in xml
-    assert "fillColor=#dae8fc" in xml  # generic 'component' node
-    # nested clusters rendered as containers
-    assert 'id="c_vpc"' in xml and 'id="c_sub"' in xml
+    # alb / fargate / rds are AWS service keys → AWS icons (embedded, so they render everywhere)
+    for key in ("load_balancer", "serverless_container", "relational_db"):
+        assert cat.icon_data_uri(cat.ICONS["aws"][key][0]) in xml
+    assert 'provider="aws"' in xml and "AWS Cloud" in xml
+    assert "fillColor=#FFF3E0" in xml  # generic 'component' node → neutral tier box
+    # nested clusters are real containers inside the cloud frame
+    assert 'id="c_vpc"' in xml and 'id="c_sub"' in xml and 'id="frame"' in xml
     # the dangling edge to 'ghost' is dropped — only 2 valid edges
     assert xml.count('edge="1"') == 2
 
@@ -1270,7 +1272,7 @@ def test_drawio_skill_pack_loads():
     assert "drawio_architecture" in packs
     skill = packs["drawio_architecture"]
     assert set(skill["roles"]) >= {"SA", "TA"}
-    assert skill["executor"] == "llm"
+    assert skill["executor"] == "builtin" and skill["tier"] == "frontier"  # model designs, platform draws
 
 
 # ---------------------------------------------------------------- dynamic workflow
