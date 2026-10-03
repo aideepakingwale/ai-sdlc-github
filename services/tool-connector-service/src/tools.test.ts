@@ -121,7 +121,7 @@ describe('tool runtime', () => {
     expect(out.epicKey).toMatch(/^SDLC-\d+$/);
   });
 
-  it('honours a per-request Jira projectKey and keeps stories under it', async => {
+  it('honours a per-request Jira projectKey and keeps stories under it', async () => {
     const runtime = createToolRuntime(env, fakeRedis(), log);
     const epic = (await runtime.execute('jira_create_epic', {
       title: 'Epic', description: 'd', projectKey: 'aqdp',

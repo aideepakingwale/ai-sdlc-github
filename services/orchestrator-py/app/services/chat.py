@@ -3,6 +3,7 @@ LangGraph invocation → output guardrail → persistence → audit → SSE stre
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -18,6 +19,10 @@ from ..config import Settings
 from ..domain.errors import SdlcError
 from ..domain.models import AgentState, ContextArtifact, UserPublic
 from ..graph.pipeline import PIPELINE_NODES, build_pipeline, run_pipeline
+from ..services.applicability import (
+    GENERATED_ARTIFACTS, TOOL_ARTIFACT, derive_traits, inapplicable_types, project_corpus,
+    resolve_traits, trait_values, traits_prompt,
+)
 from ..services.model_router import classify_tier
 from ..services.skills import SKILLS
 from ..repos.aws import DynamoStore
@@ -703,6 +708,76 @@ class ChatService:
 
         return [t for t in tools if available(t)]
 
+    @staticmethod
+    def _norm_type(text: str) -> str:
+        return re.sub(r"[^A-Z0-9]+", "_", (text or "").upper()).strip("_")
+
+    async def resolve_project_traits(
+        self, *, project: dict, phase: int, user_text: str, upstream: list[str], allow_llm: bool,
+    ) -> dict[str, dict[str, Any]]:
+        """LLM decides, code enforces. The model JUDGES what the project is (ui/api/database/
+        cloud/aws/container/service, each with evidence + confidence); this code turns that into
+        decisions. Precedence per trait: human override > AI judgement > keyword rules (only when
+        the AI is unavailable). The AI call happens only on an explicit plan display (allow_llm);
+        trigger/persist paths reuse the stored judgement, so the plan and the generation agree."""
+        from ..agents.schemas import ProjectTraitsIntel
+
+        corpus = project_corpus(project=project, user_text=user_text, upstream=upstream)
+        sig = hashlib.sha256(corpus.encode()).hexdigest()[:16]
+        row = await self._db.get_stage_traits(project["id"], phase)
+        llm: dict[str, Any] | None = json.loads(row["traits_json"]) if row else None
+        if (allow_llm and getattr(self._settings, "INTELLIGENT_PLANNING", True)
+                and (row is None or row["sig"] != sig)):
+            try:
+                system, usr = traits_prompt(project=project, user_text=user_text, upstream=upstream)
+                data, _ = await self._deps.llm.generate_json(
+                    intent="standard", tag="project_traits", temperature=0, max_tokens=900,
+                    schema=ProjectTraitsIntel, max_attempts=1,
+                    messages=[{"role": "system", "content": system}, {"role": "user", "content": usr}],
+                )
+                llm = data.model_dump()
+                await self._db.upsert_stage_traits(project["id"], phase, sig, json.dumps(llm))
+            except Exception as err:  # noqa: BLE001 — advisory; keep any stored judgement, else rules
+                log.info("trait classification unavailable (%s); using stored/keyword traits", err)
+        overrides = await self._db.get_trait_overrides(project["id"])
+        detail = resolve_traits(llm, overrides, derive_traits(corpus=corpus))
+        if llm and llm.get("projectType"):
+            detail["_projectType"] = {"value": None, "source": "ai", "evidence": llm["projectType"], "confidence": 1.0}
+        return detail
+
+    async def set_trait_override(self, *, project_id: str, trait: str, value: str | None,
+                                 user: UserPublic) -> dict[str, Any]:
+        """A project lead pins a trait to present/absent (or clears it with None). Wins over the AI."""
+        from .applicability import TRAIT_NAMES
+        from .canon import CanonService
+
+        await self._authz.assert_project_access(project_id, user)
+        if trait not in TRAIT_NAMES:
+            raise SdlcError("VALIDATION_FAILED", f"Unknown trait '{trait}'")
+        if value not in (None, "present", "absent"):
+            raise SdlcError("VALIDATION_FAILED", "value must be present, absent or null")
+        await CanonService(self._db, self._authz, self._audit).assert_can_author(project_id, user)
+        if await self._redis.keys(f"run:{project_id}:*"):
+            raise SdlcError("GATE_CONFLICT", "A stage is generating — project settings are locked until it finishes")
+        await self._db.set_trait_override(project_id, trait, value, user.id)
+        self._audit.record(project_id=project_id, phase=0, agent_role="Orchestrator",
+                           event="project.trait_overridden", human_reviewer=user.email,
+                           detail={"trait": trait, "value": value})
+        return {"projectId": project_id, "trait": trait, "value": value}
+
+    def _apply_applicability(self, intel: dict[str, Any], excluded: dict[str, str]) -> dict[str, Any]:
+        """Items the project cannot use are NOT part of the plan: they are removed from the
+        proposed outputs (whatever the LLM said), and are never generated. The reason is kept
+        only as a short note so the reviewer can see what was left out and why."""
+        if not excluded:
+            return intel
+        gone = set(excluded)
+        will = [a for a in intel.get("willProduce", []) if self._norm_type(a.get("output", "")) not in gone]
+        extras = [x for x in intel.get("suggestedArtifacts", [])
+                  if self._norm_type(x.get("name", "")) not in gone]
+        checks = [f"{t} — {why}" for t, why in excluded.items()]
+        return {**intel, "willProduce": will, "suggestedArtifacts": extras, "promptChecks": checks}
+
     def _deterministic_proposal(
         self, stage: dict, overlay: dict,
         attachments: list[dict] | None = None, formworks: list[dict] | None = None,
@@ -740,7 +815,7 @@ class ChatService:
         self, *, project: dict, phase: int, stage: dict, overlay: dict,
         available_tools: list[str], skills: list[dict], prior_arts: list[dict], canon_applied: bool,
         attachments: list[dict] | None = None, formworks: list[dict] | None = None,
-        allow_compute: bool = True,
+        allow_compute: bool = True, applicability: dict[str, str] | None = None,
     ) -> dict[str, Any] | None:
         """LLM-built, context-aware plan for a stage (D-105). Fed the input, tech
         stack, project profile, prior artifacts, configured tools/skills/outputs and
@@ -769,7 +844,7 @@ class ChatService:
             "fw": overlay.get("formworkIds", []), "stack": stack, "profile": profile,
             "tools": sorted(available_tools), "outputs": sorted(outputs),
             "arts": art_digest, "canon": canon_applied, "persona": stage.get("persona"),
-            "attn": sorted(att_names), "fwn": sorted(fw_names),
+            "attn": sorted(att_names), "fwn": sorted(fw_names), "na": sorted(applicability or {}),
         }, sort_keys=True)
         sig = hashlib.sha256(sig_src.encode()).hexdigest()[:16]
         ckey = f"sdlc:planintel:{project['id']}:{phase}"
@@ -791,6 +866,114 @@ class ChatService:
         if not allow_compute:
             return None
 
+        # Shared build state: if another tab/session is already building THIS plan, wait for
+        # its result instead of starting a duplicate ~30s planner call (and let /plan/state
+        # report "building" so every view shows the same thing).
+        bkey = f"sdlc:planbuild:{project['id']}:{phase}"
+        try:
+            got = await self._redis.set(bkey, "1", nx=True, ex=180)
+        except Exception:  # noqa: BLE001
+            got = True
+        if not got:
+            for _ in range(360):
+                await asyncio.sleep(0.5)
+                try:
+                    cached = await self._redis.get(ckey)
+                    if cached:
+                        obj = json.loads(cached.decode() if isinstance(cached, (bytes, bytearray)) else cached)
+                        if obj.get("sig") == sig:
+                            return {**obj["plan"], "cached": True}
+                    if not await self._redis.exists(bkey):
+                        break
+                except Exception:  # noqa: BLE001
+                    break
+            try:
+                await self._redis.set(bkey, "1", nx=True, ex=180)
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            return await self._compute_intelligent_plan(
+                ckey=ckey, sig=sig, stage=stage, outputs=outputs, available_tools=available_tools,
+                skills=skills, fw_names=fw_names, att_names=att_names, stack=stack, profile=profile,
+                art_digest=art_digest, canon_applied=canon_applied, overlay=overlay, applicability=applicability,
+            )
+        finally:
+            try:
+                await self._redis.delete(bkey)
+            except Exception:  # noqa: BLE001
+                pass
+
+    # ------------------------------------------------------------ plan lifecycle
+    # draft → building → ready(fresh) → generating. A plan is FRESH only while the inputs it was
+    # built for are unchanged; any edit (instructions, references, templates, attachments, trait
+    # overrides, upstream outputs) makes it STALE, and generating needs a fresh plan. While a
+    # stage is generating, editing and re-planning are locked. All enforced here, not just in the UI.
+    @staticmethod
+    def _plan_sig(project: dict, row: Any, attachments: list[dict], prior_arts: list[dict],
+                  trait_overrides: dict[str, str], step_overrides: dict[str, Any]) -> str:
+        from .applicability import strip_scope_block
+
+        src = {
+            "ov": strip_scope_block((row["prompt_overlay"] if row else "") or "").strip(),
+            "ref": sorted((row["referenced_artifact_ids"] if row else []) or []),
+            "fw": sorted((row["formwork_ids"] if row else []) or []),
+            "att": sorted(a["id"] for a in attachments),
+            "so": step_overrides, "to": trait_overrides,
+            "stack": project.get("tech_stack"), "name": project.get("name"),
+            "arts": sorted(str(a["id"]) for a in prior_arts),
+        }
+        return hashlib.sha256(json.dumps(src, sort_keys=True, default=str).encode()).hexdigest()[:20]
+
+    async def _is_generating(self, project_id: str, phase: int) -> bool:
+        return bool(await self._redis.exists(f"run:{project_id}:{phase}"))
+
+    async def assert_not_generating(self, project_id: str, phase: int) -> None:
+        if await self._is_generating(project_id, phase):
+            raise SdlcError("GATE_CONFLICT", "Generation is in progress for this stage — editing is locked until it finishes")
+
+    async def _plan_status(self, project_id: str, phase: int, *, project: dict | None = None) -> dict[str, Any]:
+        project = project or await self._db.get_project(project_id)
+        row = await self._db.get_stage_plan(project_id, phase)
+        attachments = await self._db.list_attachments(project_id, phase)
+        prior = [a for a in await self._db.list_artefacts(project_id) if a["phase"] < phase]
+        sig = self._plan_sig(project, row, attachments, prior,
+                             await self._db.get_trait_overrides(project_id), self._step_overrides(row))
+        planned = bool(row and row["plan_sig"])
+        generating = await self._is_generating(project_id, phase)
+        return {
+            "building": bool(await self._redis.exists(f"sdlc:planbuild:{project_id}:{phase}")),
+            "ready": bool(await self._redis.exists(f"sdlc:planintel:{project_id}:{phase}")),
+            "planned": planned, "stale": planned and row["plan_sig"] != sig,
+            "fresh": planned and row["plan_sig"] == sig, "generating": generating, "locked": generating,
+            "_sig": sig,
+        }
+
+    async def plan_state(self, *, project_id: str, phase: int, user: UserPublic) -> dict[str, Any]:
+        """Shared across tabs/sessions: is a plan building / built / stale, is generation running?"""
+        await self._authz.assert_project_access(project_id, user)
+        st = await self._plan_status(project_id, phase)
+        st.pop("_sig", None)
+        return st
+
+    async def assert_plan_ready(self, project_id: str, phase: int, user: UserPublic) -> None:
+        """Generation gate: only a finished, up-to-date plan may start a run."""
+        await self._authz.assert_project_access(project_id, user)
+        st = await self._plan_status(project_id, phase)
+        if st["generating"]:
+            raise SdlcError("GATE_CONFLICT", "This stage is already generating")
+        if st["building"]:
+            raise SdlcError("GATE_CONFLICT", "The plan is still being built — wait for it to finish")
+        if not st["planned"]:
+            raise SdlcError("GATE_CONFLICT", "Review the plan before generating")
+        if st["stale"]:
+            raise SdlcError("GATE_CONFLICT", "Your inputs changed after the plan was reviewed — update the plan before generating")
+
+    async def _compute_intelligent_plan(
+        self, *, ckey: str, sig: str, stage: dict, outputs: list[str], available_tools: list[str],
+        skills: list[dict], fw_names: list[str], att_names: list[str], stack: str, profile: str,
+        art_digest: str, canon_applied: bool, overlay: dict, applicability: dict[str, str] | None,
+    ) -> dict[str, Any] | None:
+        from ..agents.schemas import StagePlanIntel
         from .prompt_library import render as render_prompt
         sys_p = render_prompt("policy.clarification") + "\n\n" + (
             "You are the planning brain for one stage of an enterprise AI-SDLC pipeline. You do NOT "
@@ -812,6 +995,13 @@ class ChatService:
             f"AVAILABLE OUTPUT TEMPLATES (formworks): {', '.join(n for n in fw_names if n) or 'none'}.\n"
             f"ATTACHED DOCUMENTS (user-provided; may define the desired format): {', '.join(n for n in att_names if n) or 'none'}.\n"
             f"TECH STACK: {stack}.\n{profile}\n"
+            + ("NOT APPLICABLE to this project (verified from its configuration — mark recommended=false "
+               "with this reason, never recommend): "
+               + "; ".join(f"{t} ({w})" for t, w in (applicability or {}).items()) + ".\n"
+               if applicability else "")
+            + "Think about THIS project's type (API/service vs UI app, data store, cloud). Recommend only "
+              "artifacts that genuinely apply; list in `suggestedArtifacts` (max 4) anything NOT in the "
+              "standard output list that this project would clearly need, each with a one-line reason.\n"
             f"PRIOR-STAGE ARTIFACTS: {art_digest}.\n"
             f"CANON RULES APPLIED: {'yes' if canon_applied else 'no'}.\n\n"
             f"USER INPUT / INSTRUCTIONS for this stage:\n"
@@ -855,6 +1045,9 @@ class ChatService:
         session = await self._db.get_session(project_id)
         st = await self._dynamo.get_phase_state(project_id, phase)
         status = st["status"] if st else "NOT_STARTED"
+        # While the stage generates, re-planning is locked: serve the stored plan, compute nothing.
+        if run_intel and await self._is_generating(project_id, phase):
+            run_intel = False
 
         row = await self._db.get_stage_plan(project_id, phase)
         overlay = {
@@ -882,9 +1075,22 @@ class ChatService:
         # D-105: only offer tools whose integration is actually configured, so the plan
         # never proposes a tool that can't run.
         available_tools = self._configured_tools(TEMPLATE_TOOLS.get(stage["template"], []))
+        prior_for_fit = [a for a in await self._db.list_artefacts(project_id) if a["phase"] < phase]
+        fit_attachments = await self._db.list_attachments(project_id, phase)
+        fit_upstream = [f"{a['type']} {a['title']}" for a in prior_for_fit[:30]]
+        fit_upstream += [a.get("filename", "") for a in fit_attachments]
+        fit_upstream.append(self._project_profile(project))
+        trait_detail = await self.resolve_project_traits(
+            project=project, phase=phase, user_text=overlay.get("promptOverlay", ""),
+            upstream=fit_upstream, allow_llm=run_intel)
+        not_applicable = inapplicable_types(trait_values({k: v for k, v in trait_detail.items() if k[0] != "_"}),
+                                            stage["template"])
+        # Plan only what applies: drop tools and outputs the project cannot use.
+        available_tools = [t for t in available_tools if TOOL_ARTIFACT.get(t) not in not_applicable]
         steps = derive_plan_steps(
             template=stage["template"], roster=roster, step_overrides=step_overrides,
-            outputs=list(stage.get("outputs") or []), skills=skills,
+            outputs=[o for o in (stage.get("outputs") or []) if self._norm_type(o) not in not_applicable],
+            skills=skills,
             tools=available_tools,
             external_write_tools=set(EXTERNAL_WRITE_TOOLS),
             gen_prompt_tokens=(len(system) + len(user_prompt)) // 4,
@@ -903,8 +1109,16 @@ class ChatService:
         # D-105: intelligent, context-aware plan (advisory). None on any failure or in
         # mock mode → the deterministic plan above stands unchanged. D-109: only the
         # explicit plan DISPLAY computes it (run_intel); persist paths reuse the cache.
+        # The harness template ALSO derives toolchain artifacts beyond the declared outputs
+        # (e.g. UI/API test suites). Plan over everything that would actually be produced,
+        # and check each against the project's real traits so none is forced onto a project
+        # that cannot use it (an API-only service has no UI to automate).
+        excluded = not_applicable
+        plan_stage = {**stage, "outputs": [o for o in dict.fromkeys(
+            [*(stage.get("outputs") or []), *GENERATED_ARTIFACTS.get(stage["template"], [])])
+            if self._norm_type(o) not in excluded]}
         intel = await self._intelligent_plan(
-            project=project, phase=phase, stage=stage, overlay=overlay,
+            applicability=excluded, project=project, phase=phase, stage=plan_stage, overlay=overlay,
             available_tools=available_tools, skills=skills, prior_arts=prior_arts, canon_applied=canon_applied,
             attachments=attachments, formworks=formworks, allow_compute=run_intel,
         )
@@ -920,7 +1134,7 @@ class ChatService:
         # truncated/failed call) or returned no proposal, synthesise a deterministic
         # proposal from the stage's declared outputs + attachments so the reviewer can
         # still see what will be produced and choose/skip outputs before triggering.
-        det = self._deterministic_proposal(stage, overlay, attachments, formworks)
+        det = self._deterministic_proposal(plan_stage, overlay, attachments, formworks)
         if not intel:
             intel = det
         elif not intel.get("willProduce"):
@@ -931,8 +1145,19 @@ class ChatService:
                 "formatSource": intel.get("formatSource") or det["formatSource"],
                 "recommendation": intel.get("recommendation") or det["recommendation"],
             }
+        intel = self._apply_applicability(intel, excluded)
 
+        if run_intel:  # an explicit plan display = the reviewed plan now matches the saved inputs
+            try:
+                await self._db.set_stage_plan_sig(project_id, phase, self._plan_sig(
+                    project, row, attachments, prior_for_fit, await self._db.get_trait_overrides(project_id),
+                    step_overrides))
+            except Exception:  # noqa: BLE001
+                log.warning("could not record plan signature", exc_info=True)
+        plan_state = await self._plan_status(project_id, phase, project=project)
+        plan_state.pop("_sig", None)
         return {
+            "planState": plan_state,
             "projectId": project_id, "phase": phase, "status": status,
             "canEdit": await self._can_write_stage(project_id, stage, user),
             "blockedOn": blocked_on,
@@ -956,6 +1181,9 @@ class ChatService:
             # rationale/tier, tool/skill recommendations, assumptions & risks. Null
             # when disabled or unavailable (deterministic plan stands).
             "intel": intel,
+            # What the AI (or a project lead's override) decided the project is — each trait
+            # with its source and evidence. Code enforces it; the user can override it.
+            "traits": [{"trait": k, **v} for k, v in trait_detail.items()],
             "catalog": build_model_catalog(roster),
             "context": {
                 "priorArtifacts": [{"id": a["id"], "phase": a["phase"], "type": a["type"], "title": a["title"]} for a in prior_arts],
@@ -978,6 +1206,7 @@ class ChatService:
         _, stage = await self._stage_for(project_id, phase)
         if not await self._can_write_stage(project_id, stage, user):
             raise SdlcError("FORBIDDEN", f"Editing the '{stage['name']}' plan requires write permission ({' or '.join(self._stage_writers(stage))})")
+        await self.assert_not_generating(project_id, phase)
         row = await self._db.get_stage_plan(project_id, phase)
         await self._db.upsert_stage_plan(
             project_id=project_id, phase=phase, prompt_overlay=overlay.get("promptOverlay", ""),
@@ -1019,6 +1248,15 @@ class ChatService:
                 retrigger_fields = list(json.loads(_raw.decode() if isinstance(_raw, (bytes, bytearray)) else _raw))
         except Exception:  # noqa: BLE001
             retrigger_fields = []
+
+        resume = False
+        try:
+            _rsk = f"sdlc:resume:{project_id}:{phase}"
+            if await self._redis.get(_rsk):
+                await self._redis.delete(_rsk)
+                resume = True
+        except Exception:  # noqa: BLE001
+            resume = False
 
         states = {s["SK"]: s for s in await self._dynamo.list_phase_states(project_id)}
         status = (states.get(f"PHASE#{phase}") or {}).get("status", "NOT_STARTED")
@@ -1087,7 +1325,12 @@ class ChatService:
         emit({"type": "session", "projectId": project_id, "sessionId": session["id"], "phase": phase})
         emit({"type": "node", "node": "executor", "label": f"Triggering reviewed plan — {stage['name']}"})
 
+        trig_traits = await self.resolve_project_traits(
+            project=project, phase=phase, user_text=prompt_overlay,
+            upstream=[f"{a.type} {a.title}" for a in context[-30:]] + [self._project_profile(project)],
+            allow_llm=False)
         state = AgentState(
+            project_traits=trait_values({k: v for k, v in trig_traits.items() if k[0] != "_"}),
             project_id=project_id, session_id=session["id"], current_phase=phase,
             stage_template=stage["template"], stage_name=stage["name"], stage_reviewer=stage["reviewerRole"],
             user_input=prompt_overlay or f"Generate {', '.join(stage.get('outputs') or [])} for '{stage['name']}'.",
@@ -1097,8 +1340,9 @@ class ChatService:
             has_codebase=(await self._db.count_codebase_files(project_id)) > 0, extra_context=extra_context,
             model_overrides=self._model_overrides_from(self._step_overrides(row)),  # per-step model (D-68)
             # Retrigger implies the split (parts only exist under it); force it on then.
-            per_artifact=(await self._per_artifact_enabled()) or bool(retrigger_fields),  # D-106
+            per_artifact=(await self._per_artifact_enabled()) or bool(retrigger_fields) or resume,  # D-106
             retrigger_fields=retrigger_fields,  # D-107 step 2: regenerate only these parts
+            resume=resume,  # continue an interrupted run from its persisted parts
             **self._custom_fields(stage),  # custom phase config (D-74)
         )
         await self._dynamo.put_phase_state(project_id=project_id, phase=phase, status="IN_PROGRESS", reviewer_role=stage["reviewerRole"])

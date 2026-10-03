@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Awaitable, Callable
 
+from ..agents.schemas import PHASE_SCHEMAS
 from ..domain.errors import SdlcError
 from ..domain.models import PhaseStatus, UserPublic
 from ..repos.aws import DynamoStore
@@ -217,6 +218,49 @@ class FlowService:
     async def retrigger(self, project_id: str, phase: int, user: UserPublic) -> dict[str, Any]:
         stage = await self._workflow.stage_by_seq(project_id, phase)
 
+        await self._assert_can_write(project_id, stage, user)
+
+        current = await self._dynamo.get_phase_state(project_id, phase)
+        if not current or current["status"] == "NOT_STARTED":
+            raise SdlcError("GATE_CONFLICT", f"Stage {phase} has not run yet — nothing to retrigger")
+
+        # Version, don't destroy: supersede this stage's current artifacts (kept
+        # as history, bodies retained), then rewind so the pipeline regenerates —
+        # the new set becomes the latest versions.
+        await self._db.supersede_phase_artefacts(project_id, phase)
+        await self._db.set_project_phase(project_id, phase, "ACTIVE")
+        # D-56: rewind to NOT_STARTED and route through the Plan Review gate — the
+        # writer reviews (and may edit) the plan, then explicitly triggers. No
+        # silent auto-regeneration.
+        await self._dynamo.put_phase_state(
+            project_id=project_id, phase=phase, status="NOT_STARTED", reviewer_role=stage["reviewerRole"],
+        )
+        existing = await self._db.get_stage_plan(project_id, phase)
+        await self._db.upsert_stage_plan(
+            project_id=project_id, phase=phase,
+            prompt_overlay=(existing["prompt_overlay"] if existing else "") or "",
+            referenced_artifact_ids=(existing["referenced_artifact_ids"] if existing else []) or [],
+            attachment_ids=(existing["attachment_ids"] if existing else []) or [],
+            formwork_ids=(existing["formwork_ids"] if existing else []) or [],
+            origin="retrigger", updated_by=user.id,
+        )
+        # A re-run must go through Plan Review again: the previous plan no longer counts as final.
+        await self._db.set_stage_plan_sig(project_id, phase, None)
+        # Impact propagation: re-running this stage will produce a new version of
+        # its outputs, so any downstream stage that already consumed the old ones is
+        # now potentially stale. Flag them immediately (advisory — statuses kept).
+        stale = await self.mark_downstream_stale(
+            project_id, phase, reason=f"Upstream stage '{stage['name']}' was re-run",
+        )
+        self._audit.record(
+            project_id=project_id, phase=phase, agent_role="Orchestrator",
+            event="stage.retriggered", human_reviewer=user.email,
+            detail={"role": user.role, "planReview": True, "downstreamFlaggedStale": stale},
+        )
+        return {"projectId": project_id, "phase": phase, "status": "NOT_STARTED",
+                "retriggered": True, "planReview": True, "downstreamFlaggedStale": stale}
+
+    async def _assert_can_write(self, project_id: str, stage: dict[str, Any], user: UserPublic) -> None:
         # RBAC: SUPER_ADMIN, the managing PM, or the stage's own phase-role member.
         if user.role == "SUPER_ADMIN":
             pass
@@ -248,43 +292,57 @@ class FlowService:
                         f"({' or '.join(writers)}) — you are {membership or 'not a member'}",
                     )
 
-        current = await self._dynamo.get_phase_state(project_id, phase)
-        if not current or current["status"] == "NOT_STARTED":
-            raise SdlcError("GATE_CONFLICT", f"Stage {phase} has not run yet — nothing to retrigger")
+    async def regenerate_parts(
+        self, project_id: str, phase: int, fields: list[str], user: UserPublic,
+    ) -> dict[str, Any]:
+        """Regenerate SELECTED artifacts of a stage on demand — even after approval.
 
-        # Version, don't destroy: supersede this stage's current artifacts (kept
-        # as history, bodies retained), then rewind so the pipeline regenerates —
-        # the new set becomes the latest versions.
-        await self._db.supersede_phase_artefacts(project_id, phase)
-        await self._db.set_project_phase(project_id, phase, "ACTIVE")
-        # D-56: rewind to NOT_STARTED and route through the Plan Review gate — the
-        # writer reviews (and may edit) the plan, then explicitly triggers. No
-        # silent auto-regeneration.
+        Only the chosen parts are regenerated; every other part is reused from its
+        persisted value. The stage drops back to IN_PROGRESS (it returns to review
+        when done, so the changed output is re-approved) and downstream stages that
+        consumed the old output are flagged stale. An empty selection means all."""
+        stage = await self._workflow.stage_by_seq(project_id, phase)
+        await self._assert_can_write(project_id, stage, user)
+        schema = PHASE_SCHEMAS.get(stage["template"])
+        if schema is None:
+            raise SdlcError("VALIDATION_FAILED",
+                            "This stage type has no separate artifacts; use Retrigger stage instead")
+        all_fields = list(schema.model_fields)
+        selected = list(dict.fromkeys(fields)) or all_fields
+        unknown = [f for f in selected if f not in all_fields]
+        if unknown:
+            raise SdlcError("VALIDATION_FAILED", f"Unknown artifact(s): {', '.join(unknown)}")
+        current = await self._dynamo.get_phase_state(project_id, phase)
+        status = current["status"] if current else "NOT_STARTED"
+        if status == "NOT_STARTED":
+            raise SdlcError("GATE_CONFLICT", f"Stage {phase} has not run yet — nothing to regenerate")
+        if status == "IN_PROGRESS":
+            raise SdlcError("GATE_CONFLICT", f"Stage {phase} is already generating")
+        if len(selected) < len(all_fields):
+            have = {p["field"] for p in await self._db.list_generation_parts(project_id, phase)
+                    if p["status"] == "done" and p.get("value_json")}
+            missing = [f for f in all_fields if f not in selected and f not in have]
+            if missing:
+                raise SdlcError(
+                    "GATE_CONFLICT",
+                    f"Saved output for {', '.join(missing)} is missing (stage predates per-artifact "
+                    f"saving). Regenerate all artifacts once to enable selective regeneration",
+                )
         await self._dynamo.put_phase_state(
-            project_id=project_id, phase=phase, status="NOT_STARTED", reviewer_role=stage["reviewerRole"],
+            project_id=project_id, phase=phase, status="IN_PROGRESS", reviewer_role=stage["reviewerRole"],
         )
-        existing = await self._db.get_stage_plan(project_id, phase)
-        await self._db.upsert_stage_plan(
-            project_id=project_id, phase=phase,
-            prompt_overlay=(existing["prompt_overlay"] if existing else "") or "",
-            referenced_artifact_ids=(existing["referenced_artifact_ids"] if existing else []) or [],
-            attachment_ids=(existing["attachment_ids"] if existing else []) or [],
-            formwork_ids=(existing["formwork_ids"] if existing else []) or [],
-            origin="retrigger", updated_by=user.id,
-        )
-        # Impact propagation: re-running this stage will produce a new version of
-        # its outputs, so any downstream stage that already consumed the old ones is
-        # now potentially stale. Flag them immediately (advisory — statuses kept).
+        await self._db.set_project_phase(project_id, phase, "ACTIVE")
         stale = await self.mark_downstream_stale(
-            project_id, phase, reason=f"Upstream stage '{stage['name']}' was re-run",
+            project_id, phase, reason=f"Upstream stage '{stage['name']}' was partially regenerated",
         )
         self._audit.record(
             project_id=project_id, phase=phase, agent_role="Orchestrator",
-            event="stage.retriggered", human_reviewer=user.email,
-            detail={"role": user.role, "planReview": True, "downstreamFlaggedStale": stale},
+            event="stage.parts_regenerated", human_reviewer=user.email,
+            detail={"fields": selected, "all": len(selected) == len(all_fields),
+                    "previousStatus": status, "downstreamFlaggedStale": stale},
         )
-        return {"projectId": project_id, "phase": phase, "status": "NOT_STARTED",
-                "retriggered": True, "planReview": True, "downstreamFlaggedStale": stale}
+        return {"projectId": project_id, "phase": phase, "fields": selected,
+                "previousStatus": status, "downstreamFlaggedStale": stale}
 
     async def delete_project(self, project_id: str, user: UserPublic) -> dict:
         """Permanently delete a project across EVERY store (D-55): the content-store

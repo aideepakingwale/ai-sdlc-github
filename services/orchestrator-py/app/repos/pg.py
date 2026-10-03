@@ -151,15 +151,19 @@ class Database:
             project_id, phase,
         )
 
-    async def fail_stale_generation_jobs(self) -> int:
-        """On boot, any job still 'running' belongs to a dead process — fail it."""
+    async def claim_stale_generation_jobs(self, keep_ids: set[str] | None = None) -> list[dict]:
+        """On boot, fail every job a dead process left behind: 'running' ones, and
+        'queued' ones whose queue item is gone (`keep_ids` = ids still in the queue).
+        Returns the claimed rows so the caller can resume them."""
         assert self.pool
         rows = await self.pool.fetch(
             "UPDATE generation_jobs SET status='failed', "
             "error=COALESCE(error, 'orchestrator restarted mid-run'), updated_at=now() "
-            "WHERE status='running' RETURNING id"
+            "WHERE (status='running' OR status='queued') AND NOT (id = ANY($1::text[])) "
+            "RETURNING id, project_id, phase, started_by",
+            list(keep_ids or ()),
         )
-        return len(rows)
+        return [dict(r) for r in rows]
 
     # ------------------------------------------------------------ projects & sessions
     async def create_project(
@@ -502,6 +506,15 @@ class Database:
         return await self.pool.fetchrow(
             "SELECT * FROM stage_plans WHERE project_id=$1 AND phase=$2", project_id, phase
         )
+
+    async def set_stage_plan_sig(self, project_id: str, phase: int, sig: str | None) -> None:
+        """Remember the input signature the plan was last built for; a later difference means
+        the plan is stale and must be reviewed again before generating."""
+        assert self.pool
+        await self.pool.execute(
+            """INSERT INTO stage_plans (project_id, phase, plan_sig) VALUES ($1,$2,$3)
+               ON CONFLICT (project_id, phase) DO UPDATE SET plan_sig=EXCLUDED.plan_sig""",
+            project_id, phase, sig)
 
     async def upsert_stage_plan(
         self, *, project_id: str, phase: int, prompt_overlay: str,
@@ -855,28 +868,71 @@ class Database:
     # ---- per-artifact generation parts (D-107 step 2) -------------------------
     async def upsert_generation_part(
         self, *, project_id: str, phase: int, field: str, status: str,
-        error: str | None, value_json: str | None,
+        error: str | None, value_json: str | None, partial_text: str | None = None,
     ) -> None:
         assert self.pool
         await self.pool.execute(
             """
-            INSERT INTO generation_parts (project_id, phase, field, status, error, value_json, updated_at)
-            VALUES ($1,$2,$3,$4,$5,$6, now())
+            INSERT INTO generation_parts (project_id, phase, field, status, error, value_json, partial_text, updated_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7, now())
             ON CONFLICT (project_id, phase, field) DO UPDATE
-              SET status=EXCLUDED.status, error=EXCLUDED.error,
-                  value_json=EXCLUDED.value_json, updated_at=now()
+              SET status=EXCLUDED.status, error=EXCLUDED.error, value_json=EXCLUDED.value_json,
+                  partial_text=EXCLUDED.partial_text, updated_at=now()
             """,
-            project_id, phase, field, status, (error or None), value_json,
+            project_id, phase, field, status, (error or None), value_json, partial_text,
         )
 
     async def list_generation_parts(self, project_id: str, phase: int) -> list[dict]:
         assert self.pool
         rows = await self.pool.fetch(
-            "SELECT field, status, error, value_json, updated_at FROM generation_parts "
-            "WHERE project_id=$1 AND phase=$2 ORDER BY field",
+            "SELECT field, status, error, value_json, partial_text, updated_at FROM generation_parts "
+            "WHERE project_id=$1 AND phase=$2 ORDER BY updated_at, field",
             project_id, phase,
         )
         return [dict(r) for r in rows]
+
+    async def clear_generation_parts(self, project_id: str, phase: int) -> None:
+        """A fresh full run starts from a clean slate (a resume or retrigger does not)."""
+        assert self.pool
+        await self.pool.execute(
+            "DELETE FROM generation_parts WHERE project_id=$1 AND phase=$2", project_id, phase,
+        )
+
+    # ---- project traits: AI judgement + human overrides ("LLM decides, code enforces") ----
+    async def get_stage_traits(self, project_id: str, phase: int) -> dict | None:
+        assert self.pool
+        row = await self.pool.fetchrow(
+            "SELECT sig, traits_json FROM stage_traits WHERE project_id=$1 AND phase=$2", project_id, phase)
+        return dict(row) if row else None
+
+    async def upsert_stage_traits(self, project_id: str, phase: int, sig: str, traits_json: str) -> None:
+        assert self.pool
+        await self.pool.execute(
+            """INSERT INTO stage_traits (project_id, phase, sig, traits_json, updated_at)
+               VALUES ($1,$2,$3,$4, now())
+               ON CONFLICT (project_id, phase) DO UPDATE
+                 SET sig=EXCLUDED.sig, traits_json=EXCLUDED.traits_json, updated_at=now()""",
+            project_id, phase, sig, traits_json)
+
+    async def get_trait_overrides(self, project_id: str) -> dict[str, str]:
+        assert self.pool
+        rows = await self.pool.fetch(
+            "SELECT trait, value FROM project_trait_overrides WHERE project_id=$1", project_id)
+        return {r["trait"]: r["value"] for r in rows}
+
+    async def set_trait_override(self, project_id: str, trait: str, value: str | None, by: str | None) -> None:
+        """value None clears the override (back to the AI's judgement)."""
+        assert self.pool
+        if value is None:
+            await self.pool.execute(
+                "DELETE FROM project_trait_overrides WHERE project_id=$1 AND trait=$2", project_id, trait)
+            return
+        await self.pool.execute(
+            """INSERT INTO project_trait_overrides (project_id, trait, value, updated_by, updated_at)
+               VALUES ($1,$2,$3,$4, now())
+               ON CONFLICT (project_id, trait) DO UPDATE
+                 SET value=EXCLUDED.value, updated_by=EXCLUDED.updated_by, updated_at=now()""",
+            project_id, trait, value, by)
 
     async def obs_summary(self, days: int) -> dict:
         assert self.pool

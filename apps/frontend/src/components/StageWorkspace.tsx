@@ -2,6 +2,16 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { api, streamStageProgress } from '../api/client';
+import { PartTabs } from './PartTabs';
+import { StageDocument } from './StageDocument';
+import { Icon, type IconName } from './ui/Icon';
+import { Callout } from './ui/Callout';
+import { Badge, StatusBadge } from './ui/Badge';
+import { Button } from './ui/Button';
+import { SectionLabel } from './ui/Card';
+import { Stepper } from './ui/Stepper';
+import { deriveGuide } from '../lib/stageGuide';
+import { useStickToBottom } from '../hooks/useStickToBottom';
 import type { ProjectFlow } from '../api/flow';
 import type { ChatMessage, PhaseStateView, User } from '../api/types';
 import { useApp, type ActivityItem } from '../store';
@@ -9,16 +19,19 @@ import ArtifactViewer from './ArtifactViewer';
 import FeedbackPanel from './FeedbackPanel';
 import GatePanel from './GatePanel';
 
-const STATUS_META: Record<string, { label: string; cls: string; icon: string }> = {
-  NOT_STARTED: { label: 'Not started', cls: 'bg-slate-100 text-slate-600', icon: '○' },
-  IN_PROGRESS: { label: 'Generating', cls: 'bg-blue-100 text-blue-700', icon: '◐' },
-  PENDING_REVIEW: { label: 'Awaiting review', cls: 'bg-amber-100 text-amber-700', icon: '⏸' },
-  APPROVED: { label: 'Approved', cls: 'bg-emerald-100 text-emerald-700', icon: '✓' },
-  AMEND_REQUESTED: { label: 'Changes requested', cls: 'bg-orange-100 text-orange-700', icon: '↺' },
-  ESCALATED: { label: 'Escalated', cls: 'bg-red-100 text-red-700', icon: '⚠' },
+
+/** Plain-language names + icons for the AI-judged project traits. */
+const TRAIT_META: Record<string, { label: string; icon: IconName; hint: string }> = {
+  ui: { label: 'User interface', icon: 'monitor', hint: 'Has screens users interact with' },
+  api: { label: 'API', icon: 'code', hint: 'Exposes or consumes an API' },
+  database: { label: 'Database', icon: 'database', hint: 'Stores data in a database' },
+  cloud: { label: 'Cloud', icon: 'cloud', hint: 'Runs on a cloud platform' },
+  aws: { label: 'AWS', icon: 'cloud', hint: 'Targets Amazon Web Services' },
+  container: { label: 'Containers', icon: 'box', hint: 'Ships as containers (Docker / Kubernetes)' },
+  service: { label: 'Runs as a service', icon: 'server', hint: 'A long-running service that can be load- or security-tested' },
 };
 
-const ACTIVITY_ICON: Record<ActivityItem['kind'], string> = { node: '⚙️', tool: '🔌', artifact: '📄', gate: '⛔' };
+const ACTIVITY_ICON: Record<ActivityItem['kind'], IconName> = { node: 'sparkles', tool: 'zap', artifact: 'file', gate: 'shield' };
 
 // D-112: compact, locale-aware timestamp for the discussion history.
 function fmtTime(iso: string): string {
@@ -51,9 +64,14 @@ interface StagePlan {
     rationale?: string;
   }> | null;
   // Intelligent, context-aware plan (D-105); null when disabled/unavailable.
+  // AI-judged project traits (code enforces them); a project lead can override each.
+  planState?: PlanState;
+  traits?: Array<{ trait: string; value: boolean | null; source: string; evidence: string; confidence: number }>;
   intel?: {
     understood: string;
     willProduce: Array<{ output: string; recommended: boolean; include: boolean; reason: string }>;
+    suggestedArtifacts?: Array<{ name: string; reason: string; include: boolean }>;
+    promptChecks?: string[];
     formatSource: string;
     outOfScope: string[];
     recommendation: string;
@@ -95,6 +113,12 @@ function isRunnable(stage: ProjectFlow['stages'][number], byKey: Map<string, Pro
  * the produced output files, and the stage's own conversation thread. Upstream
  * navigation is the Pipeline Rail; prev/next moves along the pipeline here.
  */
+/** Server-side plan lifecycle (shared by every tab/session of the project). */
+type PlanState = {
+  building: boolean; ready: boolean; planned: boolean; stale: boolean; fresh: boolean;
+  generating: boolean; locked: boolean;
+};
+
 export default function StageWorkspace({
   projectId,
   flow,
@@ -115,7 +139,7 @@ export default function StageWorkspace({
   artefacts: Array<{ id: string; phase: number; type: string; title: string; url: string | null }>;
 }) {
   const qc = useQueryClient();
-  const { streaming, activity, liveResponse, liveDocument, liveDocTitle, docStreaming, beginStream, pushEvent, endStream } = useApp();
+  const { streaming, activity, liveResponse, liveParts, beginStream, pushEvent, endStream } = useApp();
   const [prompt, setPrompt] = useState('');
   const [viewArtefactId, setViewArtefactId] = useState<string | null>(null);
   const [refIds, setRefIds] = useState<string[]>([]);
@@ -133,7 +157,11 @@ export default function StageWorkspace({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plan]);
+  // Planner-suggested artifacts that are NOT in the standard template (opt-in).
+  const [suggestSel, setSuggestSel] = useState<Record<string, boolean>>({});
+  useEffect(() => setSuggestSel({}), [plan?.intel?.suggestedArtifacts]);
   const [showSystemPrompt, setShowSystemPrompt] = useState(false);
+  const [docOpen, setDocOpen] = useState(false);
   // D-112 Phase C: a conversational thread for the plan. The agent's proposal and
   // the reviewer's free-form refinements render as chat turns; each refinement is
   // APPENDED to the overlay and re-plans, so the discussion actually steers the run.
@@ -187,12 +215,16 @@ export default function StageWorkspace({
   const partsQ = useQuery({
     queryKey: ['parts', projectId, selectedSeq],
     queryFn: () =>
-      api.get<{ parts: Array<{ field: string; status: string; error: string | null; updatedAt: string }> }>(
+      api.get<{ parts: Array<{ field: string; status: 'running' | 'done' | 'failed'; error: string | null; text: string; updatedAt: string }> }>(
         `/api/projects/${projectId}/phase/${selectedSeq}/parts`,
       ),
     enabled: Boolean(projectId),
   });
   const parts = partsQ.data?.parts ?? [];
+  // 'document' (single attached-format file) has no separate artifacts to pick from.
+  const regenerable = parts.filter((p) => p.field !== 'document' && p.status !== 'running');
+  const [picked, setPicked] = useState<string[]>([]);
+  useEffect(() => setPicked([]), [projectId, selectedSeq]);
 
   // D-108: pending interactive clarifying questions for this stage (answer cards).
   type ClarQ = NonNullable<StagePlan['clarification']>[number];
@@ -222,6 +254,43 @@ export default function StageWorkspace({
     setShowSystemPrompt(false);
   }, [selectedSeq]);
 
+  // The plan lives on the SERVER (building flag + cached result), not in this tab: opening
+  // the same project in another tab/session shows the same state — "Building plan…" while a
+  // plan is being built elsewhere, and the built plan (with the saved instructions) once ready.
+  useEffect(() => {
+    if (!selectedSeq) return;
+    let cancelled = false;
+    let markedBusy = false;
+    const base = `/api/projects/${projectId}/phase/${selectedSeq}/plan`;
+    (async () => {
+      try {
+        let st = await api.get<{ building: boolean; ready: boolean }>(`${base}/state`);
+        const wasBuilding = st.building;
+        if (st.building) {
+          markedBusy = true;
+          setPlanBusy(true);
+          while (!cancelled && st.building) {
+            await new Promise((r) => setTimeout(r, 2000));
+            st = await api.get<{ building: boolean; ready: boolean }>(`${base}/state`);
+          }
+        }
+        if (cancelled || (!st.ready && !wasBuilding)) return;
+        const p = await api.get<StagePlan>(`${base}?cached=true`);
+        if (cancelled) return;
+        setPlan(p);
+        const ov = p.overlay;
+        if (ov) {
+          setPrompt((cur) => cur || (ov.promptOverlay ?? '').split(/##\s*Production scope/)[0]!.trim());
+          setRefIds((cur) => (cur.length ? cur : ov.referencedArtifactIds ?? []));
+          setFormworkIds((cur) => (cur.length ? cur : ov.formworkIds ?? []));
+        }
+      } catch { /* no shared plan state — the normal Review plan flow applies */ }
+      finally { if (markedBusy && !cancelled) setPlanBusy(false); }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, selectedSeq]);
+
   /** Clear the compose box, pinned references/templates and the rendered plan —
    *  called after a stage runs so the fields don't retain the last submission. */
   function resetComposer() {
@@ -247,7 +316,6 @@ export default function StageWorkspace({
   const stage = stages.find((s) => s.phase === selectedSeq) ?? stages[0];
   const idx = stages.findIndex((s) => s.phase === stage?.phase);
   const runnable = stage ? isRunnable(stage, byKey) : false;
-  const meta = STATUS_META[stage?.status ?? 'NOT_STARTED'] ?? STATUS_META.NOT_STARTED!;
 
   const stageMessages = useMemo(
     () => messages.filter((m) => m.phase === selectedSeq),
@@ -255,9 +323,9 @@ export default function StageWorkspace({
   );
   const streamingHere = streaming && stage?.phase === flow.currentPhase;
 
-  useEffect(() => {
-    threadRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [stageMessages.length, activity.length, liveResponse]);
+  // Follow new output only while the user is already at the bottom — never yank them down
+  // while they are reading a tab/log higher up (this used to scroll on every streamed update).
+  useStickToBottom(threadRef, [stageMessages.length, activity.length, liveResponse]);
 
   if (!stage) return null;
 
@@ -289,6 +357,8 @@ export default function StageWorkspace({
     const lines: string[] = [];
     if (include.length) lines.push(`Produce ONLY these artifacts: ${include.join(', ')}.`);
     if (exclude.length) lines.push(`Do NOT produce: ${exclude.join(', ')}.`);
+    const extras = (intel.suggestedArtifacts ?? []).filter((x) => suggestSel[x.name]).map((x) => x.name);
+    if (extras.length) lines.push(`Also include (approved additions to the standard template): ${extras.join(', ')}.`);
     // D-112: the format is an explicit reviewer CHOICE, not inferred from prose. We emit
     // a deterministic machine token the backend switches on — ATTACHED_DOCUMENT (follow
     // the uploaded file's structure) or SYSTEM_DEFAULT (the stage's recommended template).
@@ -315,12 +385,22 @@ export default function StageWorkspace({
     return parts.join(' ') || (intel.summary ?? 'Plan ready.');
   };
 
+  // Pin a project trait (or clear it) — wins over the AI's judgement — then re-plan.
+  async function overrideTrait(trait: string, value: 'present' | 'absent' | null) {
+    try {
+      await api.put(`/api/projects/${projectId}/traits/${trait}`, { value });
+      await reviewPlan();
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : 'Could not change this setting');
+    }
+  }
+
   // D-56: save the overlay and (re-)render the full plan — "Review / Update plan".
   // D-112 Phase C: `append` folds a free-form refinement into the overlay (additive,
   // so earlier guidance is kept) and `logTurns` records the exchange in the thread.
   async function reviewPlan(e?: FormEvent, opts?: { append?: string; logTurns?: boolean; userMessage?: string }) {
     e?.preventDefault();
-    if (planBusy || streaming || promptError) return;
+    if (planBusy || locked || promptError) return;
     setPlanBusy(true);
     setMention({ open: false, query: '', at: 0 });
     const append = opts?.append?.trim();
@@ -359,7 +439,7 @@ export default function StageWorkspace({
   // to the overlay, and re-plans so the agent responds with an updated proposal.
   async function sendRefinement() {
     const text = refineText.trim();
-    if (!text || planBusy || streaming) return;
+    if (!text || planBusy || locked) return;
     setThread((t) => [...t, { role: 'you', text, ts: Date.now() }]);
     setRefineText('');
     await reviewPlan(undefined, { append: text, logTurns: true, userMessage: text });
@@ -378,7 +458,7 @@ export default function StageWorkspace({
   // executed by a background worker — decoupled from this request — so navigating
   // away never cancels it; the progress stream is just a viewer.
   async function triggerPlan() {
-    if (streaming || !plan?.canEdit) return;
+    if (streaming || !plan?.canEdit || !planFresh) return;
     // D-100: flip to the "Generating…" view SYNCHRONOUSLY, before the enqueue
     // round-trips, so the click is never a dead no-op. Without this the two awaits
     // below (save overlay + enqueue) leave the plan sitting unchanged for a beat,
@@ -416,17 +496,17 @@ export default function StageWorkspace({
     }
   }
 
-  // D-107 step 2: regenerate ONE failed part and merge it. Enqueues a run that
-  // regenerates only this part (reusing the cached rest), then watches progress.
-  async function retriggerPart(field: string) {
+  // Run a part-level generation job (retrigger one part, or regenerate a selection) and
+  // watch its progress. Only the chosen parts are regenerated; the rest are reused.
+  async function runPartsJob(label: string, url: string, body: unknown) {
     if (streaming) return;
     beginStream();
-    pushEvent({ type: 'node', node: 'queue', label: `Retriggering ${field}…` } as never);
+    pushEvent({ type: 'node', node: 'queue', label } as never);
     try {
-      await api.post(`/api/projects/${projectId}/phase/${selectedSeq}/parts/${encodeURIComponent(field)}/retrigger`, {});
+      await api.post(url, body);
     } catch (err) {
       endStream();
-      window.alert(err instanceof Error ? err.message : 'Could not retrigger this part');
+      window.alert(err instanceof Error ? err.message : 'Could not start generation');
       return;
     }
     try {
@@ -439,6 +519,23 @@ export default function StageWorkspace({
       void qc.invalidateQueries({ queryKey: ['project', projectId] });
       void qc.invalidateQueries({ queryKey: ['phase', projectId] });
     }
+  }
+
+  // D-107 step 2: regenerate ONE failed part and merge it.
+  const retriggerPart = (field: string) =>
+    runPartsJob(`Retriggering ${field}…`,
+      `/api/projects/${projectId}/phase/${selectedSeq}/parts/${encodeURIComponent(field)}/retrigger`, {});
+
+  // Regenerate chosen artifacts on demand (also after approval). Empty = all.
+  async function regenerateParts(fields: string[]) {
+    const all = fields.length === 0 || fields.length === regenerable.length;
+    const what = all ? 'ALL artifacts' : `${fields.length} selected artifact(s) (${fields.join(', ')})`;
+    const note = stage?.status === 'APPROVED'
+      ? ' This stage is approved: it returns to review and downstream stages are flagged stale.' : '';
+    if (!window.confirm(`Regenerate ${what} of this stage? The other artifacts are kept.${note}`)) return;
+    setPicked([]);
+    await runPartsJob(`Regenerating ${all ? 'all artifacts' : fields.join(', ')}…`,
+      `/api/projects/${projectId}/phase/${selectedSeq}/regenerate`, { fields: all ? [] : fields });
   }
 
   // D-108: submit answers to the clarifying questions, then generate.
@@ -589,101 +686,149 @@ export default function StageWorkspace({
     : promptTooShort
       ? 'Add a bit more detail — at least 12 characters — so the agent has something to work with.'
       : '';
-  const canReviewPlan = !planBusy && !streaming && !promptError;
+  // ---- plan lifecycle: draft → building → ready(fresh) ⇄ out-of-date → generating(locked) ----
+  // Server-owned (so every tab agrees); the local edit check just reacts instantly before the
+  // next poll. Generation needs a FRESH plan; while generating, editing/re-planning is locked.
+  const planStateQ = useQuery({
+    queryKey: ['planState', projectId, selectedSeq],
+    queryFn: () => api.get<PlanState>(`/api/projects/${projectId}/phase/${selectedSeq}/plan/state`),
+    enabled: Boolean(projectId && selectedSeq),
+    refetchInterval: 3000,
+  });
+  const ps: PlanState | undefined = planStateQ.data ?? plan?.planState;
+  const locked = streaming || Boolean(ps?.generating);
+  const sameIds = (a: string[], b: string[]) => a.length === b.length && [...a].sort().every((x, i) => x === [...b].sort()[i]);
+  const planBaseline = (plan?.overlay.promptOverlay ?? '').split(/##\s*Production scope/)[0]!.trim();
+  const localDirty = plan
+    ? prompt.trim() !== planBaseline
+      || !sameIds(refIds, plan.overlay.referencedArtifactIds ?? [])
+      || !sameIds(formworkIds, plan.overlay.formworkIds ?? [])
+    : false;
+  const planBuilding = planBusy || Boolean(ps?.building);
+  const planOutdated = Boolean(plan) && !planBuilding && !locked && (localDirty || Boolean(ps?.stale));
+  const planFresh = Boolean(plan) && !planBuilding && !locked && !localDirty && Boolean(ps?.fresh);
+  const canReviewPlan = !planBusy && !locked && !promptError;
+
+  // ---- guidance: the four-step journey + exactly what to do next, in plain words ----
+  const blockedNames = ['NOT_STARTED', 'AMEND_REQUESTED'].includes(stage.status)
+    ? stage.dependsOn.filter((d) => byKey.get(d)?.status !== 'APPROVED').map((d) => byKey.get(d)?.name ?? d)
+    : [];
+  const guide = deriveGuide({
+    stageStatus: stage.status, canEdit: plan?.canEdit ?? stage.canRetrigger, blockedOn: blockedNames,
+    hasPlan: Boolean(plan), planBuilding, planOutdated, planFresh, generating: locked,
+    hasOutputs: stageArtefacts.length > 0, reviewerRole: stage.reviewerRole, staleReason: stage.stale ? stage.staleReason : null,
+  });
+  const guideButton: { label: string; icon: IconName; run: () => void; disabled?: boolean } | null = (() => {
+    switch (guide.next.action) {
+      case 'review-plan': return { label: 'Review plan', icon: 'search', run: () => (promptError ? textareaRef.current?.focus() : void reviewPlan()), disabled: planBusy || locked };
+      case 'update-plan': return { label: 'Update plan', icon: 'refresh', run: () => void reviewPlan(), disabled: !canReviewPlan };
+      case 'generate': return { label: 'Generate', icon: 'play', run: () => void triggerPlan(), disabled: !planFresh || !plan?.canEdit };
+      case 'open-gate': return { label: 'Go to review', icon: 'arrow-right', run: () => document.getElementById('gate-review')?.scrollIntoView({ behavior: 'smooth', block: 'start' }) };
+      default: return null;
+    }
+  })();
 
   return (
     <div className="flex h-full flex-col bg-slate-50">
-      {/* ---- stage header + prev/next ---- */}
-      <div className="flex items-center gap-3 border-b border-slate-200 bg-white px-5 py-3">
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => stages[idx - 1] && onSelectStage(stages[idx - 1]!.phase)}
-            disabled={idx <= 0}
-            className="rounded px-1.5 py-1 text-slate-400 hover:bg-slate-100 disabled:opacity-30"
-            title="Previous stage"
-          >
-            ‹
-          </button>
-          <button
-            onClick={() => stages[idx + 1] && onSelectStage(stages[idx + 1]!.phase)}
-            disabled={idx >= stages.length - 1}
-            className="rounded px-1.5 py-1 text-slate-400 hover:bg-slate-100 disabled:opacity-30"
-            title="Next stage"
-          >
-            ›
-          </button>
+      {/* ---- stage header: where am I, what state is it in, who signs it off ---- */}
+      <div className="border-b border-slate-200 bg-white px-5 py-3">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center">
+            <button
+              onClick={() => stages[idx - 1] && onSelectStage(stages[idx - 1]!.phase)}
+              disabled={idx <= 0}
+              className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-30"
+              title="Previous stage" aria-label="Previous stage"
+            >
+              <Icon name="chevron-left" size={18} />
+            </button>
+            <button
+              onClick={() => stages[idx + 1] && onSelectStage(stages[idx + 1]!.phase)}
+              disabled={idx >= stages.length - 1}
+              className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-30"
+              title="Next stage" aria-label="Next stage"
+            >
+              <Icon name="chevron-right" size={18} />
+            </button>
+          </div>
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-600 text-sm font-bold text-white">
+            {stage.phase}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="truncate text-base font-bold text-slate-800">{stage.name}</h2>
+              <StatusBadge status={stage.status} />
+              {stage.stale && (
+                <Badge tone="warning" icon="warning" title={stage.staleReason ?? 'An upstream input changed'}>Outdated</Badge>
+              )}
+              {locked && <Badge tone="info" icon="lock" title="Editing is locked while this stage generates">Editing locked</Badge>}
+            </div>
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-slate-500">
+              <span className="inline-flex items-center gap-1" title="The AI agent that works on this stage"><Icon name="sparkles" size={12} />{stage.persona}</span>
+              <span className="inline-flex items-center gap-1" title="The role that signs off this stage"><Icon name="shield" size={12} />Sign-off: {stage.reviewerRole}</span>
+              <span className="inline-flex items-center gap-1"><Icon name="user" size={12} />{stage.assignee ? stage.assignee.displayName : 'Unassigned'}</span>
+              <span>Step {stage.level + 1} of {flow.levels?.length ?? 1}</span>
+            </div>
+          </div>
         </div>
-        <span className="flex h-8 w-8 items-center justify-center rounded-full bg-brand-600 text-sm font-bold text-white">
-          {stage.phase}
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="truncate text-sm font-bold text-slate-800">{stage.name}</span>
-            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${meta.cls}`}>
-              {meta.icon} {meta.label}
-            </span>
-            {stage.stale && (
-              <span className="rounded-full bg-bared-200 px-2 py-0.5 text-[10px] font-semibold text-bared-700" title={stage.staleReason ?? 'An upstream input changed'}>
-                ⚠ Outdated
-              </span>
+        {stage.outputs.length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500" aria-label="Inputs and outputs of this stage">
+            {stage.inputs.length > 0 && (
+              <>
+                <span className="inline-flex items-center gap-1"><Icon name="inbox" size={12} />Uses</span>
+                {stage.inputs.map((i) => <Badge key={i}>{i}</Badge>)}
+                <Icon name="arrow-right" size={12} className="text-slate-300" />
+              </>
             )}
+            <span className="inline-flex items-center gap-1"><Icon name="file" size={12} />Produces</span>
+            {stage.outputs.map((o) => <Badge key={o} tone="brand">{o}</Badge>)}
           </div>
-          <div className="truncate text-[11px] text-slate-500">
-            {stage.persona} · gate: {stage.reviewerRole}
-            {stage.assignee ? ` · ${stage.assignee.displayName}` : ' · unassigned'}
-            {' · '}Level {stage.level + 1} of {(flow.levels?.length ?? 1)}
-          </div>
-        </div>
-        <div className="hidden shrink-0 items-center gap-1 text-[10px] text-slate-400 md:flex">
-          <span className="rounded bg-slate-100 px-1.5 py-0.5">in: {stage.inputs.join(', ') || '—'}</span>
-          <span>→</span>
-          <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-700">out: {stage.outputs.join(', ') || '—'}</span>
-        </div>
+        )}
       </div>
 
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
-        {/* ---- stale / impact-propagation banner ---- */}
+        {/* ---- where you are + what to do next ---- */}
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm" data-testid="stage-guide">
+          <Stepper steps={guide.steps} />
+          <Callout
+            className="mt-4" tone={guide.next.tone} title={guide.next.title}
+            icon={guide.next.action === 'wait' ? 'loader' : undefined} spin={guide.next.action === 'wait'}
+            action={guideButton && (
+              <Button variant="primary" size="sm" icon={guideButton.icon} disabled={guideButton.disabled} onClick={guideButton.run}>
+                {guideButton.label}
+              </Button>
+            )}
+          >
+            {guide.next.body}
+          </Callout>
+        </div>
+
+        {/* ---- stale / impact-propagation: advice (yellow), never an error ---- */}
         {stage.stale && (
-          <section className="rounded-xl border border-bared-500/40 bg-bared-200/50 p-4">
-            <div className="flex items-start gap-3">
-              <span className="text-lg" aria-hidden>⚠</span>
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-semibold text-bared-700">This stage may be outdated</div>
-                <p className="mt-0.5 text-xs text-bared-700/90">
-                  {stage.staleReason ?? 'An upstream input was re-generated after this stage ran'}
-                  {stage.staleSource ? ` (stage ${stage.staleSource})` : ''}. Its outputs were produced from the
-                  previous version, so review or re-run this stage to bring it back in sync.
-                </p>
-                <div className="mt-2 flex items-center gap-2">
-                  {stage.canRetrigger && (
-                    <button
-                      type="button"
-                      onClick={() => retrigger.mutate(stage.phase)}
-                      disabled={retrigger.isPending}
-                      className="rounded-lg bg-bared-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-bared-700 disabled:opacity-50"
-                    >
-                      {retrigger.isPending ? 'Re-running…' : '↺ Re-run this stage'}
-                    </button>
-                  )}
-                  {stage.staleSource != null && (
-                    <button
-                      type="button"
-                      onClick={() => onSelectStage(stage.staleSource!)}
-                      className="rounded-lg border border-bared-500/40 px-3 py-1.5 text-xs font-semibold text-bared-700 hover:bg-bared-200"
-                    >
-                      View upstream change
-                    </button>
-                  )}
-                  <span className="text-[11px] text-bared-700/70">Approving this stage as-is also clears the flag.</span>
-                </div>
-                {retrigger.isError && (
-                  <div className="mt-1.5 text-[11px] text-bared-700">
-                    {retrigger.error instanceof Error ? retrigger.error.message : 'Re-run failed'}
-                  </div>
+          <Callout
+            tone="warning" title="This stage may be outdated"
+            action={
+              <div className="flex flex-wrap items-center gap-2">
+                {stage.canRetrigger && (
+                  <Button variant="warning" size="sm" icon="refresh" loading={retrigger.isPending} onClick={() => retrigger.mutate(stage.phase)}>
+                    {retrigger.isPending ? 'Re-running…' : 'Re-run this stage'}
+                  </Button>
+                )}
+                {stage.staleSource != null && (
+                  <Button variant="secondary" size="sm" onClick={() => onSelectStage(stage.staleSource!)}>View upstream change</Button>
                 )}
               </div>
-            </div>
-          </section>
+            }
+          >
+            {stage.staleReason ?? 'An upstream input was re-generated after this stage ran'}
+            {stage.staleSource ? ` (stage ${stage.staleSource})` : ''}. Its outputs were produced from the previous version — re-run
+            this stage to bring it back in sync, or approve it as-is to clear this notice.
+            {retrigger.isError && (
+              <div className="mt-1 font-medium text-red-700">
+                {retrigger.error instanceof Error ? retrigger.error.message : 'Re-run failed'}
+              </div>
+            )}
+          </Callout>
         )}
 
         {/* ---- interactive clarification (D-108/D-112): ONE question at a time
@@ -800,18 +945,22 @@ export default function StageWorkspace({
         {/* ---- compose & run ---- */}
         {runnable ? (
           <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="mb-2 flex items-center gap-2">
-              <span className="text-sm font-semibold text-slate-800">
-                {stage.status === 'AMEND_REQUESTED' ? '↺ Re-run with changes' : '▶ Review the plan, then run this stage'}
-              </span>
-              <span className="text-[11px] text-slate-400">
-                the {stage.persona} agent will generate {stage.outputs.join(', ')}
-              </span>
+            <div className="mb-3 flex items-start gap-3">
+              <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-600 text-xs font-bold text-white">1</span>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-sm font-semibold text-slate-800">
+                  {stage.status === 'AMEND_REQUESTED' ? 'Update your instructions' : 'Describe what you need'}
+                </h3>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  The {stage.persona} agent will produce: {stage.outputs.join(', ')}. A sentence or two is enough — you review a
+                  plan before anything is generated.
+                </p>
+              </div>
             </div>
             {stage.status === 'AMEND_REQUESTED' && (
-              <div className="mb-2 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-[11px] text-orange-800">
-                ↺ Changes were requested at gate review. The reviewer's feedback is pre-filled into the plan below — review it and trigger a fresh generation.
-              </div>
+              <Callout tone="warning" className="mb-3" title="Changes were requested at gate review" compact>
+                The reviewer’s feedback is pre-filled below. Adjust it, then review the plan and generate again.
+              </Callout>
             )}
             <form onSubmit={onReviewSubmit}>
               <div className="relative">
@@ -829,7 +978,7 @@ export default function StageWorkspace({
                   onKeyDown={(e) => {
                     if (e.key === 'Escape' && mention.open) setMention({ open: false, query: '', at: 0 });
                   }}
-                  disabled={streaming}
+                  disabled={locked}
                 />
                 {/* inline @ autosuggest (D-56) */}
                 {mention.open && mentionMatches.length > 0 && (
@@ -861,342 +1010,375 @@ export default function StageWorkspace({
               {/* ---- attach + selected-context chips (D-54/D-56) ---- */}
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => onAttach(e.target.files)} />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={uploading || streaming}
-                  className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:border-brand-400 hover:text-brand-700 disabled:opacity-40"
-                >
-                  {uploading ? 'Uploading…' : '📎 Attach files'}
-                </button>
-                <span className="text-[11px] text-slate-400">or type <span className="font-mono text-slate-500">@</span> to reference existing context</span>
+                <Button size="sm" icon="paperclip" loading={uploading} disabled={locked} onClick={() => fileInputRef.current?.click()}
+                  title="Attach a document the agent should read — or follow the format of">
+                  {uploading ? 'Uploading…' : 'Attach files'}
+                </Button>
+                <span className="text-xs text-slate-400">or type <kbd className="rounded bg-slate-100 px-1 font-mono text-slate-500">@</kbd> to reference earlier outputs and templates</span>
               </div>
 
               {(attachments.length > 0 || selectedRefChips.length > 0 || selectedTemplateChips.length > 0) && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {selectedRefChips.map((a) => (
                     <span key={`r-${a.id}`} className="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2 py-0.5 text-[11px] text-brand-700" title="Pinned prior output">
-                      📄 {a.title}
-                      <button type="button" onClick={() => setRefIds((p) => p.filter((id) => id !== a.id))} className="ml-0.5 text-brand-400 hover:text-red-600">✕</button>
+                      <Icon name="file" size={11} /> {a.title}
+                      <button type="button" aria-label={`Remove ${a.title}`} onClick={() => setRefIds((p) => p.filter((id) => id !== a.id))} className="ml-0.5 text-brand-400 hover:text-red-600"><Icon name="x" size={11} /></button>
                     </span>
                   ))}
                   {selectedTemplateChips.map((f) => (
                     <span key={`t-${f.id}`} className="inline-flex items-center gap-1 rounded-full bg-violet-50 px-2 py-0.5 text-[11px] text-violet-700" title="Template applied">
-                      📐 {f.name}
-                      <button type="button" onClick={() => setFormworkIds((p) => p.filter((id) => id !== f.id))} className="ml-0.5 text-violet-400 hover:text-red-600">✕</button>
+                      <Icon name="layers" size={11} /> {f.name}
+                      <button type="button" aria-label={`Remove ${f.name}`} onClick={() => setFormworkIds((p) => p.filter((id) => id !== f.id))} className="ml-0.5 text-violet-400 hover:text-red-600"><Icon name="x" size={11} /></button>
                     </span>
                   ))}
                   {attachments.map((a) => (
                     <span key={`a-${a.id}`} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600" title={a.isText ? 'Inlined into the prompt' : 'Binary — kept but not inlined'}>
-                      📎 {a.filename}{!a.isText && <span className="text-amber-600">(binary)</span>}
-                      <button type="button" onClick={() => removeAttachment(a.id)} className="ml-0.5 text-slate-400 hover:text-red-600">✕</button>
+                      <Icon name="paperclip" size={11} /> {a.filename}{!a.isText && <span className="text-amber-600">(binary)</span>}
+                      <button type="button" aria-label={`Remove ${a.filename}`} onClick={() => removeAttachment(a.id)} disabled={locked} className="ml-0.5 text-slate-400 hover:text-red-600 disabled:opacity-30"><Icon name="x" size={11} /></button>
                     </span>
                   ))}
                 </div>
               )}
 
               {promptError && (
-                <div className="mt-2 flex items-center gap-1.5 text-[11px] font-medium text-bared-600">
-                  <span aria-hidden>⚠</span> {promptError}
-                </div>
+                <Callout tone="error" compact className="mt-2">{promptError}</Callout>
               )}
-              <div className="mt-2 flex items-center gap-2">
-                <button
-                  disabled={!canReviewPlan}
-                  aria-disabled={!canReviewPlan}
-                  className="rounded-lg border border-brand-300 bg-brand-50 px-4 py-2 text-sm font-semibold text-brand-700 hover:bg-brand-100 disabled:cursor-not-allowed disabled:opacity-40"
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <Button
+                  type="submit" variant={plan ? 'secondary' : 'primary'} icon={plan ? 'refresh' : 'search'}
+                  loading={planBuilding} disabled={!canReviewPlan}
+                  title={locked ? 'Editing is locked while this stage generates' : undefined}
                 >
-                  {planBusy ? 'Building plan…' : plan ? '↻ Update plan' : '🔍 Review plan'}
-                </button>
-                <span className="text-[11px] text-slate-400">
-                  Nothing generates until you review the plan and trigger it. Upstream outputs are auto-included; @-references, templates &amp; attachments add curated context.
+                  {planBuilding ? 'Building plan…' : plan ? 'Update plan' : 'Review plan'}
+                </Button>
+                <span className="text-xs text-slate-400">
+                  Earlier stages’ approved outputs are included automatically. Nothing is generated yet.
                 </span>
               </div>
             </form>
 
-            {/* ---- Plan Review & Edit (D-56) ---- */}
+            {/* ---- Step 2 · Review the plan ---- */}
             {plan && (
-              <div className="mt-3 rounded-xl border border-brand-200 bg-brand-50/40 p-4">
-                <div className="mb-2 flex items-center gap-2">
-                  <span className="text-sm font-bold text-brand-800">Execution plan</span>
-                  <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-600">agent: {plan.agent.persona}</span>
-                  <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-600">model tier: {plan.agent.tier}</span>
-                  {plan.overlay.origin !== 'new' && (
-                    <span className="rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold text-orange-700">{plan.overlay.origin}</span>
-                  )}
-                  {plan.intel && (
-                    <span className="rounded-full bg-brand-100 px-2 py-0.5 text-[10px] font-semibold text-brand-700" title="Plan tailored to your input, stack, prior artifacts & config">
-                      ✨ AI-planned{plan.intel.cached ? ' · cached' : ''}
-                    </span>
-                  )}
+              <div className="mt-5 rounded-xl border border-brand-200 bg-white" id="plan-card">
+                <div className="flex flex-wrap items-start gap-3 rounded-t-xl border-b border-brand-100 bg-brand-50/60 px-4 py-3">
+                  <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-600 text-xs font-bold text-white">2</span>
+                  <div className="min-w-0 flex-1">
+                    <h3 className="text-sm font-semibold text-slate-800">Review the plan</h3>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      This is what the agent intends to make. Untick anything you don’t want, ask for changes, then generate.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {plan.intel && <Badge tone="brand" icon="sparkles" title="Plan tailored to your input, tech stack, earlier outputs and configuration">AI-planned{plan.intel.cached ? ' · cached' : ''}</Badge>}
+                    <Badge title="The AI agent that will do the work">Agent: {plan.agent.persona}</Badge>
+                    {plan.overlay.origin !== 'new' && <Badge tone="warning" icon="refresh">{plan.overlay.origin}</Badge>}
+                  </div>
                 </div>
 
-                {/* ---- Intent proposal: advise what's best, let the reviewer decide (D-112) ---- */}
-                {plan.intel && (plan.intel.understood || (plan.intel.willProduce?.length ?? 0) > 0) && (
-                  <div className="mb-3 rounded-lg border border-brand-300 bg-brand-50/50 p-3">
-                    {plan.intel.understood && (
-                      <div className="mb-2">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">What I understood</div>
-                        <p className="text-[12px] leading-snug text-slate-800">{plan.intel.understood}</p>
-                      </div>
-                    )}
-                    {(plan.intel.willProduce?.length ?? 0) > 0 && (
-                      <div className="mb-2">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                          I recommend producing <span className="normal-case text-slate-400">— tick what you want; untick to skip</span>
+                <div className="space-y-5 p-4">
+                  {/* ---- What I understood + which artifacts to make ---- */}
+                  {plan.intel && (plan.intel.understood || (plan.intel.willProduce?.length ?? 0) > 0) && (
+                    <>
+                      {plan.intel.understood && (
+                        <div>
+                          <SectionLabel icon="target">What I understood</SectionLabel>
+                          <p className="text-[13px] leading-snug text-slate-700">{plan.intel.understood}</p>
                         </div>
-                        <div className="mt-1 space-y-1">
-                          {plan.intel.willProduce.map((a) => (
-                            <label key={a.output} className="flex items-start gap-2 text-[12px] text-slate-700">
-                              <input
-                                type="checkbox"
-                                className="mt-0.5"
-                                checked={produceSel[a.output] ?? a.include ?? a.recommended}
-                                onChange={(e) => setProduceSel((p) => ({ ...p, [a.output]: e.target.checked }))}
-                              />
-                              <span>
-                                <span className="font-semibold">{a.output}</span>
-                                {a.recommended
-                                  ? <span className="ml-1 rounded bg-emerald-100 px-1 text-[9px] font-semibold text-emerald-700">recommended</span>
-                                  : <span className="ml-1 rounded bg-slate-100 px-1 text-[9px] text-slate-500">optional</span>}
-                                {a.reason && <span className="text-slate-500"> — {a.reason}</span>}
-                              </span>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {/* D-112: explicit output-format choice — System vs the attached file.
-                         The selection drives generation deterministically (no prose inference). */}
-                    <div className="mb-2">
-                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Output format — choose one</div>
-                      <div className="mt-1 space-y-1">
-                        <label className="flex items-start gap-2 text-[12px] text-slate-700">
-                          <input
-                            type="radio" name="formatMode" className="mt-0.5"
-                            checked={effectiveFormatMode === 'system'}
-                            onChange={() => setFormatMode('system')}
-                          />
-                          <span>
-                            <span className="font-semibold">⚙ System’s intelligent format</span>
-                            <span className="text-slate-500"> — the recommended template for this stage</span>
-                          </span>
-                        </label>
-                        <label className={`flex items-start gap-2 text-[12px] ${attachments.length ? 'text-slate-700' : 'text-slate-400'}`}>
-                          <input
-                            type="radio" name="formatMode" className="mt-0.5"
-                            disabled={!attachments.length}
-                            checked={effectiveFormatMode === 'attached'}
-                            onChange={() => setFormatMode('attached')}
-                          />
-                          <span>
-                            <span className="font-semibold">📎 Follow my attached document’s format</span>
-                            <span className="text-slate-500">
-                              {attachments.length
-                                ? ` — mirror ${attachments.map((a) => a.filename).join(', ')} exactly (no default template, no backlog)`
-                                : ' — attach a document above to enable'}
-                            </span>
-                          </span>
-                        </label>
-                      </div>
-                    </div>
-                    {plan.intel.recommendation && (
-                      <div className="mb-1 rounded bg-white px-2 py-1 text-[11px] text-brand-800"><span className="font-semibold">Advice:</span> {plan.intel.recommendation}</div>
-                    )}
-                    {(plan.intel.outOfScope?.length ?? 0) > 0 && (
-                      <div className="text-[11px] text-slate-500">
-                        <span className="font-semibold text-slate-600">Out of scope:</span> {plan.intel.outOfScope.join('; ')}
-                      </div>
-                    )}
-                    <div className="mt-1 text-[10px] text-slate-400">Your selection is applied when you trigger the stage.</div>
-                  </div>
-                )}
+                      )}
 
-                {/* ---- Discuss & refine (D-112 Phase C): a conversational thread. Reply
-                       free-form to adjust scope/format; each message re-plans so the agent
-                       responds with an updated proposal before you trigger. ---- */}
-                <div className="mb-3 rounded-lg border border-slate-200 bg-white p-3">
-                  <div className="mb-1.5 flex items-center gap-2">
-                    <span className="text-[11px] font-bold text-slate-700">💬 Discuss &amp; refine</span>
-                    <span className="text-[10px] text-slate-400">reply to adjust what’s produced or the format — then trigger when you’re happy</span>
-                  </div>
-                  {thread.length > 0 && (
-                    <div className="mb-2 max-h-56 space-y-1.5 overflow-auto pr-1">
-                      {thread.map((m, i) => (
-                        <div key={`${m.ts}-${i}`} className={`flex ${m.role === 'you' ? 'justify-end' : 'justify-start'}`}>
-                          <div
-                            className={
-                              'max-w-[85%] rounded-lg px-2.5 py-1.5 text-[12px] leading-snug ' +
-                              (m.role === 'you'
-                                ? 'bg-brand-600 text-white'
-                                : 'bg-slate-100 text-slate-800')
-                            }
-                          >
-                            <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-wide opacity-70">
-                              {m.role === 'you' ? 'You' : `${plan.agent.persona} agent`}
-                            </div>
-                            {m.text}
+                      {(plan.intel.willProduce?.length ?? 0) > 0 && (
+                        <div>
+                          <SectionLabel icon="tasks" hint={`${plan.intel.willProduce.filter((a) => produceSel[a.output] ?? a.include ?? a.recommended).length} of ${plan.intel.willProduce.length} selected — tick what you want, untick to skip`}>
+                            Artifacts to generate
+                          </SectionLabel>
+                          <div className="space-y-1.5">
+                            {plan.intel.willProduce.map((a) => {
+                              const on = produceSel[a.output] ?? a.include ?? a.recommended;
+                              return (
+                                <label key={a.output} className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 transition ${on ? 'border-brand-300 bg-brand-50/40' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
+                                  <input
+                                    type="checkbox" className="mt-1 h-4 w-4 accent-brand-600"
+                                    checked={on} disabled={locked}
+                                    onChange={(e) => setProduceSel((p) => ({ ...p, [a.output]: e.target.checked }))}
+                                  />
+                                  <span className="min-w-0 flex-1">
+                                    <span className="flex flex-wrap items-center gap-2">
+                                      <span className="text-[13px] font-semibold text-slate-800">{a.output}</span>
+                                      {a.recommended
+                                        ? <Badge tone="success" icon="check">Recommended</Badge>
+                                        : <Badge title="Not needed for this request, but you can still include it">Optional</Badge>}
+                                    </span>
+                                    {a.reason && <span className="mt-0.5 block text-xs text-slate-500">{a.reason}</span>}
+                                  </span>
+                                </label>
+                              );
+                            })}
                           </div>
                         </div>
-                      ))}
-                      <div ref={threadEndRef} />
-                    </div>
-                  )}
-                  <div className="flex items-end gap-2">
-                    <textarea
-                      className="min-h-[38px] w-full flex-1 resize-y rounded-lg border border-slate-300 p-2 text-[12px] focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-200"
-                      rows={1}
-                      placeholder="e.g. “drop the NFR section”, “follow my attached format exactly”, or “also add a sequence diagram”"
-                      value={refineText}
-                      onChange={(e) => setRefineText(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                          e.preventDefault();
-                          void sendRefinement();
-                        }
-                      }}
-                      disabled={planBusy || streaming}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => void sendRefinement()}
-                      disabled={planBusy || streaming || !refineText.trim()}
-                      className="shrink-0 rounded-lg border border-brand-300 bg-brand-50 px-3 py-2 text-[12px] font-semibold text-brand-700 hover:bg-brand-100 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      {planBusy ? '…' : 'Send'}
-                    </button>
-                  </div>
-                </div>
+                      )}
 
-                {/* ---- Intelligent, context-aware plan (D-105) ---- */}
-                {plan.intel && (
-                  <div className="mb-3 rounded-lg border border-brand-200 bg-white p-3">
-                    <p className="text-[12px] leading-snug text-slate-700">{plan.intel.summary}</p>
-                    {plan.intel.steps.length > 0 && (
-                      <ol className="mt-2 space-y-1">
-                        {plan.intel.steps.map((st, i) => (
-                          <li key={`${st.id}-${i}`} className="flex items-start gap-1.5 text-[11px] text-slate-600">
-                            <span className="mt-0.5 text-slate-400">{st.kind === 'gate' ? '⛔' : st.kind === 'tool' ? '🔌' : '🧠'}</span>
-                            <span>
-                              <span className="font-semibold text-slate-700">{st.label}</span>
-                              {st.tier && <span className="ml-1 rounded bg-slate-100 px-1 text-[9px] text-slate-500">{st.tier}</span>}
-                              {st.rationale && <span className="text-slate-500"> — {st.rationale}</span>}
+                      {(plan.intel.promptChecks?.length ?? 0) > 0 && (
+                        <Callout tone="advice" title="Left out — not applicable to this project">
+                          <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
+                            {plan.intel.promptChecks!.map((c) => <li key={c}>{c}</li>)}
+                          </ul>
+                          <span className="mt-1 block text-xs text-slate-500">These are not part of the plan, the prompt or the generation. If one is wrong, change the matching setting under “Project fit”.</span>
+                        </Callout>
+                      )}
+
+                      {(plan.intel.suggestedArtifacts?.length ?? 0) > 0 && (
+                        <div>
+                          <SectionLabel icon="advice" hint="not in the standard template — tick to add (written into the stage’s main document)">Suggested additions</SectionLabel>
+                          <div className="space-y-1.5">
+                            {plan.intel.suggestedArtifacts!.map((x) => (
+                              <label key={x.name} className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 transition ${suggestSel[x.name] ? 'border-amber-300 bg-amber-50' : 'border-slate-200 bg-white hover:border-amber-300'}`}>
+                                <input
+                                  type="checkbox" className="mt-1 h-4 w-4 accent-amber-500" disabled={locked}
+                                  checked={Boolean(suggestSel[x.name])}
+                                  onChange={(e) => setSuggestSel((p) => ({ ...p, [x.name]: e.target.checked }))}
+                                />
+                                <span className="min-w-0 flex-1">
+                                  <span className="text-[13px] font-semibold text-slate-800">{x.name}</span>
+                                  {x.reason && <span className="mt-0.5 block text-xs text-slate-500">{x.reason}</span>}
+                                </span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {(plan.traits?.filter((t) => !t.trait.startsWith('_')).length ?? 0) > 0 && (
+                        <div>
+                          <SectionLabel icon="layers" hint="what the AI judged about your project — only artifacts that apply are planned">Project fit</SectionLabel>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            {plan.traits!.filter((t) => !t.trait.startsWith('_')).map((t) => {
+                              const m = TRAIT_META[t.trait] ?? { label: t.trait, icon: 'circle' as IconName, hint: '' };
+                              return (
+                                <div key={t.trait} className="flex items-center gap-2.5 rounded-lg border border-slate-200 bg-white px-3 py-2" title={`${m.hint}. Evidence: ${t.evidence}`}>
+                                  <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${t.value === true ? 'bg-emerald-50 text-emerald-600' : t.value === false ? 'bg-slate-100 text-slate-400' : 'bg-amber-50 text-amber-600'}`}>
+                                    <Icon name={m.icon} size={15} />
+                                  </span>
+                                  <span className="min-w-0 flex-1">
+                                    <span className="flex flex-wrap items-center gap-1.5 text-xs">
+                                      <span className="font-semibold text-slate-800">{m.label}</span>
+                                      <span className={t.value === true ? 'font-medium text-emerald-700' : t.value === false ? 'text-slate-500' : 'font-medium text-amber-700'}>
+                                        {t.value === true ? 'Yes' : t.value === false ? 'No' : 'Not sure'}
+                                      </span>
+                                      <Badge tone={t.source === 'override' ? 'brand' : 'neutral'}>
+                                        {t.source === 'ai' ? `AI ${Math.round(t.confidence * 100)}%` : t.source === 'override' ? 'Set by you' : t.source === 'derived' ? 'Derived' : 'Rules'}
+                                      </Badge>
+                                    </span>
+                                    <span className="block truncate text-[11px] text-slate-400">{t.evidence}</span>
+                                  </span>
+                                  <select
+                                    aria-label={`Override ${m.label}`} disabled={planBusy || locked}
+                                    value={t.source === 'override' ? (t.value ? 'present' : 'absent') : ''}
+                                    onChange={(e) => overrideTrait(t.trait, (e.target.value || null) as 'present' | 'absent' | null)}
+                                    className="rounded-md border border-slate-300 bg-white px-1.5 py-1 text-xs text-slate-600 focus:border-brand-400 focus:outline-none"
+                                    title="Auto = let the AI decide. Choose Yes/No to override it."
+                                  >
+                                    <option value="">Auto</option>
+                                    <option value="present">Yes</option>
+                                    <option value="absent">No</option>
+                                  </select>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Output format — an explicit choice (no prose inference) */}
+                      <div>
+                        <SectionLabel icon="file" hint="choose one">Output format</SectionLabel>
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <label className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 ${effectiveFormatMode === 'system' ? 'border-brand-300 bg-brand-50/40' : 'border-slate-200 hover:border-slate-300'}`}>
+                            <input type="radio" name="formatMode" className="mt-1 h-4 w-4 accent-brand-600" disabled={locked} checked={effectiveFormatMode === 'system'} onChange={() => setFormatMode('system')} />
+                            <span className="text-xs">
+                              <span className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-800"><Icon name="sparkles" size={13} />System’s recommended format</span>
+                              <span className="text-slate-500">The standard template for this stage.</span>
                             </span>
-                          </li>
-                        ))}
-                      </ol>
-                    )}
-                    {plan.intel.toolRecommendations.length > 0 && (
-                      <div className="mt-2">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Tool decisions</div>
-                        <div className="mt-1 flex flex-col gap-0.5">
-                          {plan.intel.toolRecommendations.map((t) => (
-                            <div key={t.tool} className="text-[11px]">
-                              <span className={t.use ? 'text-emerald-700' : 'text-slate-400'}>{t.use ? '✓' : '✕'} <span className="font-mono">{t.tool}</span></span>
-                              <span className="text-slate-500"> — {t.rationale}</span>
-                            </div>
-                          ))}
+                          </label>
+                          <label className={`flex items-start gap-3 rounded-lg border px-3 py-2 ${attachments.length ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'} ${effectiveFormatMode === 'attached' ? 'border-brand-300 bg-brand-50/40' : 'border-slate-200 hover:border-slate-300'}`}>
+                            <input type="radio" name="formatMode" className="mt-1 h-4 w-4 accent-brand-600" disabled={!attachments.length || locked} checked={effectiveFormatMode === 'attached'} onChange={() => setFormatMode('attached')} />
+                            <span className="text-xs">
+                              <span className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-800"><Icon name="paperclip" size={13} />Follow my attached document</span>
+                              <span className="text-slate-500">
+                                {attachments.length ? `Mirror ${attachments.map((a) => a.filename).join(', ')} exactly.` : 'Attach a document above to enable this.'}
+                              </span>
+                            </span>
+                          </label>
                         </div>
                       </div>
+
+                      {plan.intel.recommendation && (
+                        <Callout tone="advice" title="Advice">{plan.intel.recommendation}</Callout>
+                      )}
+                      {(plan.intel.outOfScope?.length ?? 0) > 0 && (
+                        <p className="text-xs text-slate-500"><span className="font-semibold text-slate-600">Not covered here:</span> {plan.intel.outOfScope.join('; ')}</p>
+                      )}
+                    </>
+                  )}
+
+                  {/* ---- Ask for changes: a conversation that re-plans ---- */}
+                  <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+                    <SectionLabel icon="message" hint="reply in plain words — the plan updates">Ask for changes</SectionLabel>
+                    {thread.length > 0 && (
+                      <div className="mb-2 max-h-56 space-y-1.5 overflow-auto pr-1">
+                        {thread.map((m, i) => (
+                          <div key={`${m.ts}-${i}`} className={`flex ${m.role === 'you' ? 'justify-end' : 'justify-start'}`}>
+                            <div className={'max-w-[85%] rounded-lg px-3 py-2 text-[13px] leading-snug ' + (m.role === 'you' ? 'bg-brand-600 text-white' : 'border border-slate-200 bg-white text-slate-800')}>
+                              <div className="mb-0.5 text-[11px] font-semibold opacity-70">{m.role === 'you' ? 'You' : `${plan.agent.persona} agent`}</div>
+                              {m.text}
+                            </div>
+                          </div>
+                        ))}
+                        <div ref={threadEndRef} />
+                      </div>
                     )}
-                    {(plan.intel.assumptions.length > 0 || plan.intel.risks.length > 0) && (
-                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    <div className="flex items-end gap-2">
+                      <textarea
+                        className="min-h-[40px] w-full flex-1 resize-y rounded-lg border border-slate-300 bg-white p-2 text-[13px] focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-200 disabled:bg-slate-100"
+                        rows={1}
+                        placeholder="e.g. “drop the NFR section”, “follow my attached format exactly”, “also add a sequence diagram”"
+                        value={refineText}
+                        onChange={(e) => setRefineText(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void sendRefinement(); } }}
+                        disabled={planBusy || locked}
+                      />
+                      <Button variant="primary" icon="send" loading={planBusy} disabled={locked || !refineText.trim()} onClick={() => void sendRefinement()}>
+                        Send
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* ---- Technical details: collapsed by default (progressive disclosure) ---- */}
+                  {plan.intel && (
+                    <details className="group rounded-lg border border-slate-200">
+                      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50">
+                        <Icon name="chevron-right" size={14} className="transition group-open:rotate-90" />
+                        <Icon name="sliders" size={14} className="text-slate-400" />
+                        Technical details
+                        <span className="font-normal text-slate-400">— model steps, tools, context, risks, system prompt</span>
+                      </summary>
+                      <div className="space-y-3 border-t border-slate-100 px-3 py-3">
+                        {plan.intel.summary && <p className="text-[13px] leading-snug text-slate-700">{plan.intel.summary}</p>}
+                        {plan.intel.steps.length > 0 && (
+                          <ol className="space-y-1.5">
+                            {plan.intel.steps.map((st, i) => (
+                              <li key={`${st.id}-${i}`} className="flex items-start gap-2 text-xs text-slate-600">
+                                <Icon name={st.kind === 'gate' ? 'shield' : st.kind === 'tool' ? 'zap' : 'sparkles'} size={13} className="mt-0.5 text-slate-400" />
+                                <span>
+                                  <span className="font-semibold text-slate-700">{st.label}</span>
+                                  {st.tier && <span className="ml-1.5"><Badge>{st.tier}</Badge></span>}
+                                  {st.rationale && <span className="text-slate-500"> — {st.rationale}</span>}
+                                </span>
+                              </li>
+                            ))}
+                          </ol>
+                        )}
+                        {plan.intel.toolRecommendations.length > 0 && (
+                          <div>
+                            <SectionLabel icon="zap">Tools</SectionLabel>
+                            <div className="space-y-0.5">
+                              {plan.intel.toolRecommendations.map((t) => (
+                                <div key={t.tool} className="flex items-start gap-1.5 text-xs">
+                                  <Icon name={t.use ? 'check' : 'minus'} size={13} className={`mt-0.5 ${t.use ? 'text-emerald-600' : 'text-slate-400'}`} />
+                                  <span><span className="font-mono text-slate-700">{t.tool}</span><span className="text-slate-500"> — {t.rationale}</span></span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                         {plan.intel.assumptions.length > 0 && (
                           <div>
-                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Assumptions</div>
-                            <ul className="mt-0.5 list-disc pl-4 text-[11px] text-slate-600">
-                              {plan.intel.assumptions.map((a, i) => <li key={i}>{a}</li>)}
-                            </ul>
+                            <SectionLabel icon="info">Assumptions</SectionLabel>
+                            <ul className="list-disc space-y-0.5 pl-5 text-xs text-slate-600">{plan.intel.assumptions.map((a, i) => <li key={i}>{a}</li>)}</ul>
                           </div>
                         )}
                         {plan.intel.risks.length > 0 && (
+                          <Callout tone="warning" compact title="Risks to review">
+                            <ul className="list-disc space-y-0.5 pl-4">{plan.intel.risks.map((r, i) => <li key={i}>{r}</li>)}</ul>
+                          </Callout>
+                        )}
+                        <div className="grid gap-3 md:grid-cols-2">
                           <div>
-                            <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">Risks to review</div>
-                            <ul className="mt-0.5 list-disc pl-4 text-[11px] text-amber-800">
-                              {plan.intel.risks.map((r, i) => <li key={i}>{r}</li>)}
+                            <SectionLabel icon="sparkles">Skills &amp; tools</SectionLabel>
+                            <div className="flex flex-wrap gap-1">
+                              {plan.skills.map((s) => <Badge key={s.id}>{s.name} · {s.tier}</Badge>)}
+                              {plan.expectedTools.map((t) => <Badge key={t} icon="zap">{t}</Badge>)}
+                              {!plan.skills.length && !plan.expectedTools.length && <span className="text-xs text-slate-400">None</span>}
+                            </div>
+                          </div>
+                          <div>
+                            <SectionLabel icon="layers">Context the agent will use</SectionLabel>
+                            <ul className="space-y-0.5 text-xs text-slate-600">
+                              <li>{plan.context.priorArtifacts.length} earlier output(s), included automatically</li>
+                              <li>Canon rules: {plan.context.canonApplied ? 'applied' : 'none'}</li>
+                              <li>{plan.context.formworks.length} template(s) · {plan.context.ragSnippets} knowledge snippet(s)</li>
+                              <li>{plan.context.attachments.length} attachment(s) · {plan.context.curatedInjectedChars} chars of curated context</li>
                             </ul>
+                          </div>
+                        </div>
+                        <Button size="sm" icon={showSystemPrompt ? 'chevron-down' : 'chevron-right'} onClick={() => setShowSystemPrompt((v) => !v)}>
+                          {showSystemPrompt ? 'Hide the system prompt' : 'View the system prompt'}
+                        </Button>
+                        {showSystemPrompt && (
+                          <div className="max-h-72 overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-3">
+                            <div className="text-xs font-semibold text-slate-500">System prompt (read-only)</div>
+                            <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-slate-700">{plan.prompt.system}</pre>
+                            <div className="mt-2 text-xs font-semibold text-slate-500">User turn</div>
+                            <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-slate-700">{plan.prompt.user}</pre>
                           </div>
                         )}
                       </div>
-                    )}
-                  </div>
-                )}
+                    </details>
+                  )}
 
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div>
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Skills</div>
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {plan.skills.length ? plan.skills.map((s) => (
-                        <span key={s.id} className="rounded bg-white px-1.5 py-0.5 text-[11px] text-slate-600">{s.name} · {s.tier}</span>
-                      )) : <span className="text-[11px] text-slate-400">—</span>}
-                    </div>
-                    <div className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Expected tools</div>
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {plan.expectedTools.length ? plan.expectedTools.map((t) => (
-                        <span key={t} className="rounded bg-white px-1.5 py-0.5 text-[11px] text-slate-600">🔌 {t}</span>
-                      )) : <span className="text-[11px] text-slate-400">—</span>}
-                    </div>
+                  {/* ---- Step 3 · Generate ---- */}
+                  <div className="flex flex-wrap items-center gap-3 border-t border-slate-100 pt-4">
+                    <Button
+                      variant="primary" icon="play" loading={locked}
+                      disabled={locked || !plan.canEdit || !planFresh}
+                      onClick={triggerPlan}
+                      title={!plan.canEdit ? 'You need write permission to generate this stage'
+                        : locked ? 'Generation is in progress'
+                        : !planFresh ? 'Update the plan first — generation uses only a final, up-to-date plan'
+                        : 'Generate this stage using the reviewed plan'}
+                    >
+                      {locked ? 'Generating…' : 'Generate'}
+                    </Button>
+                    <span className="min-w-0 flex-1 text-xs text-slate-500">
+                      {!plan.canEdit
+                        ? <span className="text-red-700">You need write access ({plan.stage.writeRoles.join(', ')}) to generate this stage.</span>
+                        : planOutdated
+                          ? <span className="font-medium text-amber-800">You changed something — click “Update plan” first so the result matches.</span>
+                          : planFresh
+                            ? <>Afterwards the {plan.stage.reviewerRole} reviews and approves it before the next stage starts.</>
+                            : 'Review the plan first.'}
+                    </span>
                   </div>
-                  <div>
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Context the agent will use</div>
-                    <ul className="mt-1 space-y-0.5 text-[11px] text-slate-600">
-                      <li>📄 {plan.context.priorArtifacts.length} prior-stage artifact(s) (auto-included)</li>
-                      <li>📖 Canon rules: {plan.context.canonApplied ? 'applied' : 'none'}</li>
-                      <li>📐 {plan.context.formworks.length} template(s) available · 🔎 {plan.context.ragSnippets} RAG snippet(s)</li>
-                      <li>📎 {plan.context.attachments.length} attachment(s) · ✚ {plan.context.curatedInjectedChars} chars curated context injected</li>
-                    </ul>
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setShowSystemPrompt((v) => !v)}
-                  className="mt-3 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-600 hover:bg-white"
-                >
-                  {showSystemPrompt ? '▾ Hide system-generated prompt' : '▸ View system-generated prompt'}
-                </button>
-                {showSystemPrompt && (
-                  <div className="mt-2 max-h-72 overflow-auto rounded-lg border border-slate-200 bg-white p-3">
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">System prompt (read-only)</div>
-                    <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[10.5px] leading-snug text-slate-700">{plan.prompt.system}</pre>
-                    <div className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">User turn</div>
-                    <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[10.5px] leading-snug text-slate-700">{plan.prompt.user}</pre>
-                  </div>
-                )}
-
-                <div className="mt-3 flex items-center gap-2 border-t border-brand-200 pt-3">
-                  <button
-                    type="button"
-                    onClick={triggerPlan}
-                    disabled={streaming || !plan.canEdit}
-                    className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-40"
-                    title={plan.canEdit ? 'Run this stage using the reviewed plan' : 'You need write permission to trigger this stage'}
-                  >
-                    {streaming ? 'Agents working…' : '▶ Trigger generation'}
-                  </button>
-                  <span className="text-[11px] text-slate-400">
-                    {plan.canEdit ? 'Edit the instructions/context above, press "Update plan" to re-render, then trigger.' : `Requires write permission (${plan.stage.writeRoles.join(', ')}).`}
-                    {' '}After generation it goes to {plan.stage.reviewerRole} gate review — no advance until approved.
-                  </span>
                 </div>
               </div>
             )}
           </section>
         ) : blockedReason.length > 0 ? (
-          <section className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-500">
-            🔒 This stage runs once its upstream gate{blockedReason.length > 1 ? 's are' : ' is'} approved:{' '}
-            <span className="font-medium text-slate-700">{blockedReason.join(', ')}</span>.
-          </section>
+          <Callout tone="warning" icon="lock" title="This stage is waiting for an earlier one">
+            It runs once the upstream gate{blockedReason.length > 1 ? 's are' : ' is'} approved:{' '}
+            <span className="font-semibold">{blockedReason.join(', ')}</span>.
+          </Callout>
         ) : null}
 
         {/* ---- live generation ---- */}
         {streamingHere && (
           <section className="rounded-xl border border-blue-200 bg-blue-50/60 p-4">
-            <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-blue-700">Generating…</div>
+            <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-blue-800">
+              <Icon name="loader" size={16} spin /> Generating — you can leave this page, it keeps running and your files are saved
+            </div>
             <div className="space-y-0.5">
               {activity.map((a) => (
                 <div key={a.id} className="flex items-center gap-1.5 text-xs text-slate-600">
-                  <span>{ACTIVITY_ICON[a.kind]}</span>
+                  <Icon name={ACTIVITY_ICON[a.kind]} size={13} className="text-slate-400" />
                   <span className={a.status === 'error' ? 'text-red-600' : a.kind === 'artifact' ? 'text-emerald-700' : ''}>
                     {a.label}
                   </span>
@@ -1208,32 +1390,23 @@ export default function StageWorkspace({
                 </div>
               )}
             </div>
-            {/* D-112: the artifact being written live, token-by-token */}
-            {liveDocument && (
-              <div className="mt-3 rounded-lg border border-blue-200 bg-white">
-                <div className="flex items-center justify-between border-b border-blue-100 px-3 py-1.5">
-                  <span className="text-[11px] font-semibold text-blue-800">
-                    ✍ {liveDocTitle || 'Document'} {docStreaming && <span className="text-blue-400">· writing…</span>}
-                  </span>
-                  <span className="text-[10px] text-slate-400">{liveDocument.length.toLocaleString()} chars</span>
-                </div>
-                <div className="prose-chat max-h-96 overflow-auto px-3 py-2 text-[13px] text-slate-800">
-                  <ReactMarkdown>{liveDocument}</ReactMarkdown>
-                  {docStreaming && <span className="inline-block h-3 w-1.5 animate-pulse bg-blue-500 align-middle" />}
-                </div>
-              </div>
+            {/* Every file being generated, one tab each (parallel per-artifact generation) */}
+            {liveParts.length > 0 && (
+              <div className="mt-3"><PartTabs parts={liveParts} /></div>
             )}
           </section>
         )}
 
         {/* ---- gate review ---- */}
         {pendingGate && pendingGate.phase === selectedSeq && (
-          <GatePanel
-            projectId={projectId}
-            pending={pendingGate}
-            artefacts={artefacts as never}
-            user={user}
-          />
+          <div id="gate-review" className="scroll-mt-4">
+            <GatePanel
+              projectId={projectId}
+              pending={pendingGate}
+              artefacts={artefacts as never}
+              user={user}
+            />
+          </div>
         )}
 
         {/* ---- quality signals & feedback (D-57) ---- */}
@@ -1253,34 +1426,68 @@ export default function StageWorkspace({
         {/* ---- generation parts (D-107 step 2): per-part ✓/✗ + retrigger ---- */}
         {parts.length > 0 && (
           <section>
-            <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
-              Generation parts ({parts.filter((p) => p.status === 'done').length}/{parts.length})
-              {parts.some((p) => p.status === 'failed') && (
-                <span className="ml-2 rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-semibold text-red-600">
-                  {parts.filter((p) => p.status === 'failed').length} failed
-                </span>
-              )}
-            </div>
+            {/* Files survive navigating away, closing the browser and orchestrator restarts */}
+            {!streamingHere && parts.some((p) => p.text) && (
+              <div className="mb-3"><PartTabs
+                  parts={parts.map((p) => (p.status === 'running'
+                    ? { ...p, status: 'failed' as const, error: 'Interrupted — partial text kept' } : p))}
+                  retrigger={retriggerPart}
+                /></div>
+            )}
+            <SectionLabel icon="tasks" hint={`${parts.filter((p) => p.status === 'done').length} of ${parts.length} finished`}>
+              Generated files
+            </SectionLabel>
+            {parts.some((p) => p.status === 'failed') && (
+              <div className="mb-2">
+                <Callout tone="error" compact title={`${parts.filter((p) => p.status === 'failed').length} file(s) failed`}>
+                  Use “Retry” on a file to regenerate just that one — the others are kept.
+                </Callout>
+              </div>
+            )}
+            {regenerable.length > 0 && !streaming && ['APPROVED', 'PENDING_REVIEW', 'AMEND_REQUESTED', 'ESCALATED'].includes(stage.status) && (
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm" variant="secondary" icon="refresh" disabled={picked.length === 0}
+                  onClick={() => regenerateParts(picked)}
+                  title="Regenerate only the ticked files; the rest are kept"
+                >
+                  Regenerate selected ({picked.length})
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => regenerateParts([])}>Regenerate all</Button>
+                <Button
+                  size="sm" variant="ghost"
+                  onClick={() => setPicked(picked.length === regenerable.length ? [] : regenerable.map((p) => p.field))}
+                >
+                  {picked.length === regenerable.length ? 'Clear selection' : 'Select all'}
+                </Button>
+              </div>
+            )}
             <div className="space-y-1">
               {parts.map((p) => (
                 <div key={p.field} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs">
-                  <span className={p.status === 'done' ? 'text-emerald-600' : 'text-red-600'}>
-                    {p.status === 'done' ? '✓' : '✗'}
-                  </span>
+                  {p.field !== 'document' && p.status !== 'running' && (
+                    <input
+                      type="checkbox" aria-label={`Select ${p.field}`}
+                      checked={picked.includes(p.field)}
+                      onChange={(e) => setPicked((cur) => (e.target.checked ? [...cur, p.field] : cur.filter((f) => f !== p.field)))}
+                    />
+                  )}
+                  <Icon
+                    name={p.status === 'done' ? 'success' : p.status === 'running' ? 'loader' : 'error'} size={14}
+                    spin={p.status === 'running'}
+                    className={p.status === 'done' ? 'text-emerald-600' : p.status === 'running' ? 'text-blue-500' : 'text-red-600'}
+                    label={p.status === 'done' ? 'Done' : p.status === 'running' ? 'Generating' : 'Failed'}
+                  />
                   <span className="font-mono text-slate-700">{p.field}</span>
                   {p.status === 'failed' && p.error && (
                     <span className="min-w-0 flex-1 truncate text-slate-400" title={p.error}>{p.error}</span>
                   )}
                   {p.status === 'failed' && (
-                    <button
-                      type="button"
-                      onClick={() => retriggerPart(p.field)}
-                      disabled={streaming}
-                      className="ml-auto shrink-0 rounded border border-brand-300 bg-brand-50 px-2 py-0.5 text-[11px] font-semibold text-brand-700 hover:bg-brand-100 disabled:opacity-40"
-                      title="Regenerate just this part and merge it"
-                    >
-                      ↺ Retrigger
-                    </button>
+                    <Button
+                      size="sm" variant="secondary" icon="refresh" className="ml-auto shrink-0"
+                      onClick={() => retriggerPart(p.field)} disabled={streaming}
+                      title="Regenerate just this file and merge it"
+                    >Retry</Button>
                   )}
                 </div>
               ))}
@@ -1290,9 +1497,24 @@ export default function StageWorkspace({
 
         {/* ---- outputs ---- */}
         <section>
-          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
-            Outputs ({stageArtefacts.length})
+          <div className="mb-1.5 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+            <span>Outputs ({stageArtefacts.length})</span>
+            {stageArtefacts.length > 0 && (
+              <button
+                type="button" onClick={() => setDocOpen(true)}
+                className="ml-auto rounded-lg border border-brand-300 bg-brand-50 px-2.5 py-1 text-[11px] font-semibold normal-case tracking-normal text-brand-700 hover:bg-brand-100"
+                title="Read all outputs of this stage as one document with diagrams; copy, or export to Word / PDF"
+              >
+                📄 Read as document · export
+              </button>
+            )}
           </div>
+          {docOpen && (
+            <StageDocument
+              projectId={projectId} artefacts={stageArtefacts} title={stage.name}
+              subtitle={`${stage.persona} · ${stage.name}`} onClose={() => setDocOpen(false)}
+            />
+          )}
           {stageArtefacts.length === 0 ? (
             <div className="rounded-lg border border-dashed border-slate-300 p-4 text-center text-xs text-slate-400">
               No outputs yet. {runnable ? 'Run this stage to generate them.' : 'Waiting on upstream stages.'}

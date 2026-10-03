@@ -32,7 +32,7 @@ from ..domain.errors import SdlcError
 log = logging.getLogger("generation_jobs")
 
 _QUEUE_KEY = "genq"        # Redis list used as the FIFO job queue
-_PROGRESS_CAP = 1000       # keep the last N events per run
+_PROGRESS_CAP = 5000       # keep the last N events per run
 _PROGRESS_TTL = 7200       # seconds the buffer lives after last write
 _LOCK_TTL = 7200           # dup-guard lock TTL (covers queue wait + run)
 # A single generation can now stream for up to ~1h (LLM_STREAM_TIMEOUT_MS, D-102);
@@ -84,13 +84,36 @@ class GenerationJobs:
         }
 
     async def reconcile(self) -> int:
-        """Boot recovery: mark orphaned 'running' jobs failed. Queued jobs stay in
-        the Redis queue and are consumed by the workers."""
+        """Boot recovery. Jobs a dead process left 'running' (or 'queued' with no queue
+        item) are failed, their stale dup-guard lock is cleared, and each is RESUMED:
+        re-enqueued with a resume marker so the run reuses every part already persisted
+        as done and regenerates only the rest. Jobs still in the queue are untouched."""
         try:
-            return await self._db.fail_stale_generation_jobs()
+            queued = await self._redis.lrange(_QUEUE_KEY, 0, -1)
+            keep: set[str] = set()
+            for raw in queued:
+                try:
+                    keep.add(json.loads(raw.decode() if isinstance(raw, (bytes, bytearray)) else raw)["jobId"])
+                except Exception:  # noqa: BLE001
+                    continue
+            rows = await self._db.claim_stale_generation_jobs(keep)
         except Exception as err:  # table may not exist yet on a fresh DB pre-migrate
             log.warning("generation-job reconcile skipped: %s", err)
             return 0
+        seen: set[tuple[str, int]] = set()
+        for row in rows:
+            key = (row["project_id"], int(row["phase"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                await self._redis.delete(self._lock_key(*key))
+                await self._redis.set(f"sdlc:resume:{key[0]}:{key[1]}", "1", ex=3600)
+                await self.enqueue(key[0], key[1], row.get("started_by"))
+                log.info("resuming interrupted generation %s phase %s", *key)
+            except Exception:  # noqa: BLE001 — never block boot
+                log.exception("could not resume generation %s", key)
+        return len(rows)
 
     async def _emit_to_buffer(self, key: str, event: dict[str, Any]) -> None:
         raw = json.dumps(event, separators=(",", ":"))
@@ -175,10 +198,31 @@ class GenerationJobs:
             queue.put_nowait(event)
 
         async def pump() -> None:  # single writer → preserves event order
-            while True:
-                event = await queue.get()
+            held: dict[str, Any] | None = None
+            stop = False
+            while not stop:
+                event = held if held is not None else await queue.get()
+                held = None
                 if event is None:
                     break
+                # Coalesce consecutive token deltas of one part into one buffered event so
+                # a long document never overflows the replay buffer (it would trim the
+                # start of the document for a late viewer).
+                if event.get("type") == "content_delta":
+                    while True:
+                        try:
+                            nxt = queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                        if (nxt is not None and nxt.get("type") == "content_delta"
+                                and nxt.get("part") == event.get("part")):
+                            event = {**event, "text": event["text"] + nxt["text"]}
+                        else:
+                            if nxt is None:
+                                stop = True
+                            else:
+                                held = nxt
+                            break
                 try:
                     await self._emit_to_buffer(pkey, event)
                 except Exception:  # progress is best-effort

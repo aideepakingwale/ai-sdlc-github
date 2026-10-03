@@ -5,6 +5,7 @@ the Build Recovery Loop. `emit` streams progress into the chat SSE."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -20,6 +21,9 @@ from ..domain.models import AgentState, ArtifactRef, ContextArtifact, PhaseStatu
 from ..integrations.llm import LlmClient, LlmResult
 from ..integrations.mcp_client import McpToolClient
 from ..repos.pg import Database, new_id
+from ..services.applicability import (
+    constraints_block, derive_traits, inapplicable_types, project_corpus,
+)
 from ..services.audit import AuditService
 from ..services.content_store import ContentStore, artifact_key, source_key
 from ..services.content_validators import format_issues, syntactic_issues
@@ -56,6 +60,17 @@ Emit = Callable[[dict[str, Any]], None]
 
 # Sentinel: "no cached value to reuse for this part" (D-107 step 2 retrigger).
 _NO_REUSE = object()
+
+
+def _part_text(value_json: str | None) -> str:
+    """Human-readable file text for a persisted part (pretty JSON; plain strings as-is)."""
+    if not value_json:
+        return ""
+    try:
+        v = json.loads(value_json)
+    except Exception:  # noqa: BLE001
+        return value_json
+    return v if isinstance(v, str) else json.dumps(v, indent=2, ensure_ascii=False)
 
 
 # ---- D-112 Phase B: the reviewer's confirmed production scope -------------------
@@ -160,12 +175,27 @@ def _concepts(text: str) -> set[str]:
     return {key for key, words in _CONCEPTS if any(w in t for w in words)}
 
 
+def _norm_token(text: str) -> str:
+    return re.sub(r"[^A-Z0-9]+", "_", (text or "").upper()).strip("_")
+
+
 def labels_excluded(scope: dict[str, Any], *labels: str) -> bool:
     """True when the artifact described by `labels` (type, title, …) belongs to a
     concept the reviewer excluded and NOT to one they included (include wins)."""
     exc = scope.get("exclude") or []
     if not exc:
         return False
+    # An EXACT artifact-type name (e.g. LLD_DIAGRAM, PLANTUML) the reviewer listed decides
+    # on its own. The coarser concept match below would otherwise let an included
+    # COMPONENT_DIAGRAM "win" for every other diagram and silently keep excluded ones.
+    inc_tokens = {_norm_token(x) for x in (scope.get("include") or [])}
+    exc_tokens = {_norm_token(x) for x in exc}
+    for lab in labels:
+        tok = _norm_token(lab)
+        if tok in inc_tokens:
+            return False
+        if tok in exc_tokens:
+            return True
     mine = set()
     for lab in labels:
         mine |= _concepts(lab)
@@ -176,10 +206,70 @@ def labels_excluded(scope: dict[str, Any], *labels: str) -> bool:
     return bool(mine & excluded) and not bool(mine & included)
 
 
+
+# Which artifact TYPE(s) each top-level schema field of a stage produces. Lets the
+# reviewer's confirmed scope decide, BEFORE any model call, which fields are worth
+# generating — an excluded artifact is never generated (and never judged by the
+# validator) instead of being generated and discarded at save time.
+FIELD_ARTIFACT_TYPES: dict[int, dict[str, tuple[str, ...]]] = {
+    1: {"epics": ("EPIC", "FEATURE", "USER_STORY"), "prdMarkdown": ("PRD",)},
+    2: {"hldNarrative": ("HLD",), "architecturePrinciples": ("HLD",), "components": ("HLD",),
+        "designPatterns": ("HLD",), "qualityAttributes": ("HLD",),
+        "structurizrDsl": ("STRUCTURIZR_DSL",), "mermaidArchitecture": ("HLD_DIAGRAM",),
+        "deploymentArchitecture": ("ARCH_DIAGRAM", "CLOUDCRAFT_JSON"), "adrs": ("ADR",)},
+    3: {"lldMarkdown": ("LLD",), "components": ("LLD",), "errorTaxonomy": ("LLD",), "resilience": ("LLD",),
+        "componentDiagram": ("COMPONENT_DIAGRAM",), "plantumlDiagrams": ("PLANTUML",),
+        "mermaidSequence": ("LLD_DIAGRAM",), "openapiYaml": ("OPENAPI",), "dbmlSchema": ("DBML",),
+        "cdkStack": ("CDK",)},
+    4: {"testStrategyMarkdown": ("TEST_STRATEGY",), "xrayTests": ("XRAY_TESTS",), "k6Script": ("K6_SCRIPT",),
+        "postmanCollection": ("POSTMAN_COLLECTION",), "rtmMarkdown": ("RTM",)},
+    5: {"workflowYaml": ("GITHUB_ACTIONS",), "dockerfiles": ("DOCKERFILE",),
+        "grafanaDashboardJson": ("GRAFANA_DASHBOARD",)},
+}
+
+
+def scope_skipped_fields(state: Any, fields: list[str]) -> list[str]:
+    """Schema fields whose artifact types are ALL excluded by the reviewer's confirmed
+    production scope. Never skips every field (something must be generated)."""
+    scope = effective_scope(state)
+    if not scope.get("exclude"):
+        return []
+    ftypes = FIELD_ARTIFACT_TYPES.get(state.stage_template, {})
+    skipped = [f for f in fields if f in ftypes and all(labels_excluded(scope, t) for t in ftypes[f])]
+    return [] if len(skipped) >= len(fields) else skipped
+
 # The confirmed production scope for the stage currently running, so the
 # side-effecting helpers (_save_artifact, _publish) can honour it without threading
 # a new parameter through every call site. Set per-run in run_phase_agent.
 _scope_ctx: ContextVar[dict[str, Any]] = ContextVar("production_scope", default={})
+
+
+def effective_scope(state: Any) -> dict[str, Any]:
+    """The scope this run enforces: the reviewer's confirmed scope PLUS artifacts the
+    project cannot use (auto-excluded, see services/applicability). Falls back to the
+    parsed scope when no run context is active (e.g. direct helper calls)."""
+    return _scope_ctx.get() or production_scope(getattr(state, "user_input", None))
+
+
+def _applies(state: Any, item: str) -> bool:
+    """False when `item` (artifact type or gated tool step) is out of the run's scope —
+    confirmed by the reviewer, or not applicable to this project."""
+    return not labels_excluded(effective_scope(state), item)
+
+
+def run_scope(state: Any) -> dict[str, Any]:
+    """Build the run's effective scope: confirmed scope + auto-excluded inapplicable
+    artifacts. Anything the reviewer explicitly asked to produce is never auto-excluded."""
+    scope = production_scope(state.user_input)
+    upstream = [state.project_profile or "", (state.extra_context or "")[:2_000]]
+    upstream += [f"{a.type} {a.title} {a.summary}" for a in state.context_window[-30:]]
+    corpus = project_corpus(project={"tech_stack": state.tech_stack}, user_text=state.user_input,
+                            upstream=upstream)
+    traits = state.project_traits or derive_traits(corpus=corpus)   # AI-resolved, else keyword rules
+    auto = inapplicable_types(traits, state.stage_template)
+    wanted = {re.sub(r"[^A-Z0-9]+", "_", x.upper()).strip("_") for x in scope.get("include") or []}
+    auto = {t: why for t, why in auto.items() if t not in wanted}
+    return {**scope, "exclude": [*scope.get("exclude", []), *auto], "auto": auto}
 
 # A human label per external-write tool, so an excluded concept also suppresses the
 # matching external write (no empty Jira epic created on approval, etc.).
@@ -220,7 +310,24 @@ async def _generate_phase_split(
     if len(fields) <= 1:
         raise ValueError("schema has nothing to split")
 
+    async def _persist_part(fn: str, status: str, value: Any = None, error: str | None = None) -> None:
+        """Write a part the moment it finishes so a crash/restart/navigation never loses it."""
+        try:
+            vj = TypeAdapter(schema.model_fields[fn].annotation).dump_json(value).decode() if value is not None else None
+        except Exception:  # noqa: BLE001
+            vj = None
+        try:
+            await deps.db.upsert_generation_part(
+                project_id=state.project_id, phase=state.current_phase, field=fn,
+                status=status, error=error, value_json=vj,
+            )
+        except Exception:  # noqa: BLE001 — best-effort
+            log.warning("generation part upsert failed for %s", fn, exc_info=True)
+        emit({"type": "part", "part": fn, "status": status, "error": error,
+              "text": _part_text(vj) if status == "done" else ""})
+
     async def gen_field(field_name: str) -> tuple[str, Any, LlmResult]:
+        emit({"type": "part", "part": field_name, "status": "running", "text": ""})
         fi = schema.model_fields[field_name]
         wrapper = create_model(f"{schema.__name__}__{field_name}", **{field_name: (fi.annotation, fi)})
         instruction = (
@@ -245,12 +352,24 @@ async def _generate_phase_split(
     # (generation_parts), so a failed part can be retried as its own cheap request
     # while the rest are untouched. On a normal run every field is generated.
     retrigger = set(getattr(state, "retrigger_fields", []) or [])
+    resume = bool(getattr(state, "resume", False))
     cache: dict[str, dict] = {}
-    if retrigger:
+    if retrigger or resume:
         try:
             cache = {p["field"]: p for p in await deps.db.list_generation_parts(state.project_id, state.current_phase)}
         except Exception:  # noqa: BLE001 — no cache → just regenerate
             cache = {}
+        if resume and not retrigger:
+            # RESUME (interrupted run): keep every part that finished, regenerate the rest.
+            retrigger = {fn for fn in fields if (cache.get(fn) or {}).get("status") != "done"}
+            emit({"type": "node", "node": "agent",
+                  "label": f"↻ Resuming interrupted run — {len(fields) - len(retrigger)} part(s) already done, "
+                           f"{len(retrigger)} to generate"})
+    else:
+        try:  # a fresh full run starts clean so a later resume never reuses stale parts
+            await deps.db.clear_generation_parts(state.project_id, state.current_phase)
+        except Exception:  # noqa: BLE001
+            log.warning("could not clear stale generation parts", exc_info=True)
 
     def reuse_value(fn: str) -> Any:
         """Cached value to reuse for `fn` (retrigger of a DIFFERENT field), or _NO_REUSE."""
@@ -266,7 +385,17 @@ async def _generate_phase_split(
 
     reused_status: dict[str, str] = {}
     to_gen: list[str] = []
+    out_of_scope = scope_skipped_fields(state, fields)
+    for fn in out_of_scope:
+        # Excluded by the confirmed scope → no model call. A minimal, clearly-labelled
+        # value keeps the combined object valid; it is never saved as an artifact.
+        fi = schema.model_fields[fn]
+        values[fn] = _minimal_value(fi.annotation, "Not produced — outside the confirmed production scope",
+                                    _min_len(fi))
+        emit({"type": "node", "node": "agent", "label": f"⏭ {fn} skipped — outside the confirmed scope"})
     for fn in fields:
+        if fn in out_of_scope:
+            continue
         rv = reuse_value(fn)
         if rv is _NO_REUSE:
             to_gen.append(fn)
@@ -276,6 +405,8 @@ async def _generate_phase_split(
             if reused_status[fn] == "failed":
                 failures[fn] = cache[fn].get("error") or "still failed (not retriggered)"
             emit({"type": "node", "node": "agent", "label": f"↺ {fn} reused from last run"})
+            emit({"type": "part", "part": fn, "status": reused_status[fn],
+                  "text": _part_text(cache[fn].get("value_json")) if reused_status[fn] == "done" else ""})
 
     # Anchor first → warms the cached system prefix the parallel calls reuse. A failed
     # anchor is non-fatal (the rest just don't get the cache benefit).
@@ -286,9 +417,11 @@ async def _generate_phase_split(
             n, v, r = await gen_field(anchor)
             values[n] = v
             results.append(r)
+            await _persist_part(n, "done", v)
             emit({"type": "node", "node": "agent", "label": f"✓ {anchor} generated"})
         except Exception as err:  # noqa: BLE001
             failures[anchor] = str(err)
+            await _persist_part(anchor, "failed", error=str(err))
             emit({"type": "node", "node": "guardrail", "status": "error", "label": f"✗ {anchor} failed — {str(err)[:160]}"})
 
         rest = to_gen[1:]
@@ -300,9 +433,11 @@ async def _generate_phase_split(
                 async with sem:
                     try:
                         n, v, r = await gen_field(fn)
+                        await _persist_part(fn, "done", v)
                         emit({"type": "node", "node": "agent", "label": f"✓ {fn} generated"})
                         return ("ok", fn, (v, r))
                     except Exception as err:  # noqa: BLE001 — one part's failure must not sink the rest
+                        await _persist_part(fn, "failed", error=str(err))
                         emit({"type": "node", "node": "guardrail", "status": "error",
                               "label": f"✗ {fn} failed — {str(err)[:160]}"})
                         return ("err", fn, err)
@@ -526,7 +661,7 @@ async def _save_artifact(
     # D-112 Phase B-ii: honour the reviewer's confirmed scope. If this artifact's
     # concept was explicitly excluded (and not included), skip it entirely — do not
     # persist, index or surface it — so generation produces only what was confirmed.
-    scope = production_scope(state.user_input)
+    scope = effective_scope(state)
     if labels_excluded(scope, type_, title):
         emit({"type": "node", "node": "agent",
               "label": f"Skipped {type_} '{title[:60]}' — not in the confirmed output scope"})
@@ -662,6 +797,14 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
         lint_required=getattr(deps.settings, "LINT_REQUIRED", True),
         format_directive=fmt_directive,
     )
+    # Prompt-vs-intent validation (before any model call): the harness template lists a
+    # fixed artifact set; strip what does not apply to THIS project from the prompt too.
+    auto = (_scope_ctx.get() or {}).get("auto") or {}
+    if auto:
+        system = f"{system}\n\n{constraints_block(auto)}"
+        emit({"type": "node", "node": "agent",
+              "label": "Prompt validated against project & intent — not applicable: "
+                       + "; ".join(f"{t} ({why.split(' — ')[0]})" for t, why in auto.items())})
     if state.extra_context:
         emit({"type": "node", "node": "agent",
               "label": "Using the context you attached (references + files) for this stage"})
@@ -694,6 +837,16 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
             max_tokens=_max_tokens,
             model=_model,
         )
+        # Save every artifact as a part too, so any stage — however it was generated —
+        # supports selective regeneration later (the split path saves parts itself).
+        for fn, fi in type(data).model_fields.items():
+            try:
+                await deps.db.upsert_generation_part(
+                    project_id=state.project_id, phase=state.current_phase, field=fn, status="done",
+                    error=None, value_json=TypeAdapter(fi.annotation).dump_json(getattr(data, fn)).decode(),
+                )
+            except Exception:  # noqa: BLE001 — best-effort
+                log.warning("generation part upsert failed for %s", fn, exc_info=True)
     deps.audit.record(
         project_id=state.project_id, phase=state.current_phase, agent_role=phase.agent_persona,
         event="ai.generation", provider=result.provider, model=result.model,
@@ -713,7 +866,7 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
 
 
 # ---------------------------------------------------------------- Validation agent (D-52)
-def _output_digest(out: BaseModel, *, limit: int = 3_000) -> str:
+def _output_digest(out: BaseModel, *, limit: int = 3_000, skipped: tuple[str, ...] = ()) -> str:
     """A compact, token-frugal digest of a generated phase output so the
     validation agent can judge it without re-sending the whole payload. Strings
     are truncated; lists are summarised by count + first item's headline."""
@@ -727,7 +880,9 @@ def _output_digest(out: BaseModel, *, limit: int = 3_000) -> str:
 
     lines: list[str] = []
     for field, value in out.model_dump().items():
-        if isinstance(value, str):
+        if field in skipped:
+            lines.append(f"- {field}: (intentionally not produced — outside the reviewer's confirmed scope)")
+        elif isinstance(value, str):
             text = value.strip().replace("\n", " ")
             lines.append(f"- {field}: {text[:240]}" + ("…" if len(text) > 240 else ""))
         elif isinstance(value, list):
@@ -830,7 +985,8 @@ async def _validate_output(
                     quality_bar=render_prompt(f"phase.quality.{phase.id}")[:1_800],
                     user_intent=state.user_input[:1_500] or "(carry the previous phases forward)",
                     amend_comments=(state.amend_comments or "(none)")[:1_200],
-                    output_digest=_output_digest(out),
+                    output_digest=_output_digest(out, skipped=tuple(
+                        scope_skipped_fields(state, list(type(out).model_fields)))),
                     context_digest=context_digest[:2_500],
                     syntax_errors=format_issues(syntactic) or "(none)",
                 )},
@@ -1132,6 +1288,14 @@ def _render_story_md(story: Any, story_key: str) -> str:
     return "\n".join(lines)
 
 
+def _arch_context(state: Any) -> list[str]:
+    """Project text the diagram generators use ONLY to infer the target cloud (zero-token)."""
+    ctx = [state.tech_stack or "", state.project_profile or "", re.split(r"##\s*Production scope", state.user_input or "")[0][:1500],
+           (state.extra_context or "")[:1500]]
+    ctx += [f"{a.type} {a.title} {a.summary}"[:300] for a in state.context_window[-8:]]
+    return [c for c in ctx if c]
+
+
 async def _save_architecture_svg(
     deps: AgentDeps, state: AgentState, emit: Emit, *, spec: Any, type_: str, title: str, summary: str,
 ) -> ContextArtifact | None:
@@ -1140,7 +1304,7 @@ async def _save_architecture_svg(
     is absent or the renderer is unavailable — generation continues either way."""
     if spec is None:
         return None
-    svg = await asyncio.to_thread(render_architecture, spec.model_dump())
+    svg = await asyncio.to_thread(render_architecture, spec.model_dump(), context=_arch_context(state))
     if not svg:
         return None
     return await _save_artifact(
@@ -1159,7 +1323,7 @@ async def _save_architecture_drawio(
         return None
     from ..services.drawio import cloud_arch_to_drawio, validate_drawio
     try:
-        xml = cloud_arch_to_drawio(spec.model_dump(), title=title)
+        xml = cloud_arch_to_drawio(spec.model_dump(), title=title, context=_arch_context(state))
         verdict = validate_drawio(xml)
         if not verdict["ok"]:
             log.warning("generated draw.io failed validation: %s", verdict["errors"][:3])
@@ -1570,11 +1734,12 @@ async def _run_phase4(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     service = state.user_input[:60] or "Service"
     openapi = _ctx_content(state, "OPENAPI") or "openapi: 3.0.3\npaths:\n  /healthz:\n    get:\n      summary: health\n"
 
-    ra = await _tool(deps, emit, "restassured_generate_tests", {"openapiYaml": openapi, "serviceName": service})
-    _add(artifacts, await _save_artifact(
-        deps, state, emit, type_="REST_ASSURED", title="REST Assured API tests (Java)",
-        content=ra["javaClass"], summary=f"{ra['testCount']} REST Assured tests for {ra['path']}", exact=True,
-    ))
+    if not labels_excluded(effective_scope(state), "REST_ASSURED"):
+        ra = await _tool(deps, emit, "restassured_generate_tests", {"openapiYaml": openapi, "serviceName": service})
+        _add(artifacts, await _save_artifact(
+            deps, state, emit, type_="REST_ASSURED", title="REST Assured API tests (Java)",
+            content=ra["javaClass"], summary=f"{ra['testCount']} REST Assured tests for {ra['path']}", exact=True,
+        ))
 
     stories = [
         {"key": a.ref.key or f"S{n + 1}", "text": a.title.split(": ", 1)[-1], "criteria": []}
@@ -1584,28 +1749,32 @@ async def _run_phase4(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         {"key": f"XT-{n + 1}", "text": t.title, "criteria": [s.action for s in t.steps][:3]}
         for n, t in enumerate(out.xrayTests)
     ]
-    pw = await _tool(deps, emit, "playwright_generate_tests", {"stories": stories})
-    _add(artifacts, await _save_artifact(
-        deps, state, emit, type_="PLAYWRIGHT_SPEC", title="Playwright UI tests",
-        content=pw["specTs"], summary=f"{pw['testCount']} Playwright tests from user stories", exact=True,
-    ))
+    if not labels_excluded(effective_scope(state), "PLAYWRIGHT_SPEC"):
+        pw = await _tool(deps, emit, "playwright_generate_tests", {"stories": stories})
+        _add(artifacts, await _save_artifact(
+            deps, state, emit, type_="PLAYWRIGHT_SPEC", title="Playwright UI tests",
+            content=pw["specTs"], summary=f"{pw['testCount']} Playwright tests from user stories", exact=True,
+        ))
 
-    jm = await _tool(deps, emit, "jmeter_generate_plan", {"openapiYaml": openapi, "serviceName": service})
-    _add(artifacts, await _save_artifact(
-        deps, state, emit, type_="JMETER_PLAN", title="JMeter load-test plan",
-        content=jm["jmxXml"], summary=f"JMX plan with {jm['samplerCount']} samplers",
-    ))
+    if _applies(state, "JMETER_PLAN"):
+        jm = await _tool(deps, emit, "jmeter_generate_plan", {"openapiYaml": openapi, "serviceName": service})
+        _add(artifacts, await _save_artifact(
+            deps, state, emit, type_="JMETER_PLAN", title="JMeter load-test plan",
+            content=jm["jmxXml"], summary=f"JMX plan with {jm['samplerCount']} samplers",
+        ))
 
-    lo = await _tool(deps, emit, "locust_generate_test", {"openapiYaml": openapi, "serviceName": service})
-    _add(artifacts, await _save_artifact(
-        deps, state, emit, type_="LOCUSTFILE", title="Locust load-test file",
-        content=lo["locustfile"], summary=f"locustfile.py with {lo['taskCount']} tasks",
-    ))
+    if _applies(state, "LOCUSTFILE"):
+        lo = await _tool(deps, emit, "locust_generate_test", {"openapiYaml": openapi, "serviceName": service})
+        _add(artifacts, await _save_artifact(
+            deps, state, emit, type_="LOCUSTFILE", title="Locust load-test file",
+            content=lo["locustfile"], summary=f"locustfile.py with {lo['taskCount']} tasks",
+        ))
 
     return PhaseAgentResult(
-        summary=f"Phase 4 complete: Test Strategy, {len(xray_keys)} Xray test cases, k6 script, "
-                "Postman collection, RTM, REST Assured suite, Playwright spec, JMeter plan and "
-                "Locust file generated.",
+        summary="Phase 4 complete: " + ", ".join(sorted({a.type for a in artifacts})) + " generated"
+                + f" ({len(xray_keys)} Xray test cases)."
+                + (" Skipped as not applicable: " + ", ".join((_scope_ctx.get() or {}).get("auto", {})) + "."
+                   if (_scope_ctx.get() or {}).get("auto") else ""),
         new_artifacts=artifacts, gate_status="PENDING_REVIEW",
     )
 
@@ -1662,13 +1831,14 @@ async def _run_phase5(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         "imageTag": "app:candidate",
     })
     secret_rows = []
-    for secret_id in ("sdlc/jwt-secret", "sdlc/github-webhook-secret"):
+    for secret_id in (("sdlc/jwt-secret", "sdlc/github-webhook-secret") if _applies(state, "AWS_SECRETS_CHECK") else ()):
         check = await _tool(deps, emit, "aws_secrets_check", {"secretId": secret_id})
         secret_rows.append(f"| {secret_id} | {'✅ present' if check['exists'] else '❌ MISSING'} | {check['mode']} |")
     _add(artifacts, await _save_artifact(
         deps, state, emit, type_="SECURITY_SCAN", title="Pipeline security scan (Trivy + Secrets)",
-        content=f"{trivy['reportMarkdown']}\n\n## Secrets Manager verification\n\n"
-                f"| Secret | Status | Mode |\n|---|---|---|\n" + "\n".join(secret_rows),
+        content=trivy["reportMarkdown"] + (
+            "\n\n## Secrets Manager verification\n\n| Secret | Status | Mode |\n|---|---|---|\n"
+            + "\n".join(secret_rows) if secret_rows else ""),
         summary=f"Trivy {trivy['result']}: {trivy['critical']} critical / {trivy['high']} high; "
                 f"{len(secret_rows)} pipeline secrets verified",
     ))
@@ -1775,12 +1945,13 @@ async def _run_phase6(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
             k6 = await _tool(deps, emit, "k6_run_test", {"script": k6_script})
             sections.append(k6["reportMarkdown"])
             verdicts.append(f"perf p95={k6['p95Ms']}ms {'✅' if k6['thresholdsPassed'] else '❌'}")
-        zap = await _tool(deps, emit, "zap_baseline_scan", {
-            "targetUrl": "http://staging.sdlc.local",
-            **({"openapiYaml": _ctx_content(state, "OPENAPI")} if _ctx_content(state, "OPENAPI") else {}),
-        })
-        sections.append(zap["reportMarkdown"])
-        verdicts.append(f"ZAP {zap['result']}")
+        if _applies(state, "ZAP_SCAN"):
+            zap = await _tool(deps, emit, "zap_baseline_scan", {
+                "targetUrl": "http://staging.sdlc.local",
+                **({"openapiYaml": _ctx_content(state, "OPENAPI")} if _ctx_content(state, "OPENAPI") else {}),
+            })
+            sections.append(zap["reportMarkdown"])
+            verdicts.append(f"ZAP {zap['result']}")
         if sections:
             _add(artifacts, await _save_artifact(
                 deps, state, emit, type_="TEST_EXECUTION_REPORT", title="Test execution report",
@@ -1984,10 +2155,31 @@ async def _run_custom_format(deps: AgentDeps, state: AgentState, emit: Emit) -> 
     # PLAIN-TEXT STREAMING generation (D-112): the response IS the markdown (no JSON
     # escaping / retry), and it STREAMS to the workspace token-by-token so the reviewer
     # watches the document being written live instead of waiting behind a spinner.
-    emit({"type": "content_start", "title": f"{phase.name} document", "doc_type": _PRIMARY_DOC_TYPE.get(state.stage_template, "DOCUMENT")})
+    emit({"type": "content_start", "part": "document", "title": f"{phase.name} document",
+          "doc_type": _PRIMARY_DOC_TYPE.get(state.stage_template, "DOCUMENT")})
+
+    # Persist the partial document every few seconds so it survives navigation/restart.
+    written: list[str] = []
+    last_save = [time.monotonic()]
+    saves: set[asyncio.Task[None]] = set()
+
+    async def _save_partial(text: str) -> None:
+        try:
+            await deps.db.upsert_generation_part(
+                project_id=state.project_id, phase=state.current_phase, field="document",
+                status="running", error=None, value_json=None, partial_text=text,
+            )
+        except Exception:  # noqa: BLE001
+            log.warning("partial document save failed", exc_info=True)
 
     def _on_delta(t: str) -> None:
-        emit({"type": "content_delta", "text": t})
+        emit({"type": "content_delta", "part": "document", "text": t})
+        written.append(t)
+        if time.monotonic() - last_save[0] >= 3:
+            last_save[0] = time.monotonic()
+            task = asyncio.get_running_loop().create_task(_save_partial("".join(written)))
+            saves.add(task)
+            task.add_done_callback(saves.discard)
 
     result = await deps.llm.generate_stream(
         intent="generation", tag=f"stage{state.current_phase}_custom_format",
@@ -1997,9 +2189,19 @@ async def _run_custom_format(deps: AgentDeps, state: AgentState, emit: Emit) -> 
         max_tokens=getattr(deps.settings, "PHASE_MAX_TOKENS", 16_000),
         model=state.model_overrides.get("generate") or None,
     )
-    emit({"type": "content_end"})
+    emit({"type": "content_end", "part": "document"})
     state.last_provider, state.last_model = result.provider, result.model
     markdown = (result.content or "").strip()
+    if saves:
+        await asyncio.gather(*saves, return_exceptions=True)
+    try:
+        await deps.db.upsert_generation_part(
+            project_id=state.project_id, phase=state.current_phase, field="document",
+            status="done", error=None, value_json=json.dumps(markdown), partial_text=None,
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("document part save failed", exc_info=True)
+    emit({"type": "part", "part": "document", "status": "done", "text": markdown})
     # Strip a stray ```markdown fence the model may wrap the whole doc in.
     if markdown.startswith("```"):
         markdown = re.sub(r"^```[a-zA-Z]*\n", "", markdown)
@@ -2073,7 +2275,7 @@ async def run_phase_agent(deps: AgentDeps, state: AgentState, emit: Emit) -> Pha
     defer = getattr(deps.settings, "PUBLISH_ON_APPROVAL", True)
     token = _publish_sink.set([] if defer else None)
     # D-112 Phase B-ii: expose the confirmed scope to the side-effecting helpers.
-    scope_token = _scope_ctx.set(production_scope(state.user_input))
+    scope_token = _scope_ctx.set(run_scope(state))
     try:
         result = await runner(deps, state, emit)
     finally:

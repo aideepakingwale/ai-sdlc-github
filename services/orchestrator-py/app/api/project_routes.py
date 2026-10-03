@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
+from ..agents.phase_agents import _part_text
 from ..domain.errors import SdlcError
 from ..services import guardrails as guardrails_svc
 from ..services import prompt_library
@@ -370,14 +371,42 @@ async def retrigger_stage(
 # ------------------------------------------------------------------ Plan Review & Edit gate (D-56)
 @router.get("/api/projects/{project_id}/phase/{phase_id}/plan")
 async def get_stage_plan(
-    project_id: str, phase_id: int,
+    project_id: str, phase_id: int, cached: bool = False,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
     """Full pre-generation plan for a stage: agent, skills, expected tools, model
     tier, context inventory and the actual system-generated prompt (D-56)."""
     if not 1 <= phase_id <= 12:
         raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
-    return await container.chat.build_plan(project_id=project_id, phase=phase_id, user=user)
+    return await container.chat.build_plan(project_id=project_id, phase=phase_id, user=user,
+                                           run_intel=not cached)
+
+
+@router.get("/api/projects/{project_id}/phase/{phase_id}/plan/state")
+async def get_stage_plan_state(
+    project_id: str, phase_id: int,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """{building, ready}: shared across tabs/sessions so every view of the project shows the
+    same plan state (a plan being built, or one already built and cached)."""
+    if not 1 <= phase_id <= 12:
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+    return await container.chat.plan_state(project_id=project_id, phase=phase_id, user=user)
+
+
+class TraitOverrideBody(BaseModel):
+    value: str | None = None  # present | absent | null (clear → back to the AI's judgement)
+
+
+@router.put("/api/projects/{project_id}/traits/{trait}")
+async def override_project_trait(
+    project_id: str, trait: str, body: TraitOverrideBody,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Pin a project trait (ui/api/database/cloud/aws/container/service) to present/absent, or
+    clear it. A human override always wins over the AI's judgement; re-plan to see the effect.
+    Same authority as editing the project Canon (managing PM, SA/TA member, SUPER_ADMIN)."""
+    return await container.chat.set_trait_override(project_id=project_id, trait=trait, value=body.value, user=user)
 
 
 @router.put("/api/projects/{project_id}/phase/{phase_id}/plan")
@@ -402,6 +431,8 @@ async def trigger_stage_plan(
     is already queued/running). The result goes to gate review when it completes."""
     if not 1 <= phase_id <= 12:
         raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+    # Generation needs a finished, up-to-date plan; edits after the review make it stale.
+    await container.chat.assert_plan_ready(project_id, phase_id, user)
     return await container.gen_jobs.enqueue(project_id, phase_id, user.email)
 
 
@@ -482,6 +513,7 @@ async def get_generation_parts(
     return {
         "parts": [
             {"field": p["field"], "status": p["status"], "error": p["error"],
+             "text": p.get("partial_text") or _part_text(p.get("value_json")),
              "updatedAt": p["updated_at"].isoformat()}
             for p in parts
         ]
@@ -502,6 +534,28 @@ async def retrigger_generation_part(
     await container.authz.assert_project_access(project_id, user)
     await container.redis.set(f"sdlc:retrigger:{project_id}:{phase_id}", json.dumps([field]), ex=300)
     return await container.gen_jobs.enqueue(project_id, phase_id, user.email)
+
+
+class RegenerateBody(BaseModel):
+    fields: list[str] = []  # artifacts to regenerate; empty = all
+
+
+@router.post("/api/projects/{project_id}/phase/{phase_id}/regenerate")
+async def regenerate_stage_artifacts(
+    project_id: str, phase_id: int, body: RegenerateBody,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Regenerate SELECTED artifacts of a stage on demand, also after approval. Only the
+    chosen parts are regenerated (the rest are reused); the stage returns to review."""
+    if not 1 <= phase_id <= 12:
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+    await container.authz.assert_project_access(project_id, user)
+    if await container.gen_jobs.is_active(project_id, phase_id):
+        raise SdlcError("GATE_CONFLICT", "This stage is already generating")
+    prep = await container.flow.regenerate_parts(project_id, phase_id, body.fields, user)
+    await container.redis.set(f"sdlc:retrigger:{project_id}:{phase_id}", json.dumps(prep["fields"]), ex=300)
+    job = await container.gen_jobs.enqueue(project_id, phase_id, user.email)
+    return {**prep, **job}
 
 
 @router.get("/api/projects/{project_id}/phase/{phase_id}/stream")
@@ -1127,6 +1181,7 @@ async def upload_attachment(
 ) -> dict:
     """Attach a file to a stage's compose context (D-54). Text is decoded and
     stored for inlining into the prompt; binary is kept but flagged not-inlined."""
+    await container.chat.assert_not_generating(project_id, phase_id)
     from starlette.datastructures import UploadFile as StarletteUploadFile
 
     from ..repos.pg import new_id
@@ -1212,6 +1267,7 @@ async def delete_attachment(
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
     await container.authz.assert_project_access(project_id, user)
+    await container.chat.assert_not_generating(project_id, phase_id)
     row = await container.db.delete_attachment(attachment_id)
     if row and row["storage_key"]:
         try:

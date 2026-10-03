@@ -400,11 +400,11 @@ async def test_generate_validated_persists_validation_feedback(monkeypatch):
 
     rows = await db.list_feedback("p1", 2)
     validation = [r for r in rows if r["source"] == "validation"]
-    assert len(validation) == 1  # stale row replaced
-    assert validation[0]["category"] == "mermaidArchitecture"
-    assert validation[0]["severity"] == "error"
-    assert "missing header" in validation[0]["comment"]
-    assert "add flowchart LR" in validation[0]["comment"]
+    assert not any(r["category"] == "old" for r in validation)  # stale row replaced
+    issue = next(r for r in validation if r["category"] == "mermaidArchitecture")  # + a quality-score signal
+    assert issue["severity"] == "error"
+    assert "missing header" in issue["comment"]
+    assert "add flowchart LR" in issue["comment"]
 
 
 async def test_generate_validated_clears_validation_feedback_when_clean(monkeypatch):
@@ -429,7 +429,8 @@ async def test_generate_validated_clears_validation_feedback_when_clean(monkeypa
     await pa._generate_validated(deps, _state(), lambda e: None)
 
     rows = await db.list_feedback("p1", 2)
-    assert [r for r in rows if r["source"] == "validation"] == []
+    # prior issues are cleared; only the overall quality-score signal remains
+    assert [r["category"] for r in rows if r["source"] == "validation"] == ["quality-score"]
 
 
 async def test_generate_validated_disabled_skips_validation(monkeypatch):

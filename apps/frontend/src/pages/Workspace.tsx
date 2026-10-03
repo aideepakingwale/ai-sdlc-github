@@ -4,6 +4,8 @@ import { api } from '../api/client';
 import type { ProjectFlow } from '../api/flow';
 import { ROLE_LABELS, type Artefact, type Project, type ProjectDetail } from '../api/types';
 import Dashboard from '../components/Dashboard';
+import HelpPanel from '../components/HelpPanel';
+import { Icon } from '../components/ui/Icon';
 import GovernancePanel from '../components/GovernancePanel';
 import NewProjectModal from '../components/NewProjectModal';
 import NotificationBell from '../components/NotificationBell';
@@ -18,6 +20,16 @@ import RightPanel from '../components/RightPanel';
 import StageWorkspace from '../components/StageWorkspace';
 import { useApp } from '../store';
 
+function usePersistedFlag(key: string): [boolean, (v: boolean) => void] {
+  const [v, setV] = useState(() => {
+    try { return localStorage.getItem(key) === '1'; } catch { return false; }
+  });
+  return [v, (n: boolean) => {
+    setV(n);
+    try { localStorage.setItem(key, n ? '1' : '0'); } catch { /* ignore */ }
+  }];
+}
+
 export default function Workspace() {
   const qc = useQueryClient();
   const { user, setUser, activeProjectId, setActiveProject } = useApp();
@@ -29,11 +41,14 @@ export default function Workspace() {
   const [obsOpen, setObsOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
   const [qualityOpen, setQualityOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [focusedPhase, setFocusedPhase] = useState<number | null>(null);
   const [selectedStage, setSelectedStage] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [mapOpen, setMapOpen] = useState(false);
   const rightPanel = useResizableWidth('right', 320);
+  const [leftCollapsed, setLeftCollapsed] = usePersistedFlag('sdlc:collapsed:left');
+  const [rightCollapsed, setRightCollapsed] = usePersistedFlag('sdlc:collapsed:right');
   const canManage = user?.role === 'PROJECT_MANAGER' || user?.role === 'SUPER_ADMIN';
 
   // Creation happens in NewProjectModal; on success we focus the new project and
@@ -123,7 +138,21 @@ export default function Workspace() {
   return (
     <div className="flex h-full">
       {/* ---------- left sidebar ---------- */}
-      <aside className="flex w-72 shrink-0 flex-col bg-slate-900 text-slate-100">
+      <aside className={`relative flex shrink-0 flex-col bg-slate-900 text-slate-100 transition-[width] ${leftCollapsed ? 'w-10' : 'w-72'}`}>
+        <button
+          type="button" onClick={() => setLeftCollapsed(!leftCollapsed)}
+          aria-label={leftCollapsed ? 'Expand projects panel' : 'Collapse projects panel'}
+          title={leftCollapsed ? 'Show projects & pipeline' : 'Hide projects & pipeline'}
+          className={`absolute z-10 rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white ${leftCollapsed ? 'left-1.5 top-3' : 'right-2 top-3'}`}
+        >
+          <Icon name={leftCollapsed ? 'chevron-right' : 'chevron-left'} size={16} />
+        </button>
+        {leftCollapsed && (
+          <div className="mt-14 flex flex-1 justify-center">
+            <span className="select-none text-xs font-semibold tracking-widest text-slate-500 [writing-mode:vertical-rl]">PROJECTS · PIPELINE</span>
+          </div>
+        )}
+        <div className={leftCollapsed ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
         <div className="border-b border-white/10 p-4">
           <div className="text-lg font-bold text-white">AI-SDLC</div>
           <div className="text-xs text-slate-400">Agentic pipeline · HITL gates</div>
@@ -232,6 +261,7 @@ export default function Workspace() {
             </button>
           </div>
         </div>
+        </div>
       </aside>
 
       {/* ---------- main chat column ---------- */}
@@ -250,14 +280,23 @@ export default function Workspace() {
           </div>
           {escalated && (
             <span className="rounded-full bg-red-100 px-3 py-1 text-xs font-semibold text-red-700">
-              ⚠ Escalated to human developer
+              <Icon name="warning" size={13} className="mr-1 inline" />Escalated to human developer
             </span>
           )}
           {amendInFlight && !escalated && (
             <span className="rounded-full bg-orange-100 px-3 py-1 text-xs font-semibold text-orange-700">
-              ↺ Regenerating with reviewer feedback…
+              <Icon name="refresh" size={13} spin className="mr-1 inline" />Regenerating with reviewer feedback…
             </span>
           )}
+          <div className="ml-3 flex shrink-0 items-center gap-2">
+          <button
+            onClick={() => setHelpOpen(true)}
+            className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:border-brand-300 hover:text-brand-700"
+            title="How this works, and what the colours mean"
+          >
+            <Icon name="help" size={13} className="mr-1 inline" />Help
+          </button>
+          </div>
           {activeProjectId && (
             <div className="ml-3 flex shrink-0 items-center gap-2">
               <NotificationBell projectId={activeProjectId} onGoToStage={selectStage} />
@@ -268,21 +307,21 @@ export default function Workspace() {
                 }`}
                 title="Show the full pipeline map (parallel groups, dependencies) and the workflow designer"
               >
-                🗺 Pipeline map
+                <Icon name="map" size={13} className="mr-1 inline" />Pipeline map
               </button>
               <button
                 onClick={() => setContextOpen(true)}
                 className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:border-brand-300 hover:text-brand-700"
                 title="Canon (binding project rules) and Formwork (output templates) fed to every agent"
               >
-                📖 Project Context
+                <Icon name="book" size={13} className="mr-1 inline" />Project Context
               </button>
               <button
                 onClick={() => setQualityOpen(true)}
                 className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:border-brand-300 hover:text-brand-700"
                 title="Quality metrics — validator-score trend, first-pass vs. rework rate, issues caught at the gate"
               >
-                📊 Quality
+                <Icon name="chart" size={13} className="mr-1 inline" />Quality
               </button>
               {detail.data?.me?.canManageTeam && (
                 <button
@@ -291,12 +330,13 @@ export default function Workspace() {
                   className="rounded-lg border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-600 hover:border-red-400 hover:bg-red-50 disabled:opacity-40"
                   title="Permanently delete this project and all its data"
                 >
-                  {deleting ? 'Deleting…' : '🗑 Delete'}
+                  <Icon name="trash" size={13} className="mr-1 inline" />{deleting ? 'Deleting…' : 'Delete'}
                 </button>
               )}
             </div>
           )}
         </header>
+        {helpOpen && <HelpPanel onClose={() => setHelpOpen(false)} />}
 
         {detail.isError && activeProjectId && (
           <div className="border-b border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
@@ -356,23 +396,40 @@ export default function Workspace() {
       </main>
 
       {/* ---------- right panel (drag its left edge to resize) ---------- */}
-      <div
-        onPointerDown={(e) => rightPanel.onPointerDown(e, 'left')}
-        onDoubleClick={() => rightPanel.setWidth(320)}
-        className="group w-1.5 shrink-0 cursor-col-resize bg-slate-100 hover:bg-brand-200"
-        title="Drag to resize · double-click to reset"
-      >
-        <div className="mx-auto h-8 w-0.5 translate-y-1/2 rounded bg-slate-300 group-hover:bg-brand-400" />
-      </div>
+      {!rightCollapsed && (
+        <div
+          onPointerDown={(e) => rightPanel.onPointerDown(e, 'left')}
+          onDoubleClick={() => rightPanel.setWidth(320)}
+          className="group w-1.5 shrink-0 cursor-col-resize bg-slate-100 hover:bg-brand-200"
+          title="Drag to resize · double-click to reset"
+        >
+          <div className="mx-auto h-8 w-0.5 translate-y-1/2 rounded bg-slate-300 group-hover:bg-brand-400" />
+        </div>
+      )}
       <aside
-        className="shrink-0 border-l border-slate-200 bg-slate-50"
-        style={{ width: rightPanel.width }}
+        className="relative shrink-0 border-l border-slate-200 bg-slate-50 transition-[width]"
+        style={{ width: rightCollapsed ? 40 : rightPanel.width }}
       >
-        <RightPanel
-          projectId={activeProjectId}
-          canManageTeam={detail.data?.me?.canManageTeam ?? false}
-          focusedPhase={focusedPhase}
-        />
+        <button
+          type="button" onClick={() => setRightCollapsed(!rightCollapsed)}
+          aria-label={rightCollapsed ? 'Expand details panel' : 'Collapse details panel'}
+          title={rightCollapsed ? 'Show team, artifacts, files & audit' : 'Hide this panel'}
+          className={`absolute top-2.5 z-10 rounded p-1 text-slate-500 hover:bg-slate-200 ${rightCollapsed ? 'left-1.5' : 'right-2'}`}
+        >
+          <Icon name={rightCollapsed ? 'chevron-left' : 'chevron-right'} size={16} />
+        </button>
+        {rightCollapsed && (
+          <div className="mt-14 flex justify-center">
+            <span className="select-none text-xs font-semibold tracking-widest text-slate-400 [writing-mode:vertical-rl]">ARTIFACTS · TEAM · FILES</span>
+          </div>
+        )}
+        <div className={rightCollapsed ? 'hidden' : 'h-full'}>
+          <RightPanel
+            projectId={activeProjectId}
+            canManageTeam={detail.data?.me?.canManageTeam ?? false}
+            focusedPhase={focusedPhase}
+          />
+        </div>
       </aside>
 
       {explorerOpen && (

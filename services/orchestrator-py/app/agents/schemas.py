@@ -118,9 +118,11 @@ class DiagramCluster(BaseModel):
 
 
 class DiagramNode(BaseModel):
-    """A typed node placed on the diagram. `service` selects the icon (aws or
-    generic key, e.g. alb, ecs, fargate, rds, s3, sqs, cloudfront, user, cache,
-    database, component); `group` is the cluster id it sits in ("" = top level)."""
+    """A typed node placed on the diagram. `service` selects the icon of the diagram's target
+    cloud: a vendor-neutral key (user, cdn, loadbalancer, api, service, function, database,
+    postgres, nosql, cache, queue, topic, stream, storage, identity, secrets, waf, monitoring …) or a
+    service of THAT cloud (aks, cosmosdb, servicebus, keyvault / ecs, dynamodb, sqs / gke, bigquery).
+    `group` is the cluster id it sits in ("" = top level)."""
     id: str
     label: str
     service: str = "component"
@@ -137,7 +139,10 @@ class CloudArchitecture(BaseModel):
     """A professional architecture diagram spec (D-51), rendered server-side to
     an SVG with real AWS icons and nested clusters."""
     title: str = "Architecture"
-    direction: Literal["TB", "LR"] = "TB"
+    # The CONFIRMED target cloud. Icons are chosen from this cloud only — an Azure solution
+    # never gets AWS icons. "auto" = infer from the service keys and the project's tech stack.
+    provider: Literal["auto", "aws", "azure", "gcp", "onprem"] = "auto"
+    direction: Literal["TB", "LR"] = "LR"
     clusters: list[DiagramCluster] = Field(default_factory=list)
     nodes: list[DiagramNode] = Field(default_factory=list)
     edges: list[DiagramEdge] = Field(default_factory=list)
@@ -407,12 +412,41 @@ class ProposedArtifact(BaseModel):
     reason: str = Field(default="", description="One line: why it's recommended or not, per the user's intent.")
 
 
+class TraitJudgement(BaseModel):
+    """The AI's call on ONE project characteristic, with the evidence it relied on."""
+    value: Literal["present", "absent", "unknown"] = Field(default="unknown", description="present | absent | unknown. Use unknown unless the input states or clearly implies it — never guess.")
+    evidence: str = Field(default="", description="A short quote or fact from the input that justifies the call.")
+    confidence: float = Field(default=0.0, description="0.0-1.0 certainty in the call.")
+
+
+class ProjectTraitsIntel(BaseModel):
+    """What kind of project this is. Lenient defaults (single-shot, advisory). Code, not the
+    model, decides what to do with these (services/applicability)."""
+    projectType: str = Field(default="", description="One line, e.g. 'REST API microservice' or 'React web app'.")
+    ui: TraitJudgement = Field(default_factory=TraitJudgement, description="Has a user interface (web/mobile/desktop screens).")
+    api: TraitJudgement = Field(default_factory=TraitJudgement, description="Exposes or consumes an HTTP/RPC API as a core part.")
+    database: TraitJudgement = Field(default_factory=TraitJudgement, description="Persists data in a database / data store.")
+    cloud: TraitJudgement = Field(default_factory=TraitJudgement, description="Targets a cloud platform.")
+    aws: TraitJudgement = Field(default_factory=TraitJudgement, description="Targets AWS specifically.")
+    container: TraitJudgement = Field(default_factory=TraitJudgement, description="Ships as containers (Docker/Kubernetes).")
+    service: TraitJudgement = Field(default_factory=TraitJudgement, description="A long-running service (API and/or UI) that can be load- or security-tested at runtime; absent for libraries, CLIs, batch jobs.")
+
+
+class SuggestedArtifact(BaseModel):
+    """An artifact NOT in the stage's standard template that the planner thinks this
+    particular project needs. The user opts in; selected ones are added as instructions."""
+    name: str = Field(default="", description="Artifact/document name, e.g. 'Threat model' or 'Data retention policy'.")
+    reason: str = Field(default="", description="One line: why THIS project needs it.")
+    include: bool = Field(default=False, description="Opt-in; the user ticks it.")
+
+
 class StagePlanIntel(BaseModel):
     # D-112 intent reconciliation: restate the intent, reconcile it with the stage's
     # declared outputs/steering/templates, advise what's best, and let the user decide.
     understood: str = Field(default="", description="Plain-language restatement of what the user is asking this stage to do.")
     willProduce: list[ProposedArtifact] = Field(default_factory=list, description="The stage's outputs, each with a produce/skip recommendation per intent.")
     formatSource: str = Field(default="", description="The output format to follow: the default template, an attached file's sections, or a named formwork — whichever best matches the intent.")
+    suggestedArtifacts: list[SuggestedArtifact] = Field(default_factory=list, description="Up to 4 artifacts missing from the standard template that this specific project would benefit from. Empty if none.")
     outOfScope: list[str] = Field(default_factory=list, description="What is deliberately NOT produced, including anything the intent asks for that belongs to a different stage.")
     recommendation: str = Field(default="", description="One or two sentences advising the best course for this request.")
     summary: str = Field(default="", description="1-3 sentences: the tailored approach for this stage.")

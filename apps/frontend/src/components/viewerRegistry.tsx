@@ -56,7 +56,8 @@ export function MermaidView({ source }: { source: string }) {
       try {
         const cleaned = sanitizeMermaid(source);
         const mermaid = (await import('mermaid')).default;
-        mermaid.initialize({ startOnLoad: false, theme: 'neutral', securityLevel: 'loose' });
+        // htmlLabels:false → plain SVG text, so diagrams can be exported to PNG / Word / PDF intact.
+        mermaid.initialize({ startOnLoad: false, theme: 'neutral', securityLevel: 'loose', htmlLabels: false, flowchart: { htmlLabels: false } });
         await mermaid.parse(cleaned);
         const { svg: rendered } = await mermaid.render(`artifact-mmd-${++mermaidSeq}`, cleaned);
         if (!cancelled) setSvg(rendered);
@@ -206,16 +207,20 @@ export function PlantUmlView({ source }: { source: string }) {
 
 // ---------------------------------------------------------------- draw.io (mxGraph)
 /**
- * Render a `.drawio` (mxGraph XML) document to a self-contained SVG in the
- * browser — no external service or library, so it works offline and under the
- * strict CSP. It's a faithful topology preview: boxes, dashed boundary
- * containers, labels, and orthogonal connectors with arrowheads. AWS resource
- * icons are shown as labelled service chips (the real stencils appear when the
- * file is opened in diagrams.net via Download).
+ * Render a `.drawio` (mxGraph XML) document to a self-contained SVG in the browser — no external
+ * service or library, so it works offline and under the strict CSP. A faithful preview of what
+ * diagrams.net shows: embedded service icons (`shape=image;image=data:…`), nested containers with
+ * their fills/dashes/titles (child coordinates are relative to a container parent), title and
+ * legend text cells, HTML labels (bold name + muted official service name), and orthogonal edges
+ * routed border-to-border with arrowheads, dashed async flows and white label backgrounds.
+ * Native cloud stencils (mxgraph.aws4 / azure / gcp, as in hand-authored files) are shown as
+ * chips in the cloud's brand colour; the real stencils appear when opened in diagrams.net.
  */
-interface DioVertex {
-  id: string; x: number; y: number; w: number; h: number;
-  label: string; style: Record<string, string>; container: boolean;
+interface DioCell {
+  id: string; parent: string; x: number; y: number; w: number; h: number;
+  value: string; style: Record<string, string>;
+  // page coordinates (resolved through the parent chain)
+  ax: number; ay: number;
 }
 
 function parseStyle(s: string): Record<string, string> {
@@ -229,108 +234,261 @@ function parseStyle(s: string): Record<string, string> {
   return out;
 }
 
-function wrapLabel(s: string, w: number): string[] {
-  const max = Math.max(6, Math.floor(w / 7));
+interface LabelLine { text: string; bold: boolean; color?: string; size?: number }
+
+/** Split a label (HTML when style html=1) into lines with their basic styling. */
+function labelLines(value: string, isHtml: boolean): LabelLine[] {
+  if (!value) return [];
+  if (!isHtml) return value.split('\n').map((t) => ({ text: t, bold: false }));
+  const root = new DOMParser().parseFromString(`<div>${value}</div>`, 'text/html').body.firstElementChild;
+  const lines: LabelLine[][] = [[]];
+  const walk = (n: Node, st: { bold: boolean; color?: string; size?: number }) => {
+    n.childNodes.forEach((c) => {
+      if (c.nodeType === 3) {
+        const t = (c.textContent ?? '').replace(/ /g, ' ');
+        if (t) lines[lines.length - 1]!.push({ text: t, ...st });
+      } else if (c.nodeType === 1) {
+        const el = c as HTMLElement;
+        const tag = el.tagName.toLowerCase();
+        if (tag === 'br') { lines.push([]); return; }
+        const next = { ...st };
+        if (tag === 'b' || tag === 'strong') next.bold = true;
+        if (tag === 'font') {
+          if (el.getAttribute('color')) next.color = el.getAttribute('color') ?? undefined;
+          const fs = /font-size:\s*(\d+)/.exec(el.getAttribute('style') ?? '');
+          if (fs) next.size = Number(fs[1]);
+        }
+        if (['div', 'p'].includes(tag) && lines[lines.length - 1]!.length) lines.push([]);
+        walk(el, next);
+      }
+    });
+  };
+  if (root) walk(root, { bold: false });
+  return lines
+    .map((runs) => {
+      const text = runs.map((r) => r.text).join('').replace(/\s+/g, ' ').trim();
+      const first = runs.find((r) => r.text.trim());
+      return { text, bold: Boolean(first?.bold), color: first?.color, size: first?.size };
+    })
+    .filter((l) => l.text);
+}
+
+function wrapText(s: string, maxChars: number): string[] {
+  const words = s.split(/\s+/);
   const lines: string[] = [];
   let cur = '';
-  for (const word of s.split(/\s+/)) {
-    if ((`${cur} ${word}`).trim().length > max && cur) {
-      lines.push(cur);
-      cur = word;
-    } else {
-      cur = cur ? `${cur} ${word}` : word;
-    }
-    if (lines.length >= 3) break;
+  for (const w of words) {
+    if ((`${cur} ${w}`).trim().length > maxChars && cur) { lines.push(cur); cur = w; }
+    else cur = cur ? `${cur} ${w}` : w;
   }
-  if (cur && lines.length < 3) lines.push(cur);
-  return lines.slice(0, 3);
+  if (cur) lines.push(cur);
+  return lines;
 }
+
+/** draw.io writes `data:image/png,<base64>` (no ";base64", since ";" separates style fields);
+ *  browsers need the explicit encoding to decode the image. */
+export function normalizeDataUri(uri: string): string {
+  const m = /^data:(image\/[a-z+.-]+)(;[^,]*)?,(.*)$/i.exec(uri);
+  if (!m) return uri;
+  if ((m[2] ?? '').includes('base64') || (m[2] ?? '').includes('charset')) return uri;
+  return /^[A-Za-z0-9+/=\s]+$/.test(m[3] ?? '') ? `data:${m[1]};base64,${m[3]}` : uri;
+}
+
+const PROVIDER_CHIP: Array<[RegExp, string, string]> = [
+  [/aws/, '#ED7100', '#B35400'], [/azure/, '#0078D4', '#005A9E'], [/gcp|google/, '#4285F4', '#2A65C5'],
+];
 
 export function renderDrawioSvg(xml: string): { svg?: string; error?: string } {
   const doc = new DOMParser().parseFromString(xml, 'application/xml');
   if (doc.getElementsByTagName('parsererror').length) return { error: 'the XML is not well-formed' };
-  const cells = Array.from(doc.getElementsByTagName('mxCell'));
-  const verts: DioVertex[] = [];
-  const edges: { source: string; target: string; label: string }[] = [];
-  for (const c of cells) {
-    const style = parseStyle(c.getAttribute('style') || '');
-    const geo = c.getElementsByTagName('mxGeometry')[0];
-    if (c.getAttribute('vertex') === '1' && geo) {
-      verts.push({
-        id: c.getAttribute('id') || '',
-        x: +(geo.getAttribute('x') || 0), y: +(geo.getAttribute('y') || 0),
-        w: +(geo.getAttribute('width') || 0), h: +(geo.getAttribute('height') || 0),
-        label: c.getAttribute('value') || '', style,
-        container: 'dashed' in style || style.container === '1' || style.fillColor === 'none',
-      });
-    } else if (c.getAttribute('edge') === '1') {
-      edges.push({
-        source: c.getAttribute('source') || '', target: c.getAttribute('target') || '',
-        label: c.getAttribute('value') || '',
+  const raw = Array.from(doc.getElementsByTagName('mxCell'));
+  const geo = new Map<string, { x: number; y: number; w: number; h: number; parent: string }>();
+  for (const c of raw) {
+    const g = c.getElementsByTagName('mxGeometry')[0];
+    if (c.getAttribute('vertex') === '1' && g) {
+      geo.set(c.getAttribute('id') || '', {
+        x: +(g.getAttribute('x') || 0), y: +(g.getAttribute('y') || 0),
+        w: +(g.getAttribute('width') || 0), h: +(g.getAttribute('height') || 0),
+        parent: c.getAttribute('parent') || '1',
       });
     }
   }
-  if (!verts.length) return { error: 'no shapes to render' };
+  const absOf = (id: string): { x: number; y: number } => {
+    let x = 0; let y = 0; let cur = id; const seen = new Set<string>();
+    while (geo.has(cur) && !seen.has(cur)) {
+      seen.add(cur);
+      const g = geo.get(cur)!;
+      x += g.x; y += g.y; cur = g.parent;
+    }
+    return { x, y };
+  };
 
-  const byId = new Map(verts.map((v) => [v.id, v]));
-  const minX = Math.min(...verts.map((v) => v.x));
-  const minY = Math.min(...verts.map((v) => v.y));
-  const maxX = Math.max(...verts.map((v) => v.x + v.w));
-  const maxY = Math.max(...verts.map((v) => v.y + v.h));
+  const cells: DioCell[] = [];
+  const edges: { source: string; target: string; value: string; style: Record<string, string>; points: [number, number][] }[] = [];
+  for (const c of raw) {
+    const style = parseStyle(c.getAttribute('style') || '');
+    if (c.getAttribute('vertex') === '1' && geo.has(c.getAttribute('id') || '')) {
+      const id = c.getAttribute('id') || '';
+      const g = geo.get(id)!;
+      const a = absOf(id);
+      cells.push({ id, parent: g.parent, x: g.x, y: g.y, w: g.w, h: g.h, value: c.getAttribute('value') || '', style, ax: a.x, ay: a.y });
+    } else if (c.getAttribute('edge') === '1') {
+      const points = Array.from(c.getElementsByTagName('mxPoint'))
+        .filter((pt) => pt.getAttribute('as') !== 'sourcePoint' && pt.getAttribute('as') !== 'targetPoint')
+        .map((pt): [number, number] => [+(pt.getAttribute('x') || 0), +(pt.getAttribute('y') || 0)]);
+      edges.push({ source: c.getAttribute('source') || '', target: c.getAttribute('target') || '',
+        value: c.getAttribute('value') || '', style, points });
+    }
+  }
+  if (!cells.length) return { error: 'no shapes to render' };
+
+  const isText = (c: DioCell) => 'text' in c.style || c.style.shape === 'text';
+  const isContainer = (c: DioCell) =>
+    c.style.container === '1' || 'swimlane' in c.style || 'dashed' in c.style || c.style.fillColor === 'none';
+  const hasImage = (c: DioCell) => (c.style.image ?? '').startsWith('data:image');
+  const byId = new Map(cells.map((v) => [v.id, v]));
+
+  // extents (icon labels hang below the icon)
+  const extra = (c: DioCell) => (hasImage(c) && c.style.verticalLabelPosition === 'bottom' ? 46 : 0);
+  const minX = Math.min(...cells.map((v) => v.ax));
+  const minY = Math.min(...cells.map((v) => v.ay));
+  const maxX = Math.max(...cells.map((v) => v.ax + v.w));
+  const maxY = Math.max(...cells.map((v) => v.ay + v.h + extra(v)));
   const pad = 24;
   const width = maxX - minX + pad * 2;
   const height = maxY - minY + pad * 2;
-  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const tx = (x: number) => x - minX + pad;
   const ty = (y: number) => y - minY + pad;
 
-  const out: string[] = [
-    '<defs><marker id="dio-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" '
-    + 'markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 z" fill="#5b6478"/></marker></defs>',
-  ];
+  const markers = new Map<string, string>();
+  const marker = (color: string) => {
+    const key = color === '#5b6478' ? 'dio-arrow' : `dio-arrow-${color.replace('#', '')}`;
+    if (!markers.has(key)) {
+      markers.set(key, `<marker id="${key}" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" `
+        + `markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 z" fill="${color}"/></marker>`);
+    }
+    return key;
+  };
+  marker('#5b6478');
 
-  // Boundary containers first (behind).
-  for (const v of verts.filter((x) => x.container)) {
-    out.push(`<rect x="${tx(v.x)}" y="${ty(v.y)}" width="${v.w}" height="${v.h}" rx="4" fill="none" `
-      + `stroke="${v.style.strokeColor || '#7f8c9a'}" stroke-dasharray="6 4"/>`);
-    if (v.label) out.push(`<text x="${tx(v.x) + 8}" y="${ty(v.y) + 16}" font-size="12" font-weight="600" `
-      + `fill="#5b6478">${esc(v.label)}</text>`);
+  const out: string[] = [];
+  const drawLines = (lines: LabelLine[], x: number, y: number, anchor: 'start' | 'middle', base: number,
+    fill: string, maxChars: number, lineH = 14) => {
+    let cy = y;
+    for (const ln of lines) {
+      const size = ln.size ?? base;
+      for (const piece of wrapText(ln.text, maxChars)) {
+        out.push(`<text x="${x}" y="${cy}" font-size="${size}" ${ln.bold ? 'font-weight="700" ' : ''}`
+          + `fill="${ln.color && ln.color !== 'default' ? ln.color : fill}" text-anchor="${anchor}">${esc(piece)}</text>`);
+        cy += Math.round(size * 1.25) + (lineH - 14);
+      }
+    }
+  };
+
+  // containers (outermost first so nested ones draw on top)
+  const depthOf = (c: DioCell) => { let d = 0; let p = c.parent; const seen = new Set<string>(); while (byId.has(p) && !seen.has(p)) { seen.add(p); d++; p = byId.get(p)!.parent; } return d; };
+  for (const v of cells.filter((x) => isContainer(x) && !isText(x)).sort((a, b) => depthOf(a) - depthOf(b))) {
+    const stroke = v.style.strokeColor && v.style.strokeColor !== 'none' ? v.style.strokeColor : '#7f8c9a';
+    const fill = v.style.fillColor && v.style.fillColor !== 'none' ? v.style.fillColor : 'none';
+    const sw = v.style.strokeWidth ?? '1.2';
+    const rx = v.style.rounded === '1' ? 6 : 2;
+    out.push(`<rect x="${tx(v.ax)}" y="${ty(v.ay)}" width="${v.w}" height="${v.h}" rx="${rx}" fill="${fill}" `
+      + `stroke="${stroke}" stroke-width="${sw}"${v.style.dashed === '1' ? ' stroke-dasharray="6 4"' : ''}/>`);
+    const lines = labelLines(v.value, v.style.html === '1');
+    const fs = Number(v.style.fontSize ?? 12);
+    drawLines(lines.map((l) => ({ ...l, bold: l.bold || v.style.fontStyle === '1' })), tx(v.ax) + 12, ty(v.ay) + 8 + fs,
+      'start', fs, v.style.fontColor ?? '#5b6478', Math.floor(v.w / (fs * 0.6)));
   }
-  // Edges (single-elbow orthogonal route) with arrowheads + labels.
+
+  // edges: border-to-border orthogonal routes
+  const anchor = (c: DioCell, side: 'l' | 'r' | 't' | 'b'): [number, number] => {
+    const cx = tx(c.ax + c.w / 2); const cy = ty(c.ay + c.h / 2);
+    return side === 'l' ? [tx(c.ax), cy] : side === 'r' ? [tx(c.ax + c.w), cy] : side === 't' ? [cx, ty(c.ay)] : [cx, ty(c.ay + c.h)];
+  };
   for (const e of edges) {
-    const s = byId.get(e.source);
-    const t = byId.get(e.target);
+    const s = byId.get(e.source); const t = byId.get(e.target);
     if (!s || !t) continue;
-    const sx = tx(s.x + s.w / 2);
-    const sy = ty(s.y + s.h / 2);
-    const ex = tx(t.x + t.w / 2);
-    const ey = ty(t.y + t.h / 2);
-    out.push(`<path d="M ${sx} ${sy} L ${ex} ${sy} L ${ex} ${ey}" fill="none" stroke="#5b6478" `
-      + `stroke-width="1.5" marker-end="url(#dio-arrow)"/>`);
-    if (e.label) out.push(`<text x="${(sx + ex) / 2}" y="${sy - 4}" font-size="10" fill="#5b6478" `
-      + `text-anchor="middle">${esc(e.label)}</text>`);
+    const color = e.style.strokeColor && e.style.strokeColor !== 'none' ? e.style.strokeColor : '#5b6478';
+    let d: string;
+    let lx: number; let ly: number;
+    if (e.points.length) {
+      // routed by the generator: border port → waypoints → border port
+      const wp = e.points.map(([x, y]) => [tx(x), ty(y)] as [number, number]);
+      const side = (c: DioCell, p: [number, number]): 'l' | 'r' | 't' | 'b' => {
+        const l = tx(c.ax); const r = tx(c.ax + c.w); const bt = ty(c.ay + c.h);
+        return p[0] > r ? 'r' : p[0] < l ? 'l' : p[1] > bt ? 'b' : 't';
+      };
+      const a0 = anchor(s, side(s, wp[0]!));
+      const a1 = anchor(t, side(t, wp[wp.length - 1]!));
+      const pts: [number, number][] = [a0, ...wp, a1];
+      d = pts.map((pt, i) => `${i ? 'L' : 'M'} ${pt[0]} ${pt[1]}`).join(' ');
+      let best = 0; lx = pts[0]![0]; ly = pts[0]![1];
+      for (let i = 0; i < pts.length - 1; i++) {
+        const len = Math.abs(pts[i + 1]![0] - pts[i]![0]) + Math.abs(pts[i + 1]![1] - pts[i]![1]);
+        if (len > best) { best = len; lx = (pts[i]![0] + pts[i + 1]![0]) / 2; ly = (pts[i]![1] + pts[i + 1]![1]) / 2; }
+      }
+    } else {
+      const dx = (t.ax + t.w / 2) - (s.ax + s.w / 2);
+      const dy = (t.ay + t.h / 2) - (s.ay + s.h / 2);
+      const hint = e.style.exitX === '1' ? 'h' : e.style.exitY === '1' ? 'v' : undefined;
+      const horizontal = hint ? hint === 'h' : Math.abs(dx) >= Math.abs(dy);
+      const [sx, sy] = anchor(s, horizontal ? (dx >= 0 ? 'r' : 'l') : (dy >= 0 ? 'b' : 't'));
+      const [ex, ey] = anchor(t, horizontal ? (dx >= 0 ? 'l' : 'r') : (dy >= 0 ? 't' : 'b'));
+      const mx = (sx + ex) / 2; const my = (sy + ey) / 2;
+      d = horizontal
+        ? (Math.abs(sy - ey) < 2 ? `M ${sx} ${sy} L ${ex} ${ey}` : `M ${sx} ${sy} L ${mx} ${sy} L ${mx} ${ey} L ${ex} ${ey}`)
+        : (Math.abs(sx - ex) < 2 ? `M ${sx} ${sy} L ${ex} ${ey}` : `M ${sx} ${sy} L ${sx} ${my} L ${ex} ${my} L ${ex} ${ey}`);
+      lx = horizontal ? mx : (sx + ex) / 2;
+      ly = horizontal ? (Math.abs(sy - ey) < 2 ? sy : (sy + ey) / 2) : my;
+    }
+    out.push(`<path d="${d}" fill="none" stroke="${color}" stroke-width="${e.style.strokeWidth ?? 1.5}" `
+      + `stroke-linejoin="round"${e.style.dashed === '1' ? ' stroke-dasharray="7 4"' : ''} marker-end="url(#${marker(color)})"/>`);
+    const label = labelLines(e.value, e.style.html === '1').map((l) => l.text).join(' ');
+    if (label) {
+      const w = Math.min(label.length * 6 + 10, 220);
+      out.push(`<rect x="${lx - w / 2}" y="${ly - 9}" width="${w}" height="16" rx="3" fill="#ffffff" fill-opacity="0.92"/>`);
+      out.push(`<text x="${lx}" y="${ly + 3}" font-size="10.5" fill="#1F2937" text-anchor="middle">${esc(label.slice(0, 36))}</text>`);
+    }
   }
-  // Nodes on top.
-  for (const v of verts.filter((x) => !x.container)) {
-    const isAws = (v.style.shape || '').includes('aws4') || (v.style.resIcon || '').includes('aws4');
-    const fill = isAws ? '#ED7100'
-      : (v.style.fillColor && v.style.fillColor !== 'none' ? v.style.fillColor : '#dae8fc');
-    const stroke = v.style.strokeColor && v.style.strokeColor !== 'none' ? v.style.strokeColor
-      : (isAws ? '#B35400' : '#6c8ebf');
-    const rounded = v.style.rounded === '1' || isAws;
-    const textColor = isAws ? '#ffffff' : '#1a2536';
-    out.push(`<rect x="${tx(v.x)}" y="${ty(v.y)}" width="${v.w}" height="${v.h}" rx="${rounded ? 8 : 2}" `
-      + `fill="${fill}" stroke="${stroke}"/>`);
-    const lines = wrapLabel(v.label, v.w);
-    const cx = tx(v.x) + v.w / 2;
-    const startY = ty(v.y) + v.h / 2 - (lines.length - 1) * 7 + 4;
-    lines.forEach((ln, i) => out.push(`<text x="${cx}" y="${startY + i * 14}" font-size="11" `
-      + `fill="${textColor}" text-anchor="middle">${esc(ln)}</text>`));
+
+  // nodes + text cells on top
+  for (const v of cells.filter((x) => !(isContainer(x) && !isText(x)))) {
+    const lines = labelLines(v.value, v.style.html === '1');
+    if (hasImage(v)) {
+      out.push(`<image href="${esc(normalizeDataUri(v.style.image!))}" x="${tx(v.ax)}" y="${ty(v.ay)}" width="${v.w}" height="${v.h}"/>`);
+      drawLines(lines, tx(v.ax) + v.w / 2, ty(v.ay) + v.h + 14, 'middle', Number(v.style.fontSize ?? 11), '#1F2937', 20);
+      continue;
+    }
+    if (isText(v)) {
+      const stroke = v.style.strokeColor && v.style.strokeColor !== 'none';
+      const fill = v.style.fillColor && v.style.fillColor !== 'none';
+      if (stroke || fill) {
+        out.push(`<rect x="${tx(v.ax)}" y="${ty(v.ay)}" width="${v.w}" height="${v.h}" rx="${v.style.rounded === '1' ? 6 : 0}" `
+          + `fill="${fill ? v.style.fillColor : 'none'}" stroke="${stroke ? v.style.strokeColor : 'none'}"/>`);
+      }
+      const fs = Number(v.style.fontSize ?? 12);
+      const sp = Number(v.style.spacing ?? 4) + 4;
+      drawLines(lines, tx(v.ax) + sp, ty(v.ay) + sp + fs, 'start', fs, v.style.fontColor ?? '#1F2937',
+        Math.floor((v.w - sp * 2) / (fs * 0.55)));
+      continue;
+    }
+    const shape = `${v.style.shape ?? ''} ${v.style.resIcon ?? ''}`.toLowerCase();
+    const chip = PROVIDER_CHIP.find(([rx]) => rx.test(shape));
+    const fill = chip ? chip[1] : (v.style.fillColor && v.style.fillColor !== 'none' ? v.style.fillColor : '#dae8fc');
+    const stroke = chip ? chip[2] : (v.style.strokeColor && v.style.strokeColor !== 'none' ? v.style.strokeColor : '#6c8ebf');
+    const rounded = v.style.rounded === '1' || Boolean(chip);
+    out.push(`<rect x="${tx(v.ax)}" y="${ty(v.ay)}" width="${v.w}" height="${v.h}" rx="${rounded ? 8 : 2}" fill="${fill}" stroke="${stroke}"/>`);
+    const cx = tx(v.ax) + v.w / 2;
+    const wrapped = lines.flatMap((l) => wrapText(l.text, Math.max(6, Math.floor(v.w / 7))).map((t) => ({ ...l, text: t }))).slice(0, 4);
+    const startY = ty(v.ay) + v.h / 2 - (wrapped.length - 1) * 7 + 4;
+    wrapped.forEach((ln, i) => out.push(`<text x="${cx}" y="${startY + i * 14}" font-size="11" ${ln.bold ? 'font-weight="700" ' : ''}`
+      + `fill="${chip ? '#ffffff' : (v.style.fontColor ?? '#1a2536')}" text-anchor="middle">${esc(ln.text)}</text>`));
   }
 
   return {
     svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" `
-      + `height="${height}" font-family="ui-sans-serif,system-ui,sans-serif">${out.join('')}</svg>`,
+      + `height="${height}" font-family="ui-sans-serif,system-ui,sans-serif"><defs>${Array.from(markers.values()).join('')}</defs>${out.join('')}</svg>`,
   };
 }
 
@@ -388,26 +546,28 @@ export function isStructurizr(c: ViewerContext): boolean {
  * rendered visually in place, so the reviewer sees the document WITH its
  * diagrams as one page.
  */
+// Module-level on purpose: react-markdown treats a NEW components object as new component
+// types, which would remount every inline diagram (re-render Mermaid, flicker, lose exports
+// in flight) on each parent re-render.
+const MARKDOWN_COMPONENTS = {
+  pre({ children }: { children?: unknown }) {
+    const child = (Array.isArray(children) ? children[0] : children) as
+      | { props?: { className?: string; children?: unknown } }
+      | undefined;
+    const cls = child?.props?.className || '';
+    const lang = /language-(\w+)/.exec(cls)?.[1];
+    const src = String(child?.props?.children ?? '').replace(/\n$/, '');
+    if (lang === 'mermaid') return <MermaidView source={src} />;
+    if (lang === 'plantuml' || lang === 'puml') return <PlantUmlView source={src} />;
+    if (lang === 'drawio' || src.trimStart().startsWith('<mxfile')) return <DrawioView source={src} />;
+    return <pre>{children as ReactNode}</pre>;
+  },
+};
+
 export function MarkdownDoc({ content }: { content: string }) {
   return (
     <div className="prose-chat text-sm">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          pre({ children }) {
-            const child = (Array.isArray(children) ? children[0] : children) as
-              | { props?: { className?: string; children?: unknown } }
-              | undefined;
-            const cls = child?.props?.className || '';
-            const lang = /language-(\w+)/.exec(cls)?.[1];
-            const src = String(child?.props?.children ?? '').replace(/\n$/, '');
-            if (lang === 'mermaid') return <MermaidView source={src} />;
-            if (lang === 'plantuml' || lang === 'puml') return <PlantUmlView source={src} />;
-            if (lang === 'drawio' || src.trimStart().startsWith('<mxfile')) return <DrawioView source={src} />;
-            return <pre>{children}</pre>;
-          },
-        }}
-      >
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
         {content}
       </ReactMarkdown>
     </div>
