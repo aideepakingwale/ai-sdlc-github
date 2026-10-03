@@ -1,4 +1,9 @@
 /**
+ * DETERMINISTIC browser-side export — no LLM, no API calls, no tokens. It only converts what is
+ * already rendered on screen (DOM → clipboard / .docx / print). The single network read is
+ * fetching a diagram image that the page itself already loaded, and only from the same origin
+ * (see sameOrigin); a test enforces both properties.
+ *
  * Browser-side export of the rendered document: rich copy-paste, Word (.docx) and PDF.
  * What is exported is what is on screen — the rendered DOM — with every diagram
  * (Mermaid, PlantUML, draw.io, C4) turned into an embedded PNG so it survives Word and paste.
@@ -70,8 +75,14 @@ export async function svgToPng(src: SVGSVGElement | string, scale = 2): Promise<
   try { return await rasterize(snapshotSvg(src), scale); } catch { return null; }
 }
 
+/** Only same-origin URLs may be fetched during export (the page's own PlantUML proxy, never a third party). */
+export function sameOrigin(url: string, base: string = window.location.href): boolean {
+  try { return new URL(url, base).origin === new URL(base).origin; } catch { return false; }
+}
+
 async function imgElementToPng(img: HTMLImageElement): Promise<Raster | null> {
   try {
+    if (!sameOrigin(img.currentSrc || img.src)) return null;
     const res = await fetch(img.currentSrc || img.src);
     const text = await res.text();
     if (text.trimStart().startsWith('<svg') || text.includes('<svg')) return await svgToPng(text);

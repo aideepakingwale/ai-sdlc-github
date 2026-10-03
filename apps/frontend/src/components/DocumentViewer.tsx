@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useQueries } from '@tanstack/react-query';
-import { api } from '../api/client';
 import { MarkdownDoc, resolveViewer } from './viewerRegistry';
 import {
   composeMarkdown, fileSlug, humanize, orderForDocument, prepareMarkdown, sectionKind, sectionTitle, type DocItem,
@@ -9,6 +7,10 @@ import {
 import { copyRich, copyText, downloadBlob, exportDocx, printDocument } from '../lib/docExport';
 
 /**
+ * DETERMINISTIC — no LLM, no API calls. Everything here (rendering, copy, Word, PDF, Markdown)
+ * runs in the browser on content that is already loaded; a test enforces that this file and the
+ * export libraries never import the API client. Loading the artifacts is StageDocument's job.
+ *
  * Read a stage's output as ONE document: narrative (HLD, LLD …) with its diagrams (Mermaid,
  * PlantUML, draw.io, C4) rendered in place, a contents list, and Copy / Word / PDF / Markdown
  * export of exactly what is on screen. Renders in a portal so printing can show only the document.
@@ -144,33 +146,4 @@ export default function DocumentViewer({
     </div>,
     host,
   );
-}
-
-interface ArtefactRef { id: string; type: string; title: string; phase: number }
-
-/** Loads every artifact of a stage, then shows them as one document. */
-export function StageDocument({
-  projectId, artefacts, title, subtitle, onClose,
-}: { projectId: string; artefacts: ArtefactRef[]; title: string; subtitle?: string; onClose: () => void }) {
-  const results = useQueries({
-    queries: artefacts.map((a) => ({
-      queryKey: ['artefact', projectId, a.id],
-      queryFn: () => api.get<{ artefact: { id: string; type: string; title: string; content: string; storageKey?: string | null } }>(
-        `/api/projects/${projectId}/artefacts/${a.id}`),
-    })),
-  });
-  const loading = results.some((r) => r.isLoading);
-  const items: DocItem[] = results.flatMap((r) => {
-    const a = r.data?.artefact;
-    if (!a) return [];
-    const dot = a.storageKey ? a.storageKey.lastIndexOf('.') : -1;
-    return [{ id: a.id, type: a.type, title: a.title, content: a.content ?? '', ext: dot > 0 ? a.storageKey!.slice(dot).toLowerCase() : '' }];
-  });
-  if (loading) {
-    return createPortal(
-      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30" onClick={onClose}>
-        <div className="animate-pulse rounded-lg bg-white px-6 py-4 text-sm text-slate-500">Loading {artefacts.length} artifact(s)…</div>
-      </div>, document.body);
-  }
-  return <DocumentViewer title={title} subtitle={subtitle} items={items} onClose={onClose} />;
 }

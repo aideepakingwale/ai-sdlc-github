@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent 
 import ReactMarkdown from 'react-markdown';
 import { api, streamStageProgress } from '../api/client';
 import { PartTabs } from './PartTabs';
-import { StageDocument } from './DocumentViewer';
+import { StageDocument } from './StageDocument';
 import { useStickToBottom } from '../hooks/useStickToBottom';
 import type { ProjectFlow } from '../api/flow';
 import type { ChatMessage, PhaseStateView, User } from '../api/types';
