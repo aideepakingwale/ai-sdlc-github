@@ -20,6 +20,16 @@ import RightPanel from '../components/RightPanel';
 import StageWorkspace from '../components/StageWorkspace';
 import { useApp } from '../store';
 
+function usePersistedFlag(key: string): [boolean, (v: boolean) => void] {
+  const [v, setV] = useState(() => {
+    try { return localStorage.getItem(key) === '1'; } catch { return false; }
+  });
+  return [v, (n: boolean) => {
+    setV(n);
+    try { localStorage.setItem(key, n ? '1' : '0'); } catch { /* ignore */ }
+  }];
+}
+
 export default function Workspace() {
   const qc = useQueryClient();
   const { user, setUser, activeProjectId, setActiveProject } = useApp();
@@ -37,6 +47,8 @@ export default function Workspace() {
   const [deleting, setDeleting] = useState(false);
   const [mapOpen, setMapOpen] = useState(false);
   const rightPanel = useResizableWidth('right', 320);
+  const [leftCollapsed, setLeftCollapsed] = usePersistedFlag('sdlc:collapsed:left');
+  const [rightCollapsed, setRightCollapsed] = usePersistedFlag('sdlc:collapsed:right');
   const canManage = user?.role === 'PROJECT_MANAGER' || user?.role === 'SUPER_ADMIN';
 
   // Creation happens in NewProjectModal; on success we focus the new project and
@@ -126,7 +138,21 @@ export default function Workspace() {
   return (
     <div className="flex h-full">
       {/* ---------- left sidebar ---------- */}
-      <aside className="flex w-72 shrink-0 flex-col bg-slate-900 text-slate-100">
+      <aside className={`relative flex shrink-0 flex-col bg-slate-900 text-slate-100 transition-[width] ${leftCollapsed ? 'w-10' : 'w-72'}`}>
+        <button
+          type="button" onClick={() => setLeftCollapsed(!leftCollapsed)}
+          aria-label={leftCollapsed ? 'Expand projects panel' : 'Collapse projects panel'}
+          title={leftCollapsed ? 'Show projects & pipeline' : 'Hide projects & pipeline'}
+          className={`absolute z-10 rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white ${leftCollapsed ? 'left-1.5 top-3' : 'right-2 top-3'}`}
+        >
+          <Icon name={leftCollapsed ? 'chevron-right' : 'chevron-left'} size={16} />
+        </button>
+        {leftCollapsed && (
+          <div className="mt-14 flex flex-1 justify-center">
+            <span className="select-none text-xs font-semibold tracking-widest text-slate-500 [writing-mode:vertical-rl]">PROJECTS · PIPELINE</span>
+          </div>
+        )}
+        <div className={leftCollapsed ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
         <div className="border-b border-white/10 p-4">
           <div className="text-lg font-bold text-white">AI-SDLC</div>
           <div className="text-xs text-slate-400">Agentic pipeline · HITL gates</div>
@@ -234,6 +260,7 @@ export default function Workspace() {
               Sign out
             </button>
           </div>
+        </div>
         </div>
       </aside>
 
@@ -369,23 +396,40 @@ export default function Workspace() {
       </main>
 
       {/* ---------- right panel (drag its left edge to resize) ---------- */}
-      <div
-        onPointerDown={(e) => rightPanel.onPointerDown(e, 'left')}
-        onDoubleClick={() => rightPanel.setWidth(320)}
-        className="group w-1.5 shrink-0 cursor-col-resize bg-slate-100 hover:bg-brand-200"
-        title="Drag to resize · double-click to reset"
-      >
-        <div className="mx-auto h-8 w-0.5 translate-y-1/2 rounded bg-slate-300 group-hover:bg-brand-400" />
-      </div>
+      {!rightCollapsed && (
+        <div
+          onPointerDown={(e) => rightPanel.onPointerDown(e, 'left')}
+          onDoubleClick={() => rightPanel.setWidth(320)}
+          className="group w-1.5 shrink-0 cursor-col-resize bg-slate-100 hover:bg-brand-200"
+          title="Drag to resize · double-click to reset"
+        >
+          <div className="mx-auto h-8 w-0.5 translate-y-1/2 rounded bg-slate-300 group-hover:bg-brand-400" />
+        </div>
+      )}
       <aside
-        className="shrink-0 border-l border-slate-200 bg-slate-50"
-        style={{ width: rightPanel.width }}
+        className="relative shrink-0 border-l border-slate-200 bg-slate-50 transition-[width]"
+        style={{ width: rightCollapsed ? 40 : rightPanel.width }}
       >
-        <RightPanel
-          projectId={activeProjectId}
-          canManageTeam={detail.data?.me?.canManageTeam ?? false}
-          focusedPhase={focusedPhase}
-        />
+        <button
+          type="button" onClick={() => setRightCollapsed(!rightCollapsed)}
+          aria-label={rightCollapsed ? 'Expand details panel' : 'Collapse details panel'}
+          title={rightCollapsed ? 'Show team, artifacts, files & audit' : 'Hide this panel'}
+          className={`absolute top-2.5 z-10 rounded p-1 text-slate-500 hover:bg-slate-200 ${rightCollapsed ? 'left-1.5' : 'right-2'}`}
+        >
+          <Icon name={rightCollapsed ? 'chevron-left' : 'chevron-right'} size={16} />
+        </button>
+        {rightCollapsed && (
+          <div className="mt-14 flex justify-center">
+            <span className="select-none text-xs font-semibold tracking-widest text-slate-400 [writing-mode:vertical-rl]">ARTIFACTS · TEAM · FILES</span>
+          </div>
+        )}
+        <div className={rightCollapsed ? 'hidden' : 'h-full'}>
+          <RightPanel
+            projectId={activeProjectId}
+            canManageTeam={detail.data?.me?.canManageTeam ?? false}
+            focusedPhase={focusedPhase}
+          />
+        </div>
       </aside>
 
       {explorerOpen && (
