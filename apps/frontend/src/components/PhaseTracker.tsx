@@ -1,4 +1,5 @@
 import type { PhaseStateView } from '../api/types';
+import { Icon, type IconName } from './ui/Icon';
 
 const STATUS_STYLES: Record<string, string> = {
   NOT_STARTED: 'bg-slate-200 text-slate-500',
@@ -9,13 +10,13 @@ const STATUS_STYLES: Record<string, string> = {
   ESCALATED: 'bg-red-100 text-red-700',
 };
 
-const STATUS_ICON: Record<string, string> = {
-  NOT_STARTED: '○',
-  IN_PROGRESS: '◐',
-  PENDING_REVIEW: '⏸',
-  APPROVED: '✓',
-  AMEND_REQUESTED: '↺',
-  ESCALATED: '⚠',
+const STATUS_ICON: Record<string, IconName> = {
+  NOT_STARTED: 'circle',
+  IN_PROGRESS: 'loader',
+  PENDING_REVIEW: 'clock',
+  APPROVED: 'check',
+  AMEND_REQUESTED: 'refresh',
+  ESCALATED: 'warning',
 };
 
 /**
@@ -57,7 +58,7 @@ export default function PhaseTracker({
               className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${STATUS_STYLES[s.status] ?? ''}`}
               title={s.status}
             >
-              {STATUS_ICON[s.status] ?? s.phase}
+              {STATUS_ICON[s.status] ? <Icon name={STATUS_ICON[s.status]!} size={11} spin={s.status === 'IN_PROGRESS'} /> : s.phase}
             </span>
             <div className="min-w-0 flex-1">
               <div className="truncate font-medium text-slate-200">
@@ -73,7 +74,7 @@ export default function PhaseTracker({
                 className="shrink-0 rounded bg-bared-500/30 px-1 text-[9px] font-semibold text-bared-200"
                 title={s.staleReason ?? 'An upstream input changed — this stage may be outdated'}
               >
-                ⚠ outdated
+                <Icon name="warning" size={10} className="mr-0.5 inline" />outdated
               </span>
             )}
             {s.phase === currentPhase && !isSelected && !s.stale && (

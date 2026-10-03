@@ -4,6 +4,8 @@ import { api } from '../api/client';
 import type { ProjectFlow } from '../api/flow';
 import { ROLE_LABELS, type Artefact, type Project, type ProjectDetail } from '../api/types';
 import Dashboard from '../components/Dashboard';
+import HelpPanel from '../components/HelpPanel';
+import { Icon } from '../components/ui/Icon';
 import GovernancePanel from '../components/GovernancePanel';
 import NewProjectModal from '../components/NewProjectModal';
 import NotificationBell from '../components/NotificationBell';
@@ -29,6 +31,7 @@ export default function Workspace() {
   const [obsOpen, setObsOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
   const [qualityOpen, setQualityOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [focusedPhase, setFocusedPhase] = useState<number | null>(null);
   const [selectedStage, setSelectedStage] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -250,14 +253,23 @@ export default function Workspace() {
           </div>
           {escalated && (
             <span className="rounded-full bg-red-100 px-3 py-1 text-xs font-semibold text-red-700">
-              ⚠ Escalated to human developer
+              <Icon name="warning" size={13} className="mr-1 inline" />Escalated to human developer
             </span>
           )}
           {amendInFlight && !escalated && (
             <span className="rounded-full bg-orange-100 px-3 py-1 text-xs font-semibold text-orange-700">
-              ↺ Regenerating with reviewer feedback…
+              <Icon name="refresh" size={13} spin className="mr-1 inline" />Regenerating with reviewer feedback…
             </span>
           )}
+          <div className="ml-3 flex shrink-0 items-center gap-2">
+          <button
+            onClick={() => setHelpOpen(true)}
+            className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:border-brand-300 hover:text-brand-700"
+            title="How this works, and what the colours mean"
+          >
+            <Icon name="help" size={13} className="mr-1 inline" />Help
+          </button>
+          </div>
           {activeProjectId && (
             <div className="ml-3 flex shrink-0 items-center gap-2">
               <NotificationBell projectId={activeProjectId} onGoToStage={selectStage} />
@@ -268,21 +280,21 @@ export default function Workspace() {
                 }`}
                 title="Show the full pipeline map (parallel groups, dependencies) and the workflow designer"
               >
-                🗺 Pipeline map
+                <Icon name="map" size={13} className="mr-1 inline" />Pipeline map
               </button>
               <button
                 onClick={() => setContextOpen(true)}
                 className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:border-brand-300 hover:text-brand-700"
                 title="Canon (binding project rules) and Formwork (output templates) fed to every agent"
               >
-                📖 Project Context
+                <Icon name="book" size={13} className="mr-1 inline" />Project Context
               </button>
               <button
                 onClick={() => setQualityOpen(true)}
                 className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:border-brand-300 hover:text-brand-700"
                 title="Quality metrics — validator-score trend, first-pass vs. rework rate, issues caught at the gate"
               >
-                📊 Quality
+                <Icon name="chart" size={13} className="mr-1 inline" />Quality
               </button>
               {detail.data?.me?.canManageTeam && (
                 <button
@@ -291,12 +303,13 @@ export default function Workspace() {
                   className="rounded-lg border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-600 hover:border-red-400 hover:bg-red-50 disabled:opacity-40"
                   title="Permanently delete this project and all its data"
                 >
-                  {deleting ? 'Deleting…' : '🗑 Delete'}
+                  <Icon name="trash" size={13} className="mr-1 inline" />{deleting ? 'Deleting…' : 'Delete'}
                 </button>
               )}
             </div>
           )}
         </header>
+        {helpOpen && <HelpPanel onClose={() => setHelpOpen(false)} />}
 
         {detail.isError && activeProjectId && (
           <div className="border-b border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
