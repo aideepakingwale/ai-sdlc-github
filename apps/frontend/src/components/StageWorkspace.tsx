@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent 
 import ReactMarkdown from 'react-markdown';
 import { api, streamStageProgress } from '../api/client';
 import { PartTabs } from './PartTabs';
+import { StageDocument } from './DocumentViewer';
 import { useStickToBottom } from '../hooks/useStickToBottom';
 import type { ProjectFlow } from '../api/flow';
 import type { ChatMessage, PhaseStateView, User } from '../api/types';
@@ -150,6 +151,7 @@ export default function StageWorkspace({
   const [suggestSel, setSuggestSel] = useState<Record<string, boolean>>({});
   useEffect(() => setSuggestSel({}), [plan?.intel?.suggestedArtifacts]);
   const [showSystemPrompt, setShowSystemPrompt] = useState(false);
+  const [docOpen, setDocOpen] = useState(false);
   // D-112 Phase C: a conversational thread for the plan. The agent's proposal and
   // the reviewer's free-form refinements render as chat turns; each refinement is
   // APPENDED to the overlay and re-plans, so the discussion actually steers the run.
@@ -1511,9 +1513,24 @@ export default function StageWorkspace({
 
         {/* ---- outputs ---- */}
         <section>
-          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
-            Outputs ({stageArtefacts.length})
+          <div className="mb-1.5 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+            <span>Outputs ({stageArtefacts.length})</span>
+            {stageArtefacts.length > 0 && (
+              <button
+                type="button" onClick={() => setDocOpen(true)}
+                className="ml-auto rounded-lg border border-brand-300 bg-brand-50 px-2.5 py-1 text-[11px] font-semibold normal-case tracking-normal text-brand-700 hover:bg-brand-100"
+                title="Read all outputs of this stage as one document with diagrams; copy, or export to Word / PDF"
+              >
+                📄 Read as document · export
+              </button>
+            )}
           </div>
+          {docOpen && (
+            <StageDocument
+              projectId={projectId} artefacts={stageArtefacts} title={stage.name}
+              subtitle={`${stage.persona} · ${stage.name}`} onClose={() => setDocOpen(false)}
+            />
+          )}
           {stageArtefacts.length === 0 ? (
             <div className="rounded-lg border border-dashed border-slate-300 p-4 text-center text-xs text-slate-400">
               No outputs yet. {runnable ? 'Run this stage to generate them.' : 'Waiting on upstream stages.'}

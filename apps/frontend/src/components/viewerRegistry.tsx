@@ -56,7 +56,8 @@ export function MermaidView({ source }: { source: string }) {
       try {
         const cleaned = sanitizeMermaid(source);
         const mermaid = (await import('mermaid')).default;
-        mermaid.initialize({ startOnLoad: false, theme: 'neutral', securityLevel: 'loose' });
+        // htmlLabels:false → plain SVG text, so diagrams can be exported to PNG / Word / PDF intact.
+        mermaid.initialize({ startOnLoad: false, theme: 'neutral', securityLevel: 'loose', htmlLabels: false, flowchart: { htmlLabels: false } });
         await mermaid.parse(cleaned);
         const { svg: rendered } = await mermaid.render(`artifact-mmd-${++mermaidSeq}`, cleaned);
         if (!cancelled) setSvg(rendered);
@@ -388,26 +389,28 @@ export function isStructurizr(c: ViewerContext): boolean {
  * rendered visually in place, so the reviewer sees the document WITH its
  * diagrams as one page.
  */
+// Module-level on purpose: react-markdown treats a NEW components object as new component
+// types, which would remount every inline diagram (re-render Mermaid, flicker, lose exports
+// in flight) on each parent re-render.
+const MARKDOWN_COMPONENTS = {
+  pre({ children }: { children?: unknown }) {
+    const child = (Array.isArray(children) ? children[0] : children) as
+      | { props?: { className?: string; children?: unknown } }
+      | undefined;
+    const cls = child?.props?.className || '';
+    const lang = /language-(\w+)/.exec(cls)?.[1];
+    const src = String(child?.props?.children ?? '').replace(/\n$/, '');
+    if (lang === 'mermaid') return <MermaidView source={src} />;
+    if (lang === 'plantuml' || lang === 'puml') return <PlantUmlView source={src} />;
+    if (lang === 'drawio' || src.trimStart().startsWith('<mxfile')) return <DrawioView source={src} />;
+    return <pre>{children as ReactNode}</pre>;
+  },
+};
+
 export function MarkdownDoc({ content }: { content: string }) {
   return (
     <div className="prose-chat text-sm">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          pre({ children }) {
-            const child = (Array.isArray(children) ? children[0] : children) as
-              | { props?: { className?: string; children?: unknown } }
-              | undefined;
-            const cls = child?.props?.className || '';
-            const lang = /language-(\w+)/.exec(cls)?.[1];
-            const src = String(child?.props?.children ?? '').replace(/\n$/, '');
-            if (lang === 'mermaid') return <MermaidView source={src} />;
-            if (lang === 'plantuml' || lang === 'puml') return <PlantUmlView source={src} />;
-            if (lang === 'drawio' || src.trimStart().startsWith('<mxfile')) return <DrawioView source={src} />;
-            return <pre>{children}</pre>;
-          },
-        }}
-      >
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
         {content}
       </ReactMarkdown>
     </div>

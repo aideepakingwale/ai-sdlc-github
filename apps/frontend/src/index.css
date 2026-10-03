@@ -66,3 +66,15 @@ h1, h2, h3 {
 .prose-chat blockquote {
   @apply my-2 border-l-4 border-bared-500 bg-bared-200/40 px-3 py-1 text-sm;
 }
+
+/* Document view → PDF: print only the document (rendered in #doc-print-root, outside #root). */
+@page { margin: 14mm; }
+@media print {
+  body > #root { display: none !important; }
+  #doc-print-root { position: static !important; inset: auto !important; display: block !important; overflow: visible !important; background: #fff !important; }
+  #doc-print-root > div { position: static !important; display: block !important; background: #fff !important; }
+  #doc-print-root .doc-paper { max-width: none !important; margin: 0 !important; padding: 0 !important; box-shadow: none !important; }
+  #doc-print-root h1, #doc-print-root h2, #doc-print-root h3 { break-after: avoid; }
+  #doc-print-root pre, #doc-print-root table, #doc-print-root svg, #doc-print-root img { break-inside: avoid; max-width: 100% !important; }
+  #doc-print-root section { break-inside: auto; }
+}

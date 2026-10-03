@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import CodeView from './CodeView';
 import DiagramWorkbench from './DiagramWorkbench';
+import DocumentViewer from './DocumentViewer';
 import { MarkdownDoc, diagramKindOf, resolveViewer, type ViewerContext } from './viewerRegistry';
 
 interface RepairResult {
@@ -76,6 +77,7 @@ export default function ArtifactViewer({
   const [tab, setTab] = useState<string>('');
   const [repairing, setRepairing] = useState<null | 'fix' | 'regenerate'>(null);
   const [repairMsg, setRepairMsg] = useState('');
+  const [docView, setDocView] = useState(false);
   // In-place manual edit: stage writers edit the source and save instantly.
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
@@ -250,6 +252,13 @@ export default function ArtifactViewer({
                   </label>
                 </>
               )}
+              <button
+                onClick={() => setDocView(true)}
+                className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:border-brand-400 hover:text-brand-700"
+                title="Read as a document and copy / export to Word or PDF"
+              >
+                📄 Document · export
+              </button>
               <a
                 href={`/api/projects/${projectId}/artefacts/${a.id}/download`}
                 download={fileName}
@@ -270,6 +279,12 @@ export default function ArtifactViewer({
           </button>
         </div>
 
+        {docView && a && (
+          <DocumentViewer
+            title={a.title} subtitle={a.type} onClose={() => setDocView(false)}
+            items={[{ id: a.id, type: a.type, title: a.title, content: a.content, ext }]}
+          />
+        )}
         {repairMsg && (
           <div
             className={`border-b px-5 py-1.5 text-xs ${
