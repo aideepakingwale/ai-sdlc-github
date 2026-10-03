@@ -48,6 +48,12 @@ class FakeDynamo:
         current.update(status=next_status, reviewedBy=reviewed_by, comments=comments,
                        updatedAt=datetime.now(UTC).isoformat())
 
+    async def clear_phase_stale(self, *, project_id, phase):
+        item = self.phase_states.get(f"{project_id}#{phase}")
+        if item:
+            item.pop("stale", None)
+            item.pop("staleReason", None)
+
     async def get_build_tracker(self, run_id: str):
         return self.trackers.get(run_id)
 
@@ -119,6 +125,37 @@ class FakeDb:
         self.artefacts: list[dict[str, Any]] = []
         self.projects: dict[str, dict[str, Any]] = {}
         self.url_patches: list[tuple[str, int, str, str | None]] = [] #
+
+    async def list_members(self, project_id):
+        return list(getattr(self, "members", []))
+
+    # Review matrix (assignments + per-target sign-offs)
+    async def list_artefacts(self, project_id):
+        return [a for a in self.artefacts if a["project_id"] == project_id]
+
+    async def list_phase_assignments(self, project_id, phase):
+        return [r for r in getattr(self, "assignments", []) if r["project_id"] == project_id and r["phase"] == phase]
+
+    async def add_review_assignment(self, *, id, project_id, phase, target, user_email):  # noqa: A002
+        self.__dict__.setdefault("assignments", []).append(
+            {"id": id, "project_id": project_id, "phase": phase, "target": target, "user_email": user_email})
+
+    async def remove_review_assignment(self, *, project_id, phase, target, user_email):
+        self.assignments = [r for r in getattr(self, "assignments", []) if not (
+            r["project_id"] == project_id and r["phase"] == phase and r["target"] == target
+            and r["user_email"] == user_email)]
+
+    async def list_phase_signoffs(self, project_id, phase):
+        return [r for r in getattr(self, "signoffs", []) if r["project_id"] == project_id and r["phase"] == phase]
+
+    async def record_artifact_signoff(self, *, id, project_id, phase, artefact_id, user_id, user_email):  # noqa: A002
+        self.__dict__.setdefault("signoffs", []).append(
+            {"id": id, "project_id": project_id, "phase": phase, "artefact_id": artefact_id,
+             "user_id": user_id, "user_email": user_email})
+
+    async def clear_phase_signoffs(self, project_id, phase):
+        self.signoffs = [r for r in getattr(self, "signoffs", [])
+                         if not (r["project_id"] == project_id and r["phase"] == phase)]
 
     # Artefacts persistence ( deferred publish back-patch)
     async def insert_artefact(self, *, project_id, phase, type_, title, content, url,

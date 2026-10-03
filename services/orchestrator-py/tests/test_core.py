@@ -140,6 +140,9 @@ async def test_run_custom_phase_multi_output_and_declared_tools(fake_audit):
             arts.append(kw)
             return f"art-{len(arts)}"
 
+        async def latest_artefact_version(self, *a, **k):  # noqa: ANN002, ANN003
+            return None  # first generation: no earlier version
+
     mcp = _RecMcp()  # no publish sink active here → _publish executes via _tool
 
     deps = types.SimpleNamespace(llm=_Llm(), content=_Content(), db=_Db(),
@@ -196,8 +199,12 @@ async def test_create_project_rejects_invalid_workflow_before_creating(fake_db, 
     from tests.conftest import FakeWorkflow
 
     c = _create_container(fake_db, fake_audit, FakeWorkflow())
-    bad = {"stages": [{"key": "x", "name": "Bad Stage", "template": 1, "reviewerRole": "PO",
-                       "team": ["PO"], "inputs": ["does-not-exist"], "outputs": ["Y"], "dependsOn": []}]}
+    # An entry stage's inputs are supplied externally, so the invalid input sits on a downstream stage.
+    bad = {"stages": [
+        {"key": "a", "name": "Entry", "template": 1, "reviewerRole": "PO",
+         "team": ["PO"], "inputs": ["requirements"], "outputs": ["X"], "dependsOn": []},
+        {"key": "x", "name": "Bad Stage", "template": 2, "reviewerRole": "PO",
+         "team": ["PO"], "inputs": ["does-not-exist"], "outputs": ["Y"], "dependsOn": ["a"]}]}
     with pytest.raises(SdlcError) as err:
         await create_project(CreateProjectRequest(name="Bad Proj", workflow=bad),
                              user=make_user("PROJECT_MANAGER"), container=c)
@@ -260,7 +267,10 @@ def gate_setup(fake_db, fake_dynamo, fake_audit):
             "PK": "PROJECT#p1", "SK": "PHASE#1", "status": status, "reviewerRole": "PO",
             "reviewedBy": None, "comments": None, "updatedAt": "",
         }
-        authz = FakeAuthz(memberships if memberships is not None else {"u-PO": "PO"})
+        memberships = memberships if memberships is not None else {"u-PO": "PO"}
+        # project members (reviewer candidates) mirror the membership map
+        fake_db.members = [{"email": f"{role.lower()}@sdlc.local", "role": role} for role in memberships.values()]
+        authz = FakeAuthz(memberships)
         gates = GateService(fake_db, fake_dynamo, fake_audit, authz, FakeWorkflow(), _noop_regen)
         return gates, _noop_regen
 
@@ -271,17 +281,24 @@ async def test_gate_rbac_matrix(gate_setup):
     build, dynamo, audit = gate_setup
     gates, _ = build(memberships={"u-PO": "PO", "u-QA": "QA"})
 
-    # wrong-role member and non-member both denied
-    for role in ("QA", "DEV"):
+    # The APPROVE endpoint is the managing-PM / admin override only: reviewers sign off in the matrix.
+    for role in ("PO", "QA", "DEV"):
         with pytest.raises(SdlcError) as err:
             await gates.review(project_id="p1", phase=1, decision="APPROVE", comments=None, user=make_user(role))
         assert err.value.code == "FORBIDDEN"
-    # PM always denied (segregation of duties)
+    # A PM who did not create the project is not the managing PM
     with pytest.raises(SdlcError):
         await gates.review(project_id="p1", phase=1, decision="APPROVE", comments=None,
                            user=make_user("PROJECT_MANAGER"))
 
-    res = await gates.review(project_id="p1", phase=1, decision="APPROVE", comments=None, user=make_user("PO"))
+    # Normal path: an admin assigns the PO to the whole stage, the PO signs it off.
+    admin = make_user("SUPER_ADMIN")
+    await gates.assign_review(project_id="p1", phase=1, target="stage", user_email="po@sdlc.local",
+                              assigned=True, actor=admin)
+    with pytest.raises(SdlcError) as err:  # an unassigned reviewer cannot sign
+        await gates.sign_off_target(project_id="p1", phase=1, target="stage", user=make_user("QA"))
+    assert err.value.code == "FORBIDDEN"
+    res = await gates.sign_off_target(project_id="p1", phase=1, target="stage", user=make_user("PO"))
     assert res["status"] == "APPROVED" and res["nextPhase"] == 2
     assert "gate.approved" in audit.events
 
@@ -319,7 +336,8 @@ async def test_gate_conflict_and_amend_regeneration(gate_setup):
     assert "Add a caching layer story" in plan["prompt_overlay"]
 
     with pytest.raises(SdlcError) as err:
-        await gates.review(project_id="p1", phase=1, decision="APPROVE", comments=None, user=make_user("PO"))
+        await gates.review(project_id="p1", phase=1, decision="APPROVE", comments=None,
+                           user=make_user("SUPER_ADMIN"))
     assert err.value.code == "GATE_CONFLICT"
 
 
@@ -337,7 +355,8 @@ async def test_gate_approval_emits_stage_ready_and_completion_notifications(fake
         "PK": "PROJECT#p1", "SK": "PHASE#1", "status": "PENDING_REVIEW", "reviewerRole": "PO",
         "reviewedBy": None, "comments": None, "updatedAt": "",
     }
-    res = await gates.review(project_id="p1", phase=1, decision="APPROVE", comments=None, user=make_user("PO"))
+    res = await gates.review(project_id="p1", phase=1, decision="APPROVE", comments=None,
+                             user=make_user("SUPER_ADMIN"))
     assert res["nextPhase"] == 2
 
     ready = [n for n in fake_db.notifications if n["kind"] == "stage_ready"]
@@ -346,13 +365,14 @@ async def test_gate_approval_emits_stage_ready_and_completion_notifications(fake
     assert "stage.ready" in fake_audit.events
 
     # Last gate of the workflow → project_completed (no further stage_ready).
-    for seq in range(1, 7):
+    last = (await FakeWorkflow().view("p1"))["stages"][-1]["seq"]
+    for seq in range(1, last + 1):
         fake_dynamo.phase_states[f"p1#{seq}"] = {
             "PK": "PROJECT#p1", "SK": f"PHASE#{seq}", "status": "APPROVED", "reviewerRole": "PO",
             "reviewedBy": "x", "comments": None, "updatedAt": "",
         }
-    fake_dynamo.phase_states["p1#6"]["status"] = "PENDING_REVIEW"
-    await gates.review(project_id="p1", phase=6, decision="APPROVE", comments=None,
+    fake_dynamo.phase_states[f"p1#{last}"]["status"] = "PENDING_REVIEW"
+    await gates.review(project_id="p1", phase=last, decision="APPROVE", comments=None,
                        user=make_user("SUPER_ADMIN"))
     kinds = [n["kind"] for n in fake_db.notifications]
     assert kinds.count("project_completed") == 1
@@ -1276,14 +1296,16 @@ def test_drawio_skill_pack_loads():
 
 
 # ---------------------------------------------------------------- dynamic workflow
-def test_workflow_default_is_valid_linear_six_stages():
+def test_workflow_default_is_valid_linear_end_to_end():
     from app.services.workflow import default_workflow, derive, validate_workflow
 
     cfg = default_workflow()
     assert validate_workflow(cfg) == []
     view = derive(cfg)
-    assert [s["seq"] for s in view["stages"]] == [1, 2, 3, 4, 5, 6]
-    assert view["levels"] == [[1], [2], [3], [4], [5], [6]]  # strictly linear
+    # six built-in phases + Deployment and Maintenance dynamic stages
+    seqs = [s["seq"] for s in view["stages"]]
+    assert seqs == list(range(1, len(seqs) + 1)) and len(seqs) >= 6
+    assert view["levels"] == [[n] for n in seqs]  # strictly linear
 
 
 def test_workflow_parallel_levels_derived_from_dag():
@@ -1599,7 +1621,7 @@ async def test_llm_client_traces_success_via_telemetry(monkeypatch):
     client = LlmClient("http://ai-client:8081")
     client.telemetry = _Tele()
 
-    async def fake_post(url, json=None):
+    async def fake_post(url, json=None, **kwargs):
         return httpx.Response(
             200,
             json={"provider": "mock", "model": "mock-1", "content": "hi",
