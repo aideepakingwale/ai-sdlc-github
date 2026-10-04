@@ -124,6 +124,24 @@ class FilesystemContentStore:
 
         return await asyncio.to_thread(_rmtree)
 
+    async def delete(self, key: str) -> None:
+        def _rm() -> None:
+            path = self._path(key)
+            if path.is_file():
+                path.unlink()
+
+        await asyncio.to_thread(_rm)
+
+    async def list_prefix(self, prefix: str) -> list[str]:
+        """Every key under a prefix, sorted (deterministic)."""
+        def _ls() -> list[str]:
+            base = self._path(prefix.rstrip("/"))
+            if not base.is_dir():
+                return []
+            return sorted(p.relative_to(self._root).as_posix() for p in base.rglob("*") if p.is_file())
+
+        return await asyncio.to_thread(_ls)
+
 
 class S3ContentStore:
     """S3/MinIO object store (production). Reuses the audit S3 client config."""
@@ -213,6 +231,20 @@ class S3ContentStore:
             return removed
 
         return await asyncio.to_thread(_delete)
+
+    async def delete(self, key: str) -> None:
+        await asyncio.to_thread(lambda: self._client.delete_object(Bucket=self._bucket, Key=key))
+
+    async def list_prefix(self, prefix: str) -> list[str]:
+        """Every key under a prefix, sorted (deterministic)."""
+        def _ls() -> list[str]:
+            paginator = self._client.get_paginator("list_objects_v2")
+            keys: list[str] = []
+            for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix.rstrip("/") + "/"):
+                keys.extend(o["Key"] for o in page.get("Contents", []))
+            return sorted(keys)
+
+        return await asyncio.to_thread(_ls)
 
 
 async def build_content_store(settings: Settings) -> ContentStore:

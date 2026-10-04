@@ -281,3 +281,41 @@ All three implement one small interface, so the index code never knows which one
   the atomic commit from §10.
 * Spike (step 1) now includes the workspace on the **filesystem backend**, so it is testable with no network, and the
   same tests run against S3 through MinIO/LocalStack, which the project already uses.
+
+## 12. Spike results (step 1 implemented)
+
+Code: `services/orchestrator-py/app/devmind_index/` (schema, render, workspace, reader, builder, packet, integrity,
+publish) plus `list_prefix` / `delete` on the filesystem and S3 content stores. 14 tests, including a synthetic
+120-sprint project. Pure code: no network, no model. The S3 store methods are written but untested here (no MinIO in
+this environment); the same tests should be run against LocalStack.
+
+Measured on the filesystem backend (8 stories and 2 decisions per sprint, 4 sprints per release):
+
+| Sprint | Files in tree | Everything as JSON | Context packet | Assembly | Closing the sprint |
+|---|---|---|---|---|---|
+| 1 | 8 | ~2k tokens | 0.8k | 1 ms | 4 ms |
+| 30 | 52 | ~42k | 3.0k | 12 ms | 32 ms |
+| 60 | 77 | ~81k | 3.2k | 12 ms | 54 ms |
+| 120 | 122 | ~160k | 3.5k | 15 ms | 124 ms |
+
+* The packet is **bounded by the budget (8k) and in practice ~3–3.5k tokens**; loading everything would be 50× larger
+  at sprint 120. The slow creep is the one-line-per-release list, which is itself capped by the budget.
+* The first version re-read the manifest on every file read, so assembly grew linearly (3 ms → 678 ms). Fixed by reading
+  against one manifest snapshot per packet and by answering sprint ids and release summaries from the small lookup.
+* File count grows ~1 per sprint, not 3–4, because closed releases beyond the retention window roll into one archive
+  file each.
+
+**Known limits and what they mean for the next steps**
+
+* **Closing a sprint reads every live file** to rebuild the lookup (124 ms locally at 120 sprints, but ~one S3 GET per
+  file, so seconds in production). Next: an incremental update that touches only the affected release and the lookup.
+* **Overwrites are not atomic.** The manifest is written last, so a *new* file is never trusted early, but a crash
+  after overwriting an *existing* file leaves it not matching the old manifest. This is **detected** (`verify`, and reads
+  refuse), never silently wrong, and an idempotent re-run with `heal=True` repairs it. Enable S3 bucket versioning so the
+  previous bytes are recoverable, and the repo holds the last published copy.
+* **Hand edits are detected and repaired from sources**, but a drifted file whose replacement is *not* supplied in the
+  same call cannot be rebuilt (it is refused with a clear error pointing at the last published ref). This is deliberate.
+* Token counts use a deterministic ~4-chars-per-token estimate; the real tokenizer will differ by a modest margin, so the
+  budget keeps headroom.
+* Not built yet: the connector tools (`github_commit_index`, atomic commit, read tools), Jira sync, iteration engine,
+  backlog/agents, gate modes and UI.
