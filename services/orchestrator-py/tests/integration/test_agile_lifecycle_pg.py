@@ -202,7 +202,8 @@ async def test_waterfall_project_is_untouched(env):
     e = env
     wf = await e.wf.view(e.pid)
     assert not wf["iterative"] and wf["methodology"] == "waterfall" and len(wf["stages"]) == 8
-    assert (await e.agile.overview(e.pid, e.pm)) == {"enabled": False, "methodology": "waterfall"}
+    assert (await e.agile.overview(e.pid, e.pm)) == {"enabled": False, "methodology": "waterfall",
+                                                     "permissions": {"canManage": True, "canRun": True}}
     # approving the last waterfall stage still completes the project
     for s in wf["stages"][:-1]:
         await e.dynamo.put_phase_state(project_id=e.pid, phase=s["seq"], status="APPROVED", reviewer_role="PO")

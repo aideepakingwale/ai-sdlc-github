@@ -5,6 +5,9 @@ import type { ProjectFlow } from '../api/flow';
 import { ROLE_LABELS, type Artefact, type Project, type ProjectDetail } from '../api/types';
 import Dashboard from '../components/Dashboard';
 import HelpPanel from '../components/HelpPanel';
+import AgileHub from '../components/agile/AgileHub';
+import SprintRail from '../components/agile/SprintRail';
+import { useOverview } from '../components/agile/hooks';
 import { Icon } from '../components/ui/Icon';
 import GovernancePanel from '../components/GovernancePanel';
 import NewProjectModal from '../components/NewProjectModal';
@@ -46,6 +49,7 @@ export default function Workspace() {
   const [selectedStage, setSelectedStage] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [mapOpen, setMapOpen] = useState(false);
+  const [view, setView] = useState<'stage' | 'agile'>('stage');
   const rightPanel = useResizableWidth('right', 320);
   const [leftCollapsed, setLeftCollapsed] = usePersistedFlag('sdlc:collapsed:left');
   const [rightCollapsed, setRightCollapsed] = usePersistedFlag('sdlc:collapsed:right');
@@ -89,14 +93,25 @@ export default function Workspace() {
     refetchInterval: 5_000,
   });
 
+  const agile = useOverview(activeProjectId ?? '');
+  const agileOn = Boolean(activeProjectId && agile.data?.enabled);
+  const startedAny = (flow.data?.stages ?? []).some((s) => s.status !== 'NOT_STARTED');
+  const canChooseMethod = Boolean(activeProjectId && agile.data && !agile.data.enabled && agile.data.permissions.canManage && !startedAny);
+
   // Selecting a project focuses its current stage; keep the selection valid.
   useEffect(() => {
     setSelectedStage(null);
     setFocusedPhase(null);
+    setView('stage');
   }, [activeProjectId]);
+  // An Agile project opens on its sprint board; classic projects keep the stage view.
+  useEffect(() => {
+    if (agileOn) setView('agile');
+  }, [agileOn, activeProjectId]);
   const selectStage = (seq: number) => {
     setSelectedStage(seq);
     setFocusedPhase(seq);
+    setView('stage');
   };
 
   async function logout() {
@@ -224,7 +239,9 @@ export default function Workspace() {
             Pipeline phases
           </div>
           {activeProjectId && phaseStates.length > 0 ? (
-            <PhaseTracker states={phaseStates} currentPhase={currentPhase} selected={activeStage} onSelect={selectStage} />
+            flow.data?.iterative
+              ? <SprintRail flow={flow.data} iterations={agile.data?.iterations ?? []} currentPhase={currentPhase} selected={activeStage} onSelect={selectStage} />
+              : <PhaseTracker states={phaseStates} currentPhase={currentPhase} selected={activeStage} onSelect={selectStage} />
           ) : (
             <div className="rounded-lg bg-white/5 p-3 text-xs text-slate-400">
               Start a conversation to launch Phase 1 (Product Owner agent).
@@ -273,7 +290,10 @@ export default function Workspace() {
             </div>
             <div className="text-xs text-slate-500">
               {activeProjectId
-                ? `Phase ${currentPhase}${phaseStates.length ? `/${phaseStates.length}` : ''} · ${phaseStates.find((s) => s.phase === currentPhase)?.name ?? ''}` +
+                ? (agileOn
+                  ? `${agile.data?.methodology === 'kanban' ? 'Kanban' : 'Scrum'} · ${agile.data?.currentIteration?.label ?? 'no sprint running'}` +
+                    (agile.data?.currentRelease ? ` · ${agile.data.currentRelease.code}` : '')
+                  : `Phase ${currentPhase}${phaseStates.length ? `/${phaseStates.length}` : ''} · ${phaseStates.find((s) => s.phase === currentPhase)?.name ?? ''}`) +
                   (detail.data?.project.techStack ? ` · ${detail.data.project.techStack}` : '')
                 : 'Describe requirements to begin'}
             </div>
@@ -300,6 +320,17 @@ export default function Workspace() {
           {activeProjectId && (
             <div className="ml-3 flex shrink-0 items-center gap-2">
               <NotificationBell projectId={activeProjectId} onGoToStage={selectStage} />
+              {(agileOn || canChooseMethod) && (
+                <button
+                  onClick={() => setView(view === 'agile' ? 'stage' : 'agile')}
+                  className={`rounded-lg border px-2.5 py-1 text-xs font-semibold ${
+                    view === 'agile' ? 'border-brand-300 bg-brand-50 text-brand-700' : 'border-slate-200 text-slate-600 hover:border-brand-300 hover:text-brand-700'
+                  }`}
+                  title={agileOn ? 'Sprint board, backlog and project memory' : 'Choose Scrum or Kanban for this project'}
+                >
+                  <Icon name="target" size={13} className="mr-1 inline" />{agileOn ? 'Sprints & backlog' : 'Delivery method'}
+                </button>
+              )}
               <button
                 onClick={() => setMapOpen((v) => !v)}
                 className={`rounded-lg border px-2.5 py-1 text-xs font-semibold ${
@@ -364,7 +395,9 @@ export default function Workspace() {
 
         {/* Stage-centric workspace: the primary interaction surface. */}
         <div className="min-h-0 flex-1">
-          {activeProjectId && flow.data && user ? (
+          {activeProjectId && flow.data && user && view === 'agile' && (agileOn || canChooseMethod) ? (
+            <AgileHub projectId={activeProjectId} flow={flow.data} onOpenStage={selectStage} />
+          ) : activeProjectId && flow.data && user ? (
             <StageWorkspace
               projectId={activeProjectId}
               flow={flow.data}

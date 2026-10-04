@@ -14,7 +14,7 @@ interface AppNotification {
   id: string;
   projectId: string;
   phase: number | null;
-  kind: 'stage_ready' | 'project_completed';
+  kind: 'stage_ready' | 'project_completed' | 'spec_conflict';
   title: string;
   body: string;
   read: boolean;
@@ -115,7 +115,7 @@ export default function NotificationBell({
                 }`}
               >
                 <div className="flex items-start gap-2">
-                  <span className="mt-0.5 text-sm">{n.kind === 'project_completed' ? '🎉' : '🟢'}</span>
+                  <span className="mt-0.5 text-sm">{n.kind === 'project_completed' ? '🎉' : n.kind === 'spec_conflict' ? '⚠️' : '🟢'}</span>
                   <div className="min-w-0">
                     <div className="truncate text-xs font-semibold text-slate-800">{n.title}</div>
                     {n.body && <div className="mt-0.5 line-clamp-2 text-[11px] text-slate-500">{n.body}</div>}

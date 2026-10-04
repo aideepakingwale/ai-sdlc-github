@@ -155,8 +155,9 @@ class AgileService:
     async def overview(self, project_id: str, user: UserPublic) -> dict[str, Any]:
         await self._authz.assert_project_access(project_id, user)
         cfg = await self._db.get_project_agile(project_id)
+        manager = await self._is_manager(project_id, user)
         if not cfg:
-            return {"enabled": False, "methodology": "waterfall"}
+            return {"enabled": False, "methodology": "waterfall", "permissions": {"canManage": manager, "canRun": manager}}
         releases = await self._db.list_releases(project_id)
         iterations = await self._db.list_iterations(project_id)
         counts = await self._db.count_backlog_by_status(project_id)
@@ -165,8 +166,12 @@ class AgileService:
         velocity = [{"sprint": i["label"], "points": (i["summary"] or {}).get("velocity", 0),
                      "completed": (i["summary"] or {}).get("completed", 0)}
                     for i in iterations if i["status"] == "closed"]
+        can_run = manager
+        if not can_run:
+            can_run = (await self._authz.get_membership_role(project_id, user.id)) == "PO"
         return {
             "enabled": True, "methodology": cfg["methodology"],
+            "permissions": {"canManage": manager, "canRun": can_run},
             "settings": {
                 "sprintDays": cfg["sprint_days"], "defaultCapacity": float(cfg["default_capacity"]),
                 "wipLimit": cfg["wip_limit"], "indexStrategy": cfg["index_strategy"],

@@ -319,7 +319,7 @@ async def phase_detail(
     available to any user authorised on the project (managing PM, phase-role
     member, or SUPER_ADMIN). This is the 'that particular phase' access surface."""
     if not 1 <= phase_id <= MAX_SEQ:
-        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be a valid stage slot (1-100000)")
     await container.authz.assert_project_access(project_id, user)
 
     flow = await container.flow.flow(project_id, user)
@@ -364,7 +364,7 @@ async def retrigger_stage(
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
     if not 1 <= phase_id <= MAX_SEQ:
-        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be a valid stage slot (1-100000)")
     await container.authz.assert_project_access(project_id, user)
     return await container.flow.retrigger(project_id, phase_id, user)
 
@@ -378,7 +378,7 @@ async def get_stage_plan(
     """Full pre-generation plan for a stage: agent, skills, expected tools, model
     tier, context inventory and the actual system-generated prompt (D-56)."""
     if not 1 <= phase_id <= MAX_SEQ:
-        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be a valid stage slot (1-100000)")
     return await container.chat.build_plan(project_id=project_id, phase=phase_id, user=user,
                                            run_intel=not cached)
 
@@ -391,7 +391,7 @@ async def get_stage_plan_state(
     """{building, ready}: shared across tabs/sessions so every view of the project shows the
     same plan state (a plan being built, or one already built and cached)."""
     if not 1 <= phase_id <= MAX_SEQ:
-        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be a valid stage slot (1-100000)")
     return await container.chat.plan_state(project_id=project_id, phase=phase_id, user=user)
 
 
@@ -417,7 +417,7 @@ async def update_stage_plan(
 ) -> dict:
     """Save the writer's overlay edits ('Update the plan') and re-render the preview."""
     if not 1 <= phase_id <= MAX_SEQ:
-        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be a valid stage slot (1-100000)")
     return await container.chat.save_plan(project_id=project_id, phase=phase_id, user=user, overlay=body.model_dump())
 
 
@@ -431,7 +431,7 @@ async def trigger_stage_plan(
     GET /phase/{id}/stream. Returns {jobId, status:'queued'} (or the active job if one
     is already queued/running). The result goes to gate review when it completes."""
     if not 1 <= phase_id <= MAX_SEQ:
-        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be a valid stage slot (1-100000)")
     # Generation needs a finished, up-to-date plan; edits after the review make it stale.
     await container.chat.assert_plan_ready(project_id, phase_id, user)
     return await container.gen_jobs.enqueue(project_id, phase_id, user.email)
@@ -478,7 +478,7 @@ async def answer_clarification(
     plan overlay, clear the pending questions, then enqueue the run. Returns the
     enqueued job so the UI streams generation immediately."""
     if not 1 <= phase_id <= MAX_SEQ:
-        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be a valid stage slot (1-100000)")
     await container.chat.answer_clarification(
         project_id=project_id, phase=phase_id, user=user, answers=[a.model_dump() for a in body.answers],
     )
@@ -493,7 +493,7 @@ async def save_discussion_turn(
     """Persist one turn of the pre-generation planning discussion (Discuss & refine)
     into the saved, timestamped history (D-112) so it survives navigation."""
     if not 1 <= phase_id <= MAX_SEQ:
-        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be a valid stage slot (1-100000)")
     await container.chat.save_discussion_turn(
         project_id=project_id, phase=phase_id, user=user,
         user_message=body.userMessage, agent_message=body.agentMessage,
@@ -531,7 +531,7 @@ async def retrigger_generation_part(
     part (reusing the cached rest) and re-persists the artifacts as new versions. The
     stage's write-permission is enforced in trigger_stage. Returns {jobId, status}."""
     if not 1 <= phase_id <= MAX_SEQ:
-        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be a valid stage slot (1-100000)")
     await container.authz.assert_project_access(project_id, user)
     await container.redis.set(f"sdlc:retrigger:{project_id}:{phase_id}", json.dumps([field]), ex=300)
     return await container.gen_jobs.enqueue(project_id, phase_id, user.email)
@@ -549,7 +549,7 @@ async def regenerate_stage_artifacts(
     """Regenerate SELECTED artifacts of a stage on demand, also after approval. Only the
     chosen parts are regenerated (the rest are reused); the stage returns to review."""
     if not 1 <= phase_id <= MAX_SEQ:
-        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be a valid stage slot (1-100000)")
     await container.authz.assert_project_access(project_id, user)
     if await container.gen_jobs.is_active(project_id, phase_id):
         raise SdlcError("GATE_CONFLICT", "This stage is already generating")
@@ -601,7 +601,7 @@ async def review_gate(
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
     if not 1 <= phase_id <= MAX_SEQ:
-        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be a valid stage slot (1-100000)")
     return await container.gates.review(
         project_id=project_id, phase=phase_id,
         decision=body.decision, comments=body.comments, user=user,
@@ -626,7 +626,7 @@ async def set_phase_reviewers(
     """Set the authorised reviewer users for a stage's sign-off matrix (add/remove
     users). Managing PM or SUPER_ADMIN only."""
     if not 1 <= phase_id <= MAX_SEQ:
-        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be a valid stage slot (1-100000)")
     await container.authz.assert_project_access(project_id, user)
     await container.workflow.set_stage_reviewers(project_id, phase_id, body.users, user)
     return await container.gates.signoff_status(project_id, phase_id)
@@ -640,7 +640,7 @@ async def assign_review(
     """Mark/unmark a reviewer against a review target (stage / type:<T> / artifact id)
     in the review matrix. Managing PM or SUPER_ADMIN only."""
     if not 1 <= phase_id <= MAX_SEQ:
-        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be a valid stage slot (1-100000)")
     await container.authz.assert_project_access(project_id, user)
     return await container.gates.assign_review(
         project_id=project_id, phase=phase_id, target=body.target,
@@ -656,7 +656,7 @@ async def sign_off_target(
     """Sign off a review target you're assigned to (stage / type:<T> / artifact id).
     The stage completes once every document is covered and every assignment signed."""
     if not 1 <= phase_id <= MAX_SEQ:
-        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be a valid stage slot (1-100000)")
     return await container.gates.sign_off_target(
         project_id=project_id, phase=phase_id, target=body.target, user=user,
     )
@@ -721,7 +721,7 @@ async def list_feedback(
     sees before sign-off (D-57)."""
     await container.authz.assert_project_access(project_id, user)
     if not 1 <= phase_id <= MAX_SEQ:
-        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be a valid stage slot (1-100000)")
     rows = await container.db.list_feedback(project_id, phase_id)
     return {"feedback": [_feedback_public(r) for r in rows]}
 
@@ -734,7 +734,7 @@ async def report_feedback(
     """Any project member can report/mark a quality issue on a generation (D-57)."""
     await container.authz.assert_project_access(project_id, user)
     if not 1 <= phase_id <= MAX_SEQ:
-        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be a valid stage slot (1-100000)")
     feedback_id = await container.db.insert_feedback(
         project_id=project_id, phase=phase_id, source="human", category=body.category,
         severity=body.severity, comment=body.comment, rating=body.rating,
@@ -1190,7 +1190,7 @@ async def upload_attachment(
 
     await container.authz.assert_project_access(project_id, user)
     if not 1 <= phase_id <= MAX_SEQ:
-        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be a valid stage slot (1-100000)")
     form = await request.form()
     upload = form.get("file")
     if not isinstance(upload, StarletteUploadFile):

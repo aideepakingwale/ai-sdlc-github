@@ -32,6 +32,15 @@ export interface FlowStage {
   signedOff?: string[];
   /** Entry stage (no dependencies) — a dynamic workflow can start here. */
   isEntry?: boolean;
+  // --- Agile delivery (absent / "project" for classic waterfall stages) ---
+  scope?: 'project' | 'iteration' | 'release';
+  agileRole?: 'refine' | 'plan' | 'build' | 'review' | 'retro' | 'release' | null;
+  gateMode?: 'full' | 'lightweight' | 'auto';
+  baseKey?: string;
+  iteration?: number | null;
+  iterationLabel?: string | null;
+  iterationId?: string | null;
+  release?: string | null;
 }
 
 export interface ProjectFlow {
@@ -43,6 +52,8 @@ export interface ProjectFlow {
   isManager: boolean;
   viewerRole: string;
   workflowVersion: number;
+  methodology?: 'waterfall' | 'scrum' | 'kanban';
+  iterative?: boolean;
   levels: number[][];
   stages: FlowStage[];
 }

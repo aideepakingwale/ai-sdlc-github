@@ -18,6 +18,8 @@ import { useApp, type ActivityItem } from '../store';
 import ArtifactViewer from './ArtifactViewer';
 import FeedbackPanel from './FeedbackPanel';
 import GatePanel from './GatePanel';
+import ProposalReview from './agile/ProposalReview';
+import { useOverview } from './agile/hooks';
 
 
 /** Plain-language names + icons for the AI-judged project traits. */
@@ -314,6 +316,7 @@ export default function StageWorkspace({
   const stages = flow.stages;
   const byKey = useMemo(() => new Map(stages.map((s) => [s.key, s])), [stages]);
   const stage = stages.find((s) => s.phase === selectedSeq) ?? stages[0];
+  const agileOv = useOverview(projectId);   // permissions for the Agile proposal review (cached; shared with the Agile hub)
   const idx = stages.findIndex((s) => s.phase === stage?.phase);
   const runnable = stage ? isRunnable(stage, byKey) : false;
 
@@ -762,6 +765,10 @@ export default function StageWorkspace({
                 <Badge tone="warning" icon="warning" title={stage.staleReason ?? 'An upstream input changed'}>Outdated</Badge>
               )}
               {locked && <Badge tone="info" icon="lock" title="Editing is locked while this stage generates">Editing locked</Badge>}
+              {stage.iterationLabel && <Badge tone="brand" icon="flag" title="The sprint this stage belongs to">{stage.iterationLabel}</Badge>}
+              {stage.release && stage.scope === 'release' && <Badge tone="brand" icon="flag">Release {stage.release}</Badge>}
+              {stage.gateMode === 'lightweight' && <Badge icon="check" title="One authorised reviewer's approval completes this gate">Light review</Badge>}
+              {stage.gateMode === 'auto' && <Badge tone="info" icon="zap" title="Approved automatically when the independent validator's score meets the project's bar and nothing is open; otherwise a person reviews it">Auto-gate</Badge>}
             </div>
             <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-slate-500">
               <span className="inline-flex items-center gap-1" title="The AI agent that works on this stage"><Icon name="sparkles" size={12} />{stage.persona}</span>
@@ -1395,6 +1402,11 @@ export default function StageWorkspace({
               <div className="mt-3"><PartTabs parts={liveParts} /></div>
             )}
           </section>
+        )}
+
+        {/* ---- Agile: what the AI proposes to change (applied only on approval) ---- */}
+        {(stage.agileRole === 'refine' || stage.agileRole === 'plan' || stage.agileRole === 'build') && ['PENDING_REVIEW', 'APPROVED', 'AMEND_REQUESTED'].includes(stage.status) && (
+          <ProposalReview projectId={projectId} phase={stage.phase} role={stage.agileRole} canEdit={Boolean(agileOv.data?.permissions.canRun)} />
         )}
 
         {/* ---- gate review ---- */}
