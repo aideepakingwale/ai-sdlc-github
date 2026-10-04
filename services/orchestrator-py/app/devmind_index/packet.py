@@ -17,10 +17,11 @@ class Budget:
     releases: int = 2000
     sprints: int = 2500
     specs: int = 1500
+    carried: int = 2500
 
     @property
     def total(self) -> int:
-        return self.charter + self.releases + self.sprints + self.specs
+        return self.charter + self.releases + self.sprints + self.specs + self.carried
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class Query:
     story_ids: tuple[str, ...] = ()
     components: tuple[str, ...] = ()
     keywords: tuple[str, ...] = ()
+    release: str | None = None    # releases are independent: the packet is scoped to this one
 
 
 @dataclass
@@ -70,7 +72,9 @@ async def assemble(ws: IndexWorkspace, query: Query | None = None, budget: Budge
     lk = await r.lookup()
     m = await r.manifest()
     rel_ids = sorted(lk["releases"], reverse=True)
-    cur_id = m.currentRelease if m.currentRelease in lk["releases"] else (rel_ids[0] if rel_ids else None)
+    scope = q.release                                    # None = legacy/unscoped; else strictly this release
+    wanted = scope if scope in lk["releases"] else None
+    cur_id = wanted or (m.currentRelease if m.currentRelease in lk["releases"] else (rel_ids[0] if rel_ids else None))
     cur = await r.release(cur_id) if cur_id else None
     lines: list[str] = []
     if cur:
@@ -93,6 +97,8 @@ async def assemble(ws: IndexWorkspace, query: Query | None = None, budget: Budge
 
     # L2 — sprint digests: previous sprint always, then relevant ones (story > component > keyword > recency)
     all_sprints = await r.sprint_ids()
+    if scope:       # an independent release sees ITS OWN sprint history; other releases arrive only as one-line pointers
+        all_sprints = [s for s in all_sprints if lk["sprints"].get(s, {}).get("release") == scope]
     prev = [s for s in all_sprints if s != m.currentSprint][-1:]
     ranked: dict[str, tuple[int, int]] = {}
 
@@ -103,15 +109,16 @@ async def assemble(ws: IndexWorkspace, query: Query | None = None, budget: Budge
 
     for sid in prev:
         want(sid, 0)
+    in_scope = set(all_sprints)
     for st in q.story_ids:
-        if st in lk["stories"]:
+        if st in lk["stories"] and (not scope or lk["stories"][st]["sprint"] in in_scope):
             want(lk["stories"][st]["sprint"], 0)
     for c in q.components:
-        for sid in reversed(lk["components"].get(c, [])[-5:]):
+        for sid in reversed([x for x in lk["components"].get(c, []) if not scope or x in in_scope][-5:]):
             want(sid, 1)
     for k in q.keywords:
         for st in lk["keywords"].get(k.lower(), []):
-            if st in lk["stories"]:
+            if st in lk["stories"] and (not scope or lk["stories"][st]["sprint"] in in_scope):
                 want(lk["stories"][st]["sprint"], 2)
     why = {0: "previous sprint / requested story", 1: "touches requested component", 2: "keyword match"}
     used = 0
@@ -135,9 +142,18 @@ async def assemble(ws: IndexWorkspace, query: Query | None = None, budget: Budge
     if sp_parts:
         parts.append("## SPRINT DIGESTS\n" + "\n\n".join(sp_parts))
 
+    # carried context — what this release took over from the release it was forked from (bounded)
+    if scope or cur_id:
+        carried = await r.carried(scope or cur_id)
+        if carried:
+            t = _fit(carried, b.carried)
+            parts.append("## CARRIED CONTEXT\n" + t)
+            items.append(PacketItem("L4", "carried", est_tokens(t), "fork carry set"))
+
     # specs — pointers only (never bodies); the agent retrieves sections on demand
     ptr: list[str] = []
-    for rid in ([cur_id] if cur_id else []) + [x for x in rel_ids if x != cur_id][:1]:
+    spec_rids = [scope] if scope else ([cur_id] if cur_id else []) + [x for x in rel_ids if x != cur_id][:1]
+    for rid in spec_rids:
         rel = cur if rid == cur_id else await r.release(rid)
         for comp in q.components:
             ref = rel.specPointers.get(comp) if rel else None

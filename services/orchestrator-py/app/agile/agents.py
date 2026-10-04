@@ -231,7 +231,7 @@ _BUILD_SYSTEM = (
 )
 
 
-async def _spec_listing(deps: AgentDeps, project_id: str, components: list[str]) -> str:
+async def _spec_listing(deps: AgentDeps, project_id: str, components: list[str], release: str | None = None) -> str:
     """Existing living-spec sections (with the hash to quote back) for the sprint's components, bounded."""
     index = getattr(deps, "index", None)
     if index is None:
@@ -240,7 +240,7 @@ async def _spec_listing(deps: AgentDeps, project_id: str, components: list[str])
     manifest = await ws.manifest()
     lines: list[str] = []
     for comp in components[:6]:
-        path = spec_path(comp)
+        path = spec_path(comp, release or "")
         if path not in manifest.files:
             continue
         _, sections = parse_spec(await ws.read(path))
@@ -253,6 +253,9 @@ async def run_build(deps: AgentDeps, state: AgentState, emit: Any) -> PhaseAgent
     persona = state.custom_persona or "Senior Developer"
     emit({"type": "node", "node": "agent", "label": f"{persona} describing the increment for '{state.stage_name}'"})
     rows = await deps.db.list_backlog(state.project_id, iteration_id=state.iteration_id) if state.iteration_id else []
+    it = await deps.db.get_iteration(state.iteration_id) if state.iteration_id else None
+    rel = await deps.db.get_release(it["release_id"]) if it else None
+    release_code = rel["code"] if rel else None
     comps = list(dict.fromkeys(c for r in rows for c in (r["components"] or [])))
     scope = "\n".join(
         f"{r['item_key']} | {r['title']} | AC: {'; '.join((r['acceptance_criteria'] or [])[:4])}" for r in rows[:40]
@@ -260,7 +263,7 @@ async def run_build(deps: AgentDeps, state: AgentState, emit: Any) -> PhaseAgent
     user = (
         f"## Instruction\n{state.user_input or 'Describe the increment.'}\n\n"
         f"## Committed sprint items\n{scope}\n\n## COMPONENTS: {', '.join(comps) or '(none declared)'}\n\n"
-        f"## Living spec sections (quote baseHash when replacing/removing)\n{await _spec_listing(deps, state.project_id, comps)}\n\n"
+        f"## Living spec sections (quote baseHash when replacing/removing)\n{await _spec_listing(deps, state.project_id, comps, release_code)}\n\n"
         f"## Project\n{state.project_profile or state.tech_stack}\n"
         + (f"\n## Extra context\n{state.extra_context}\n" if state.extra_context else ""))
     unavailable = ""

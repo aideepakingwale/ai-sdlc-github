@@ -29,9 +29,10 @@ class StageCtx:
     """What a lifecycle hook needs to know about the stage that just changed."""
 
     def __init__(self, project_id: str, stage: dict[str, Any], iteration: dict[str, Any] | None,
-                 release: dict[str, Any] | None, actor: str) -> None:
+                 release: dict[str, Any] | None, actor: str, *, is_entry: bool = False, is_sink: bool = False) -> None:
         self.project_id, self.stage, self.iteration, self.release, self.actor = (
             project_id, stage, iteration, release, actor)
+        self.is_entry, self.is_sink = is_entry, is_sink     # first / closing stage of the release's sprint stage set
 
     @property
     def role(self) -> str | None:
@@ -41,7 +42,8 @@ class StageCtx:
     def hook_names(self) -> list[str]:
         """Hooks registered for this stage's agile role and/or its base stage key ("key:vision")."""
         base = self.stage.get("baseKey") or self.stage.get("key")
-        return [n for n in (self.role, f"key:{base}" if base else None) if n]
+        extra = [n for n, on in (("sprint-entry", self.is_entry), ("sprint-sink", self.is_sink)) if on]
+        return [n for n in (self.role, f"key:{base}" if base else None, *extra) if n]
 
     @property
     def phase(self) -> int:
@@ -540,7 +542,12 @@ class AgileService:
             return None
         it = await self._db.get_iteration(stage["iterationId"]) if stage.get("iterationId") else None
         rel = await self._db.get_release(stage["releaseId"]) if stage.get("releaseId") else None
-        return StageCtx(project_id, stage, it, rel, actor)
+        is_entry = is_sink = False
+        if it is not None:
+            block = iteration_block((await self._base_view(project_id, await self._db.get_release(it["release_id"])))["stages"])
+            base_key = stage.get("baseKey") or stage["key"]
+            is_entry, is_sink = bool(block and base_key == block.entry), bool(block and base_key == block.sink)
+        return StageCtx(project_id, stage, it, rel, actor, is_entry=is_entry, is_sink=is_sink)
 
     async def _advance_lifecycle(self, ctx: StageCtx) -> None:
         """Structure changes driven by approvals: activate a planned sprint, close a finished one,
@@ -548,20 +555,13 @@ class AgileService:
         role, it, rel = ctx.role, ctx.iteration, ctx.release
         if it and role == "plan" and it["status"] == "planned":
             await self._db.update_iteration(it["id"], status="active", started_at=dt.datetime.now(dt.UTC))
-        if it and it["status"] in ("planned", "active") and await self._is_sink(ctx, it):
+        if it and it["status"] in ("planned", "active") and ctx.is_sink:
             await self.close_sprint(ctx.project_id, it["id"], ctx.actor)
         if rel and role == "release" and rel["status"] == "hardening":
             closed, nxt = await self._db.close_release_and_open_next(ctx.project_id, rel["id"])   # one transaction
             if closed is not None:
                 self._audit.record(project_id=ctx.project_id, agent_role="Agile", event="release.closed",
                                    detail={"release": rel["code"], "next": nxt["code"] if nxt else None})
-
-    async def _is_sink(self, ctx: StageCtx, it: Any) -> bool:
-        """The sprint closes when the closing stage of ITS release's stage set is approved (the retro in the
-        standard template, but a release may run a different stage set)."""
-        release = await self._db.get_release(it["release_id"])
-        block = iteration_block((await self._base_view(ctx.project_id, release))["stages"])
-        return block is not None and (ctx.stage.get("baseKey") or ctx.stage["key"]) == block.sink
 
     async def close_sprint(self, project_id: str, iteration_id: str, actor: str) -> dict[str, Any]:
         """Idempotent. Done work stays; everything else returns to the backlog; velocity is recorded."""
@@ -667,7 +667,7 @@ class AgileLifecycle:
         if self._index is not None:
             comps = tuple(dict.fromkeys(c for r in scope_items for c in (r["components"] or [])))
             packet = await self._index.packet(project_id, story_ids=tuple(r["item_key"] for r in scope_items),
-                                              components=comps)
+                                              components=comps, release=stage.get("release"))
             if packet is not None and packet.text:
                 parts.append("## Project memory (DevMind index — authoritative history)\n" + packet.text)
         return bounded, "\n\n".join(parts)

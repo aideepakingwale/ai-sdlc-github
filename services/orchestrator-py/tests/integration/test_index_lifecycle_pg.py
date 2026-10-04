@@ -130,9 +130,9 @@ async def test_sprint_close_commits_digest_release_and_specs_atomically(idx):
     assert len(new) == 1                                          # ONE commit for the whole sprint close
     c = new[0]
     paths = {f["path"] for f in c["files"]}
-    assert {".devmind/sprints/S-002/digest.json", ".devmind/releases/R-001/index.json", ".devmind/specs/orders.md",
+    assert {".devmind/sprints/S-002/digest.json", ".devmind/releases/R-001/index.json", ".devmind/releases/R-001/specs/orders.md",
             ".devmind/lookup.json", ".devmind/manifest.json"} <= paths
-    spec = next(f["content"] for f in c["files"] if f["path"] == ".devmind/specs/orders.md")
+    spec = next(f["content"] for f in c["files"] if f["path"] == ".devmind/releases/R-001/specs/orders.md")
     assert parse_spec(spec)[1]["Sprint 2"] == "Behaviour from sprint 2"
     digest = next(f["content"] for f in c["files"] if f["path"] == ".devmind/sprints/S-002/digest.json")
     assert '"ST-' not in digest and "DM-" in digest
@@ -146,11 +146,11 @@ async def test_a_stale_delta_is_a_conflict_not_an_overwrite(idx):
     await _finish_project_stages(e)
     await run_sprint(e, 1)
     ws = e.index.workspace(e.pid)
-    _, sections = parse_spec(await ws.read(".devmind/specs/orders.md"))
+    _, sections = parse_spec(await ws.read(".devmind/releases/R-001/specs/orders.md"))
     stale = DesignDelta(summary="d", changes=[SpecChange(component="orders", section="Sprint 1", op="replace",
                                                          content="Overwrite!", rationale="r", baseHash="000000000000")])
     await run_sprint(e, 2, delta=stale)
-    _, after = parse_spec(await ws.read(".devmind/specs/orders.md"))
+    _, after = parse_spec(await ws.read(".devmind/releases/R-001/specs/orders.md"))
     assert after["Sprint 1"] == sections["Sprint 1"] != "Overwrite!"          # untouched
     rec = [r for r in e.audit.records if r["event"] == "delta.merged"][-1]
     assert rec["detail"]["conflicts"] and "changed after" in rec["detail"]["conflicts"][0]["reason"]

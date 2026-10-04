@@ -62,6 +62,9 @@ class IndexService:
     def workspace(self, project_id: str) -> IndexWorkspace:
         return IndexWorkspace(self._content, project_id)
 
+    def reader(self, project_id: str) -> IndexReader:
+        return IndexReader(self.workspace(project_id))
+
     @contextlib.asynccontextmanager
     async def _locked(self, project_id: str) -> AsyncIterator[None]:
         async with self._locks(project_id):
@@ -137,16 +140,19 @@ class IndexService:
         manifest = await ws.manifest()
         pointers = {
             e.path.rsplit("/", 1)[-1][:-3]: f"{e.path}@{e.sha256[:12]}"
-            for e in manifest.files.values() if e.kind == "spec"}
+            for e in manifest.files.values() if e.kind == "spec" and e.release == release["code"]}
+        src = await self._db.get_release(release["forked_from"]) if release["forked_from"] else None
         decisions: list[Decision] = []
         for it in its[-4:]:
             decisions += (await self._sprint_decisions(project_id, it))[:3]
-        backlog = await self._db.list_backlog(project_id)
+        backlog = await self._db.list_backlog(project_id, release_id=release["id"], scope="release")
         open_items = [f"{r['item_key']} {r['title']}"[:120] for r in backlog
                       if r["status"] in ("ready", "refined") and r["type"] != "epic"][:8]
         done_pts = sum(float((i["summary"] or {}).get("velocity", 0)) for i in its)
+        baseline = {k: str(v) for k, v in (release["fork_baseline"] or {}).items() if k in ("release", "sprint")}
         return ReleaseIndex(
             id=release["code"], name=release["name"], goal=(release["goal"] or "")[:300],
+            forkedFrom=src["code"] if src else None, forkBaseline=baseline,
             sprints=[i["label"] for i in its], closed=closed, decisions=decisions[:10], specPointers=pointers,
             openItems=open_items,
             summary=f"{len(its)} sprint(s), {done_pts:g} points delivered."[:790])
@@ -182,22 +188,33 @@ class IndexService:
                 charter=await self.build_charter(project_id), release=release, current_release=release.id)
             return res.written
 
-    async def apply_delta(self, project_id: str, delta: DesignDelta) -> list[dict[str, Any]]:
-        """Merge a sprint's design delta into the living specs (staged, unpublished). Returns per-change results."""
+    async def apply_delta(self, project_id: str, delta: DesignDelta, release: str) -> list[dict[str, Any]]:
+        """Merge a sprint's design delta into ITS RELEASE's living specs (staged, unpublished). Returns per-change
+        results. A carried section that is changed here becomes 'modified' in the release's fork record."""
         results: list[dict[str, Any]] = []
         async with self._locked(project_id):
             ws = self.workspace(project_id)
             manifest = await ws.manifest()
             specs: dict[str, str] = {}
             for comp, changes in group_by_component(delta.changes).items():
-                path = spec_path(comp)
+                path = spec_path(comp, release)
                 current = await ws.read(path) if path in manifest.files else None
                 new, res = merge_delta(current, comp, changes)
                 results += res
                 if new != current and any(r["status"] == "applied" for r in res):
                     specs[path] = new
             if specs:
-                await IndexBuilder(ws).update(specs=specs)
+                extra = []
+                fork = await IndexReader(ws).fork(release)
+                if fork is not None:        # a carried section edited by this delta is now 'modified' (derived live)
+                    from ..devmind_index.render import canonical_json, carried_md
+                    from ..devmind_index.schema import carried_path, fork_path
+                    from ..devmind_index.workspace import StagedFile
+                    from .carry import derive_states, release_sections
+                    fork = derive_states(fork, await release_sections(ws, manifest, release, specs))
+                    extra = [StagedFile(fork_path(release), canonical_json(fork), "fork", release=release),
+                             StagedFile(carried_path(release), carried_md(fork), "carried-md", release=release)]
+                await IndexBuilder(ws).update(specs=specs, extra=extra)
         return results
 
     # ------------------------------------------------------------------ publishing
@@ -237,11 +254,12 @@ class IndexService:
 
     # ------------------------------------------------------------------ reading
     async def packet(self, project_id: str, *, story_ids: tuple[str, ...] = (), components: tuple[str, ...] = (),
-                     keywords: tuple[str, ...] = (), budget: Budget | None = None) -> Packet | None:
+                     keywords: tuple[str, ...] = (), budget: Budget | None = None,
+                     release: str | None = None) -> Packet | None:
         ws = self.workspace(project_id)
         if not (await ws.manifest()).files:
             return None
-        return await assemble(ws, Query(story_ids, components, keywords), budget)
+        return await assemble(ws, Query(story_ids, components, keywords, release), budget)
 
     async def status(self, project_id: str) -> dict[str, Any]:
         ws = self.workspace(project_id)

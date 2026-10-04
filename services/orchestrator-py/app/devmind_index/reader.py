@@ -10,12 +10,15 @@ from pydantic import BaseModel, Field
 from .schema import (
     LOOKUP_PATH,
     Charter,
+    ForkRecord,
     Manifest,
     ReleaseIndex,
     SprintDigest,
     Tier,
     archive_path,
+    carried_path,
     charter_path,
+    fork_path,
     release_path,
 )
 from .workspace import IndexWorkspace
@@ -51,6 +54,14 @@ class IndexReader:
     async def charter(self) -> Charter | None:
         raw = await self._opt(charter_path())
         return Charter.model_validate_json(raw) if raw else None
+
+    async def fork(self, release_id: str) -> "ForkRecord | None":
+        raw = await self._opt(fork_path(release_id))
+        return ForkRecord.model_validate_json(raw) if raw else None
+
+    async def carried(self, release_id: str) -> str | None:
+        """The readable carried-context document of a release (None when it was not forked / carried nothing)."""
+        return await self._opt(carried_path(release_id))
 
     async def releases(self) -> list[ReleaseIndex]:
         m = await self.manifest()

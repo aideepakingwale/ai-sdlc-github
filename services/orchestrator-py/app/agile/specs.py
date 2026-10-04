@@ -166,8 +166,9 @@ def merge_delta(spec_md: str | None, component: str, changes: list[SpecChange]) 
     return new, results
 
 
-def spec_path(component: str) -> str:
-    return f".devmind/specs/{component}.md"
+def spec_path(component: str, release: str) -> str:
+    """Living specs belong to a RELEASE: releases are independent components of the project."""
+    return f".devmind/releases/{release}/specs/{component}.md"
 
 
 def group_by_component(changes: list[SpecChange]) -> dict[str, list[SpecChange]]:

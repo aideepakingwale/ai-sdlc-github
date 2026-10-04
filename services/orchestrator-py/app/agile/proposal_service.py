@@ -148,7 +148,10 @@ class ProposalService:
         if not row or row["status"] != "proposed" or self.index is None:
             return
         delta, _ = sanitise_delta(DesignDelta.model_validate(row["payload"]))
-        results = await self.index.apply_delta(ctx.project_id, delta)    # idempotent: a replay reports 'unchanged'
+        rel = await self._db.get_release(ctx.iteration["release_id"]) if ctx.iteration else None
+        if rel is None:
+            return
+        results = await self.index.apply_delta(ctx.project_id, delta, rel["code"])    # idempotent: a replay reports 'unchanged'
         await self._db.set_proposal_status(row["id"], "applied", None)
         conflicts = [r for r in results if r["status"] == "conflict"]
         self._audit.record(

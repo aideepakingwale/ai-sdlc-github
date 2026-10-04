@@ -23,6 +23,7 @@ from .schema import (
 from .workspace import IndexDriftError, IndexWorkspace, StagedFile, StageResult
 
 _WORD = re.compile(r"[a-z][a-z0-9]{3,}")
+_SPEC_RELEASE = re.compile(r"^\.devmind/releases/([^/]+)/specs/[^/]+\.md$")
 _STOP = {"with", "from", "that", "this", "into", "when", "will", "have", "should", "user", "users", "page"}
 MAX_KEYWORDS = 3000
 MAX_PER_KEYWORD = 20
@@ -60,7 +61,7 @@ class IndexBuilder:
         self, *, charter: Charter | None = None, sprint: SprintDigest | None = None,
         release: ReleaseIndex | None = None, current_release: str | None = None,
         current_sprint: str | None = None, source_commit: str | None = None, heal: bool = False,
-        specs: dict[str, str] | None = None,
+        specs: dict[str, str] | None = None, extra: list[StagedFile] | None = None,
     ) -> StageResult:
         """Apply new inputs and restage. `heal=True` additionally verifies every file and rewrites any
         that drifted (hand-edited, missing, half-written); leave it off on the hot path."""
@@ -131,7 +132,10 @@ class IndexBuilder:
             writes.append(StagedFile(f"{ROOT}/charter.md", charter_md(charter), "charter-md", sourceCommit=source_commit))
         writes.append(StagedFile(README_PATH, readme_md(), "readme"))
         for spec_file, spec_md in (specs or {}).items():   # living specs are stateful inputs, not derived from sprints
-            writes.append(StagedFile(spec_file, spec_md, "spec", sourceCommit=source_commit))
+            m_rel = _SPEC_RELEASE.match(spec_file)
+            writes.append(StagedFile(spec_file, spec_md, "spec", release=m_rel.group(1) if m_rel else None,
+                                     sourceCommit=source_commit))
+        writes.extend(extra or [])                         # fork record / carried context: stateful, supplied by the caller
 
         for rid, rel in releases.items():
             t = tiers[rid]

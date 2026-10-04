@@ -49,6 +49,8 @@ class SprintDigest(BaseModel):
 class ReleaseIndex(BaseModel):
     id: str                       # R-2026-03
     name: str = Field(max_length=120)
+    forkedFrom: str | None = None                      # provenance only: nothing is merged back
+    forkBaseline: dict[str, str] = Field(default_factory=dict)  # {"release": "R-001", "sprint": "S-004"}
     goal: str = Field(default="", max_length=300)
     sprints: list[str] = Field(default_factory=list)
     closed: bool = False
@@ -56,6 +58,43 @@ class ReleaseIndex(BaseModel):
     specPointers: dict[str, str] = Field(default_factory=dict)  # component -> current spec ref
     openItems: list[str] = Field(default_factory=list)
     summary: str = Field(default="", max_length=800)
+
+
+CarryKind = Literal["spec-section", "requirement", "decision", "learning"]
+CarryState = Literal["carried", "modified", "new", "retired"]
+
+
+class CarriedFrom(BaseModel):
+    release: str
+    path: str                     # where it lived in the source release
+    ref: str = ""                 # section name / item id / decision id
+    hash: str = ""                # content hash at fork time (the "merge base")
+
+
+class CarriedItem(BaseModel):
+    id: str                       # stable id inside this release, e.g. spec:orders-api/Endpoints
+    kind: CarryKind
+    title: str = Field(max_length=200)
+    text: str = Field(default="", max_length=8000)   # the carried definition (spec sections live in the spec file)
+    state: CarryState = "carried"
+    carriedFrom: CarriedFrom | None = None
+    hash: str = ""                # hash of the CURRENT definition in this release
+    component: str | None = None  # spec sections: which spec file
+    reason: str = Field(default="", max_length=300)  # why it was chosen (AI suggestion / person)
+
+
+class ForkRecord(BaseModel):
+    """`fork.json`: the record of how a release was started. Provenance + the carry set."""
+    schema_: int = Field(default=SCHEMA_VERSION, alias="schema")
+    release: str
+    forkedFrom: str | None = None
+    baseline: dict[str, str] = Field(default_factory=dict)
+    stagePreset: str = "inherit"
+    stageKeys: list[str] = Field(default_factory=list)
+    intakeRule: str = "pool"
+    usePool: bool = True
+    carried: list[CarriedItem] = Field(default_factory=list)
+    model_config = {"populate_by_name": True}
 
 
 class Charter(BaseModel):
@@ -97,6 +136,18 @@ def charter_path() -> str:
 
 def release_path(release_id: str) -> str:
     return f"{ROOT}/releases/{release_id}/index.json"
+
+
+def release_spec_path(release_id: str, component: str) -> str:
+    return f"{ROOT}/releases/{release_id}/specs/{component}.md"
+
+
+def fork_path(release_id: str) -> str:
+    return f"{ROOT}/releases/{release_id}/fork.json"
+
+
+def carried_path(release_id: str) -> str:
+    return f"{ROOT}/releases/{release_id}/carried.md"
 
 
 def sprint_path(sprint_id: str) -> str:
