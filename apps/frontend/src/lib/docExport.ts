@@ -392,7 +392,7 @@ export function blocksToDocx(blocks: Block[], meta: { title: string; subtitle?: 
   }
 
   return new Document({
-    creator: 'AI-SDLC Platform', title: meta.title, numbering,
+    creator: 'DevMind', title: meta.title, numbering,
     styles: { default: { document: { run: { font: 'Calibri', size: 22 } } } },
     sections: [{ children }],
   });

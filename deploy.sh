@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# AI-SDLC — single-host PoC deploy on Linux (EC2). Two model backends:
+# DevMind — single-host PoC deploy on Linux (EC2). Two model backends:
 #   • bedrock (default): Amazon Bedrock via the EC2 INSTANCE ROLE (no API keys).
 #   • keys:              Groq -> Gemini -> xAI from .env (for accounts where
 #                        Bedrock is blocked). You paste the keys into .env.
@@ -42,7 +42,7 @@ die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-AI-SDLC — single-host PoC deploy on Linux (EC2) with Amazon Bedrock.
+DevMind — single-host PoC deploy on Linux (EC2) with Amazon Bedrock.
 
 Run this ON the instance, from the repo root, after `git clone`. It configures
 .env for Bedrock (instance-role auth, no API keys), writes the ai-client
@@ -97,7 +97,7 @@ done
 
 cd "$(dirname "$0")"
 [[ -f docker-compose.yml ]] || die "Run this from the repo root (docker-compose.yml not found)."
-[[ -f .env.example ]]       || die ".env.example missing — is this the AI-SDLC repo?"
+[[ -f .env.example ]]       || die ".env.example missing — is this the DevMind repo?"
 
 # ---- IMDSv2 helper (best-effort; empty if not on EC2) ------------------------
 imds() {

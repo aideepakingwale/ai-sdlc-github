@@ -1,6 +1,6 @@
-# AI-SDLC Platform
+# DevMind
 
-Enterprise **AI-powered SDLC automation platform**: a stateful LangGraph pipeline orchestrates six
+*Developer’s Mind* — an enterprise **AI-powered SDLC automation platform**: a stateful LangGraph pipeline orchestrates six
 specialised agents — Product Owner → Solution Architect → Technical Architect → QA Lead → DevOps
 Engineer → Developer — from raw requirements to a green CI pipeline and an open pull request, with a
 **Human-in-the-Loop gate between every phase**. No phase advances without an explicit, role-checked,

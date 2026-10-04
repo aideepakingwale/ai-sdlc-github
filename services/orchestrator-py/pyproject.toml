@@ -1,7 +1,7 @@
 [project]
 name = "sdlc-orchestrator"
 version = "0.2.0"
-description = "AI-SDLC Platform — Python orchestration hub: FastAPI + LangGraph agentic pipeline, RAG, MCP client"
+description = "DevMind — Python orchestration hub: FastAPI + LangGraph agentic pipeline, RAG, MCP client"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",

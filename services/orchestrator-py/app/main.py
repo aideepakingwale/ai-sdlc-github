@@ -1,4 +1,4 @@
-"""AI-SDLC Orchestration Hub — Python/FastAPI/LangGraph (D-18).
+"""DevMind Orchestration Hub — Python/FastAPI/LangGraph (D-18).
 Composition root: builds every layer once, exposes the REST + SSE API."""
 
 from __future__ import annotations
@@ -193,7 +193,7 @@ async def lifespan(app: FastAPI):
     await db.close()
 
 
-app = FastAPI(title="AI-SDLC Orchestrator", lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json")
+app = FastAPI(title="DevMind Orchestrator", lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json")
 
 
 @app.exception_handler(SdlcError)

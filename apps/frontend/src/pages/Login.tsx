@@ -45,9 +45,9 @@ export default function Login() {
     <div className="flex h-full items-center justify-center bg-gradient-to-br from-brand-900 via-slate-900 to-slate-950 p-4">
       <div className="w-full max-w-md rounded-2xl bg-white p-8 shadow-2xl">
         <div className="mb-6 text-center">
-          <div className="text-2xl font-bold text-brand-700">AI-SDLC Platform</div>
+          <div className="text-2xl font-bold text-brand-700">DevMind</div>
           <div className="mt-1 text-sm text-slate-500">
-            Agentic six-phase delivery pipeline with human gates
+            The developer’s mind — AI agents that build, humans that approve
           </div>
         </div>
         <form onSubmit={submit} className="space-y-4">
