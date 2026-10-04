@@ -176,7 +176,7 @@ function CarryStep({ projectId, a, set }: { projectId: string; a: ReleaseAnswers
       if (!(a.carry ?? []).length) set({ carry: r.suggestions.map((x) => x.id) });
     } catch (e) { setErr(errorText(e)); } finally { setBusy(false); }
   };
-  useEffect(() => { void run(); /* once, when the step opens */ }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void run(); /* once, when the step opens */ }, []);
   const chosen = new Set(a.carry ?? []);
   const toggle = (id: string): void => set({ carry: chosen.has(id) ? [...chosen].filter((x) => x !== id) : [...chosen, id] });
   const use = s ? carryBudgetUsed([...chosen], s.candidates, s.budget) : null;

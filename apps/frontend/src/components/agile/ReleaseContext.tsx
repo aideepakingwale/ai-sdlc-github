@@ -5,6 +5,7 @@ import { CARRY_STATE_LABEL, CARRY_STATE_TONE, KIND_LABEL } from '../../lib/agile
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { Callout } from '../ui/Callout';
+import ReleasePolicy from './ReleasePolicy';
 import { errorText, useAgileMutation } from './hooks';
 
 const PRESET_LABEL: Record<string, string> = { inherit: 'Same stages as the project', lean: 'No planning ceremony', hotfix: 'Fix and ship', 'build-only': 'Build and review only', custom: 'Custom' };
@@ -20,11 +21,18 @@ export default function ReleaseContext({ projectId, overview }: { projectId: str
   const suggest = useAgileMutation(projectId, async () => agileApi.suggestCarry(projectId, rel!.forkedFromId!, { scopeText: `${rel!.name}. ${rel!.goal}` }));
   const extend = useAgileMutation(projectId, async () => agileApi.extendCarry(projectId, rel!.id, pick));
   const unmap = useAgileMutation(projectId, (epic: string) => agileApi.unmapEpic(projectId, epic));
+  const resume = useAgileMutation(projectId, () => agileApi.startRelease(projectId, { ...rel!.setupAnswers!, resumeReleaseId: rel!.id }));
   if (!rel) return <div className="p-6 text-sm text-slate-500">No release is selected.</div>;
   const c = carry.data;
   const carried = new Set((c?.carried ?? []).map((x) => x.id));
   return (
     <div className="space-y-4 p-5">
+      {rel.setupComplete === false && (
+        <Callout tone="warning" title="Starting this release stopped part-way"
+          action={canRun && rel.setupAnswers ? <Button size="sm" variant="primary" icon="play" loading={resume.isPending} onClick={() => resume.mutate(undefined)}>Resume setup</Button> : undefined}>
+          The release exists, but some of its setup (context, items or epics) did not finish. Resuming repeats only the steps that are missing.
+          {resume.isError && <span className="mt-1 block font-semibold text-red-700">{errorText(resume.error)}</span>}
+        </Callout>)}
       <section aria-label="Lineage" className="rounded-xl border border-slate-200 bg-white p-4">
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="text-sm font-semibold text-slate-800">{rel.code} · {rel.name}</h3>
@@ -85,6 +93,7 @@ export default function ReleaseContext({ projectId, overview }: { projectId: str
           </div>)}
         {suggest.isError && <Callout tone="error" compact title="No suggestions">{errorText(suggest.error)}</Callout>}
       </section>
+      {overview.permissions.canManage && <ReleasePolicy projectId={projectId} overview={overview} />}
     </div>
   );
 }

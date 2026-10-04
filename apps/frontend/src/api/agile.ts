@@ -20,6 +20,7 @@ export interface Release {
   intakeRule?: 'pool' | 'epic'; usePool?: boolean; openIterationId?: string | null; stagePreset?: string;
   /** false while a start-release setup stopped part-way (it can be resumed). */
   setupComplete?: boolean;
+  setupAnswers?: ReleaseAnswers;
 }
 export interface Iteration {
   id: string; number: number; label: string; releaseId: string; goal: string;

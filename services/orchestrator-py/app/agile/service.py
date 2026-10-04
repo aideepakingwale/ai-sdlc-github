@@ -246,6 +246,9 @@ class AgileService:
                 "forkBaseline": r["fork_baseline"] or {}, "intakeRule": r["intake_rule"], "usePool": r["use_pool"],
                 "stagePreset": (r["workflow"] or {}).get("preset", "inherit") if r["workflow"] else "inherit",
                 "setupComplete": (r["setup"] or {}).get("status") == "complete" if r["setup"] else True,
+                # Only while a start stopped part-way: what to run again to resume it.
+                **({"setupAnswers": (r["setup"] or {}).get("answers")}
+                   if r["setup"] and (r["setup"] or {}).get("status") != "complete" and (r["setup"] or {}).get("answers") else {}),
                 "openIterationId": open_it["id"] if open_it else None}
 
     # ------------------------------------------------------------------ sprints

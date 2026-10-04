@@ -77,6 +77,41 @@ on demand, before Refine/Plan, and optionally on a schedule. The watermark never
 apply (it is retried next run); a local item that was never pushed is **adopted** when an identical Jira issue appears
 (no duplicates); an empty Jira value never wipes acceptance criteria or an estimate entered in DevMind.
 
+## 6a. Parallel releases and forking
+
+Releases are **connected but independent**. Several can run at the same time, each with at most one open sprint (sprint
+numbers stay global: `S-007`). A release can be **blank** or **forked** from another release at its *last closed
+sprint*. A fork is project **context and workflow only**: DevMind never creates, names or manages repo branches; how the
+code is branched is the owners' decision.
+
+* **Empty plate + carry set.** A forked release starts with nothing. Only the context chosen in the wizard is copied in,
+  **by value**: spec sections, requirements (epics and delivered stories), decisions, and the last retro's learnings
+  (up to 40 entries / 60 KB). Each entry records where it came from and its hash; the release's `fork.json` lists them
+  and `carried.md` renders them for people and agents. Each entry's state is **derived** from the live files: *carried*
+  (unchanged), *modified* (edited here), *retired* (removed here), plus *new* sections. Nothing is merged back, and a change
+  in the source release is only an advisory ("source changed since the fork").
+* **Release-scoped files and context.** Specs live under `.devmind/releases/<R-00N>/specs/`; a stage's context packet is
+  scoped to its own release (own sprint history, own specs, the carried context) and sees other releases only as
+  one-line pointers.
+* **Its own stage set.** A new feature need not run the original project's stages. A release inherits the project's
+  stages, or uses a preset (*lean*: no planning ceremony; *hotfix*: build → review → release; *build-only*) or a custom
+  list. Presets are derived from the project's template by dropping stages and re-wiring dependencies and inputs, and
+  every set is validated like a project workflow. A sprint **closes when the closing stage of its own release's set
+  is approved**; a release without a planning stage starts its sprints live; a set without a release stage closes the
+  release as soon as its sprint does. The stage set is frozen once the release has a sprint.
+* **The start-release questionnaire.** Fixed questions with enumerated answers, each mapping to a defined action (no model
+  decides): name and goal → blank or fork → *context to carry* (AI/keyword suggestions, a person confirms; code enforces
+  existence and budget) → unfinished items of the source (leave / move all / move selected; **moving keeps Jira keys**)
+  → stage set → where new Jira issues go (**shared pool** or **by epic**) → may planning draw on the pool → first
+  sprint. `preview` validates and lists exactly what will happen and changes nothing; `start` applies it in order, each
+  step idempotent, with progress kept on the release so an interrupted start can be **resumed**. A project admin can
+  pre-fill answers and **lock** them.
+* **Backlog scoping.** An item belongs to a release or to the **shared pool**. Committing a pool item to a sprint
+  claims it for that release (atomically); another release's items are refused; a release may opt out of the pool.
+  *By epic* intake: an epic maps to at most one release; a **new** Jira issue under a mapped epic goes to that release,
+  everything else to the pool. Routing happens once, at first import; later epic changes in Jira never move an item.
+* **Gates are per lane.** A stage waits only for (and unlocks) the stages of its own release.
+
 ## 7. Configuration
 
 | Setting | Default | Purpose |
@@ -103,7 +138,12 @@ tables; waterfall data is untouched (covered by an upgrade test). Index writes t
 4. **Mock LLM**: with the offline mock provider the agents produce deterministic placeholder proposals, and the auto-gate
    never approves them.
 5. Older closed sprints are summarised in the flow payload (`collapsedSprints`); open a sprint from the rail to load it.
-6. Kanban uses the same engine (a "cycle" is a sprint without planning); WIP limit is enforced at `in_progress`.
+6. Parallel releases share one index branch (`devmind/index`) and one manifest, serialised by the per-project lock; a
+   release-close PR therefore also carries other releases' already-committed index files. Per-release branches and
+   manifests are the upgrade path.
+7. Custom stage sets are validated and stored through the API; the wizard offers the presets only. Jira *fix versions* are
+   not written (the connector has no such tool); the wizard can add a **label** to moved items instead.
+8. Kanban uses the same engine (a "cycle" is a sprint without planning); WIP limit is enforced at `in_progress`.
 
 ## 9. Test coverage
 

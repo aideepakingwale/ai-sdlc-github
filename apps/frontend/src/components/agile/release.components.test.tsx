@@ -12,7 +12,7 @@ import { ApiError } from '../../api/client';
 const api = vi.hoisted(() => ({
   agileApi: {
     questions: vi.fn(), previewRelease: vi.fn(), startRelease: vi.fn(), suggestCarry: vi.fn(), carry: vi.fn(), extendCarry: vi.fn(),
-    claim: vi.fn(), releaseEpics: vi.fn(), unmapEpic: vi.fn(), backlog: vi.fn(), jira: vi.fn(), createItem: vi.fn(), setStatus: vi.fn(),
+    claim: vi.fn(), releaseEpics: vi.fn(), unmapEpic: vi.fn(), updateSettings: vi.fn(), backlog: vi.fn(), jira: vi.fn(), createItem: vi.fn(), setStatus: vi.fn(),
     addToSprint: vi.fn(), removeFromSprint: vi.fn(), move: vi.fn(), patchItem: vi.fn(),
   },
 }));
@@ -260,5 +260,40 @@ describe('BacklogView with parallel releases', () => {
     api.agileApi.backlog.mockResolvedValue({ summary: { count: 0, points: 0 }, items: [] });
     await render(<BacklogView projectId="p" overview={overview({ currentRelease: rel({ usePool: false }) })} />);
     expect(api.agileApi.backlog.mock.calls[0]![1]).toMatchObject({ scope: 'release', release: 'r1' });
+  });
+});
+
+
+describe('part-way setup and release policy', () => {
+  const stalled = overview({ currentRelease: rel({ id: 'r3', code: 'R-003', setupComplete: false, setupAnswers: { name: 'Hotfix', startFrom: 'blank' } }) });
+  it('offers to resume a release whose setup stopped, repeating nothing but the missing steps', async () => {
+    api.agileApi.carry.mockResolvedValue({ forkedFrom: null, baseline: {}, carried: [], new: [], counts: {}, sourceChanged: [], budget: { maxItems: 40, maxBytes: 60000 } });
+    api.agileApi.startRelease.mockResolvedValue({ release: rel({ id: 'r3' }), progress: {} });
+    await render(<ReleaseContext projectId="p" overview={stalled} />);
+    expect(host.textContent).toContain('stopped part-way');
+    await click(byText('button', 'Resume setup'));
+    expect(api.agileApi.startRelease).toHaveBeenCalledWith('p', { name: 'Hotfix', startFrom: 'blank', resumeReleaseId: 'r3' });
+  });
+
+  it('lets the project admin pre-fill and lock answers, but only locks answers that have a default', async () => {
+    api.agileApi.carry.mockResolvedValue({ forkedFrom: null, baseline: {}, carried: [], new: [], counts: {}, sourceChanged: [], budget: { maxItems: 40, maxBytes: 60000 } });
+    api.agileApi.updateSettings.mockResolvedValue(overview());
+    await render(<ReleaseContext projectId="p" overview={overview()} />);
+    const policy = host.querySelector('section[aria-label="Release policy"]')!;
+    const lock = (i: number) => policy.querySelectorAll('input[type="checkbox"]')[i] as HTMLInputElement;
+    expect(lock(0).disabled).toBe(true);                                    // nothing to lock without a default
+    await act(async () => {
+      const sel = policy.querySelector('select[aria-label="Where new Jira issues go"]') as HTMLSelectElement;
+      sel.value = 'pool'; sel.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await click(lock(1));
+    await click(byText('button', 'Save policy'));
+    expect(api.agileApi.updateSettings).toHaveBeenCalledWith('p', { releaseDefaults: { intakeRule: 'pool' }, releaseLocks: ['intakeRule'] });
+  });
+
+  it('shows the policy editor only to the managing project manager', async () => {
+    api.agileApi.carry.mockResolvedValue({ forkedFrom: null, baseline: {}, carried: [], new: [], counts: {}, sourceChanged: [], budget: { maxItems: 40, maxBytes: 60000 } });
+    await render(<ReleaseContext projectId="p" overview={overview({ permissions: { canManage: false, canRun: true } })} />);
+    expect(host.querySelector('section[aria-label="Release policy"]')).toBeNull();
   });
 });

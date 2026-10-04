@@ -233,8 +233,12 @@ async def test_an_interrupted_start_resumes_without_repeating_steps(fk):
     assert err.value.details["releaseId"] == rel["id"]
     assert rel["setup"]["progress"].get("carry") and not rel["setup"]["progress"].get("moved")
     assert "release.setup_incomplete" in e.audit.events
-    done = await e.setup.start(e.pid, e.po, answers, resume_release_id=rel["id"])
-    assert done["progress"]["moved"] == {"moved": 1}
+    ov = await e.agile.overview(e.pid, e.po)                                     # the UI can offer "Resume setup"
+    shown = next(r for r in ov["releases"] if r["id"] == rel["id"])
+    assert shown["setupComplete"] is False and shown["setupAnswers"]["name"] == "v2"
+    done = await e.setup.start(e.pid, e.po, shown["setupAnswers"], resume_release_id=rel["id"])
+    assert done["progress"]["moved"] == {"moved": 1} and done["release"]["setupComplete"] is True
+    assert "setupAnswers" not in done["release"]
     assert len([r for r in await e.pg.list_releases(e.pid) if r["name"] == "v2"]) == 1
     fork = json.loads(await e.index.workspace(e.pid).read(".devmind/releases/R-002/fork.json"))
     assert len(fork["carried"]) == 1                                            # the carry was not repeated
