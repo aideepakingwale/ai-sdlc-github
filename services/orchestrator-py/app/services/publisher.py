@@ -37,6 +37,19 @@ class PublishService:
         self._content = content
         self._mcp = mcp
         self._audit = audit
+        # tool name -> async fn(project_id, phase, action, result), run after that action succeeded.
+        self._result_hooks: dict[str, Any] = {}
+
+    def on_result(self, tool: str, fn: Any) -> None:
+        self._result_hooks[tool] = fn
+
+    async def add_action(self, project_id: str, phase: int, action: dict[str, Any], *,
+                         replace_tools: tuple[str, ...] = ()) -> None:
+        """Add one action to the phase's queue, replacing earlier queued actions of the given tools (so a
+        stage that is regenerated does not queue the same index commit twice)."""
+        queue = [a for a in await self._load(project_id, phase) if a.get("tool") not in replace_tools]
+        queue.append(action)
+        await self.enqueue(project_id, phase, queue)
 
     async def enqueue(self, project_id: str, phase: int, actions: list[dict[str, Any]]) -> None:
         """Persist (replacing) the phase's deferred publish plan captured during
@@ -103,6 +116,12 @@ class PublishService:
                     )
                 except Exception as err:  # noqa: BLE001 — cosmetic back-patch
                     log.warning("url back-patch failed for %s: %s", tool, err)
+            hook = self._result_hooks.get(tool)
+            if hook is not None:
+                try:
+                    await hook(project_id, phase, action, result)
+                except Exception:  # noqa: BLE001 — bookkeeping must not undo a commit that already happened
+                    log.exception("post-publish hook failed for %s", tool)
             results.append({"tool": tool, "ref": result.get("epicKey") or result.get("storyKey")
                             or result.get("xrayTestKey") or result.get("pageId")
                             or result.get("commitSha"), "url": real_url})

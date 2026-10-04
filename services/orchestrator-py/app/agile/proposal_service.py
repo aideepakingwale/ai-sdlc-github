@@ -7,6 +7,7 @@ from typing import Any
 
 from ..domain.errors import SdlcError
 from ..domain.models import UserPublic
+from .specs import DesignDelta, sanitise_delta
 from .proposals import (
     LlmPlan, LlmRefine, greedy_plan, refine_to_llm, revalidate_plan, sanitise_plan, sanitise_refine,
 )
@@ -23,8 +24,9 @@ def proposal_view(row: Any) -> dict[str, Any]:
 
 
 class ProposalService:
-    def __init__(self, db: Any, audit: Any, authz: Any, agile: Any) -> None:
+    def __init__(self, db: Any, audit: Any, authz: Any, agile: Any, index: Any = None) -> None:
         self._db, self._audit, self._authz, self._agile = db, audit, authz, agile
+        self.index: Any = index   # IndexService: merges approved deltas into the living specs
 
     # ------------------------------------------------------------------ creation (called by the agents)
     async def create_refine(self, project_id: str, phase: int, iteration_id: str | None, llm: LlmRefine,
@@ -54,6 +56,14 @@ class ProposalService:
                                              kind="plan", payload=payload, warnings=warnings)
         return proposal_view(row)
 
+    async def create_delta(self, project_id: str, phase: int, iteration_id: str | None, delta: DesignDelta,
+                           extra_warnings: list[str] | None = None) -> dict[str, Any]:
+        clean, warnings = sanitise_delta(delta)
+        row = await self._db.insert_proposal(
+            project_id=project_id, iteration_id=iteration_id, phase=phase, kind="delta",
+            payload=clean.model_dump(), warnings=[*(extra_warnings or []), *warnings])
+        return proposal_view(row)
+
     # ------------------------------------------------------------------ reads / edits
     async def latest(self, project_id: str, user: UserPublic, phase: int, kind: str) -> dict[str, Any] | None:
         await self._authz.assert_project_access(project_id, user)
@@ -70,6 +80,9 @@ class ProposalService:
             raise SdlcError("GATE_CONFLICT", f"This proposal is already {row['status']}")
         if row["kind"] == "refine":
             clean, warnings = sanitise_refine(refine_to_llm(payload), await self._db.list_backlog(project_id))
+        elif row["kind"] == "delta":
+            d, warnings = sanitise_delta(DesignDelta.model_validate(payload))
+            clean = d.model_dump()
         else:
             it = await self._db.get_iteration(row["iteration_id"])
             if it is None:
@@ -113,3 +126,27 @@ class ProposalService:
                            event="plan.committed", human_reviewer=ctx.actor,
                            detail={"sprint": ctx.iteration["label"], "assigned": res["assigned"],
                                    "skipped": res["skipped"], "points": payload["points"], "warnings": warnings[:10]})
+
+    async def apply_delta_hook(self, ctx: Any) -> None:
+        """Build stage approved → merge its design delta into the living specs (staged; published with the
+        sprint's index commit). Conflicts never overwrite anything; they are audited and notified."""
+        row = await self._db.latest_proposal(ctx.project_id, ctx.phase, "delta")
+        if not row or row["status"] != "proposed" or self.index is None:
+            return
+        delta, _ = sanitise_delta(DesignDelta.model_validate(row["payload"]))
+        results = await self.index.apply_delta(ctx.project_id, delta)    # idempotent: a replay reports 'unchanged'
+        await self._db.set_proposal_status(row["id"], "applied", None)
+        conflicts = [r for r in results if r["status"] == "conflict"]
+        self._audit.record(
+            project_id=ctx.project_id, phase=ctx.phase, agent_role="Specs", event="delta.merged", human_reviewer=ctx.actor,
+            detail={"applied": sum(r["status"] == "applied" for r in results),
+                    "unchanged": sum(r["status"] == "unchanged" for r in results), "conflicts": conflicts[:10]})
+        if conflicts:
+            try:
+                await self._db.insert_notification(
+                    project_id=ctx.project_id, phase=ctx.phase, kind="spec_conflict",
+                    title=f"{len(conflicts)} design change(s) could not be merged into the living specs",
+                    body="; ".join(f"{c['component']}/{c['section']}: {c.get('reason', '')}" for c in conflicts[:5]),
+                    roles=["TA", "SA"])
+            except Exception:  # noqa: BLE001
+                log.warning("spec_conflict notification failed", exc_info=True)

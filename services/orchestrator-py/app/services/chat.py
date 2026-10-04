@@ -194,14 +194,18 @@ class ChatService:
                 amend_feedback = amend
 
             sp_row = await self._db.get_stage_plan(project["id"], seq)
+            stage_context, stage_extra = list(context), extra_context
+            if self.lifecycle is not None and (stage.get("iterationId") or stage.get("releaseId")):
+                stage_context, agile_extra = await self.lifecycle.context_for(project["id"], stage, context)
+                stage_extra = (extra_context + "\n\n" + agile_extra).strip()
             state = AgentState(
                 project_id=project["id"], session_id=session["id"], current_phase=seq,
                 stage_template=stage["template"], stage_name=stage["name"],
                 stage_reviewer=stage["reviewerRole"],
-                user_input=message, context_window=list(context), amend_comments=amend,
+                user_input=message, context_window=list(stage_context), amend_comments=amend,
                 tech_stack=project.get("tech_stack") or "Node.js + TypeScript",
                 project_profile=self._project_profile(project),
-                has_codebase=has_codebase, extra_context=extra_context,
+                has_codebase=has_codebase, extra_context=stage_extra,
                 model_overrides=self._model_overrides_from(self._step_overrides(sp_row)),  # per-step model (D-68)
                 per_artifact=await self._per_artifact_enabled(),  # runtime split toggle (D-106)
                 **self._custom_fields(stage),  # custom phase config (D-74)
@@ -1335,15 +1339,19 @@ class ChatService:
             project=project, phase=phase, user_text=prompt_overlay,
             upstream=[f"{a.type} {a.title}" for a in context[-30:]] + [self._project_profile(project)],
             allow_llm=False)
+        stage_context, stage_extra = list(context), extra_context
+        if self.lifecycle is not None and (stage.get("iterationId") or stage.get("releaseId")):
+            stage_context, agile_extra = await self.lifecycle.context_for(project_id, stage, context)
+            stage_extra = (extra_context + "\n\n" + agile_extra).strip()
         state = AgentState(
             project_traits=trait_values({k: v for k, v in trig_traits.items() if k[0] != "_"}),
             project_id=project_id, session_id=session["id"], current_phase=phase,
             stage_template=stage["template"], stage_name=stage["name"], stage_reviewer=stage["reviewerRole"],
             user_input=prompt_overlay or f"Generate {', '.join(stage.get('outputs') or [])} for '{stage['name']}'.",
-            context_window=list(context), amend_comments=None,
+            context_window=list(stage_context), amend_comments=None,
             tech_stack=project.get("tech_stack") or "Node.js + TypeScript",
             project_profile=self._project_profile(project),
-            has_codebase=(await self._db.count_codebase_files(project_id)) > 0, extra_context=extra_context,
+            has_codebase=(await self._db.count_codebase_files(project_id)) > 0, extra_context=stage_extra,
             model_overrides=self._model_overrides_from(self._step_overrides(row)),  # per-step model (D-68)
             # Retrigger implies the split (parts only exist under it); force it on then.
             per_artifact=(await self._per_artifact_enabled()) or bool(retrigger_fields) or resume,  # D-106

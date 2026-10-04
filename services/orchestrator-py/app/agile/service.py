@@ -37,6 +37,12 @@ class StageCtx:
         return self.stage.get("agileRole")
 
     @property
+    def hook_names(self) -> list[str]:
+        """Hooks registered for this stage's agile role and/or its base stage key ("key:vision")."""
+        base = self.stage.get("baseKey") or self.stage.get("key")
+        return [n for n in (self.role, f"key:{base}" if base else None) if n]
+
+    @property
     def phase(self) -> int:
         return self.stage["seq"]
 
@@ -211,7 +217,6 @@ class AgileService:
                 "GATE_CONFLICT",
                 f"Release {hardening['code']} is in hardening; close it before starting another sprint"
                 if hardening else "There is no open release to add a sprint to")
-        wf = await self._workflow.view(project_id)
         base = await self._base_view(project_id)
         block = iteration_block(base["stages"])
         if block is None:
@@ -311,8 +316,9 @@ class AgileService:
         if ctx is None:
             return
         try:
-            for fn in self._on_approved.get(ctx.role or "", []):
-                await fn(ctx)
+            for name in ctx.hook_names:
+                for fn in self._on_approved.get(name, []):
+                    await fn(ctx)
             await self._advance_lifecycle(ctx)
         except Exception as err:  # noqa: BLE001 — an approval must never be undone by bookkeeping
             log.exception("agile approval hook failed project=%s phase=%s", project_id, phase)
@@ -321,16 +327,17 @@ class AgileService:
 
     async def _run_hooks(self, table: dict[str, list[Hook]], project_id: str, phase: int, actor: str, label: str) -> None:
         ctx = await self._ctx(project_id, phase, actor)
-        if ctx is None or not ctx.role:
+        if ctx is None:
             return
-        for fn in table.get(ctx.role, []):
-            try:
-                await fn(ctx)
-            except Exception as err:  # noqa: BLE001
-                log.exception("agile %s hook failed project=%s phase=%s", label, project_id, phase)
-                self._audit.record(project_id=project_id, phase=phase, agent_role="Agile",
-                                   event="agile.hook_failed",
-                                   detail={"stage": ctx.stage["key"], "hook": label, "error": str(err)[:300]})
+        for name in ctx.hook_names:
+            for fn in table.get(name, []):
+                try:
+                    await fn(ctx)
+                except Exception as err:  # noqa: BLE001
+                    log.exception("agile %s hook failed project=%s phase=%s", label, project_id, phase)
+                    self._audit.record(project_id=project_id, phase=phase, agent_role="Agile",
+                                       event="agile.hook_failed",
+                                       detail={"stage": ctx.stage["key"], "hook": label, "error": str(err)[:300]})
 
     async def _ctx(self, project_id: str, phase: int, actor: str) -> StageCtx | None:
         if not await self._db.get_project_agile(project_id):
@@ -402,10 +409,44 @@ class AgileService:
 
 
 class AgileLifecycle:
-    """Glue between generation and approval: called by the chat service when a stage reaches PENDING_REVIEW."""
+    """Glue between generation and approval: called by the chat service when a stage reaches PENDING_REVIEW,
+    and when it prepares a sprint/release stage's context."""
 
-    def __init__(self, agile: AgileService, gates: Any) -> None:
-        self._agile, self._gates = agile, gates
+    def __init__(self, agile: AgileService, gates: Any, index: Any = None, db: Any = None) -> None:
+        self._agile, self._gates, self._index, self._db = agile, gates, index, db
+
+    async def context_for(self, project_id: str, stage: dict[str, Any], context: list[Any]) -> tuple[list[Any], str]:
+        """Bound what a sprint/release stage sees. Raw artifacts of EARLIER sprints are dropped from the window
+        (they live in the database and the `.devmind` index); the stage instead gets the budgeted project-memory
+        packet plus its own sprint scope. This is what keeps prompts a constant size however long the project runs."""
+        wf = await self._agile._workflow.view(project_id)
+        keep = {s["seq"] for s in wf["stages"] if s.get("scope", "project") == "project"}
+        if stage.get("iterationId"):
+            keep |= {s["seq"] for s in wf["stages"] if s.get("iterationId") == stage["iterationId"]}
+        if stage.get("releaseId"):
+            keep |= {s["seq"] for s in wf["stages"] if s.get("releaseId") == stage["releaseId"]}
+        bounded = [a for a in context if a.phase in keep]
+        parts: list[str] = []
+        scope_items: list[Any] = []
+        if stage.get("iterationId") and self._db is not None:
+            it = await self._db.get_iteration(stage["iterationId"])
+            scope_items = await self._db.list_backlog(project_id, iteration_id=stage["iterationId"])
+            if it is not None:
+                lines = [f"## Current sprint {it['label']}", f"Goal: {it['goal'] or '(not set)'}",
+                         f"Capacity: {float(it['capacity']):g} points"]
+                for r in scope_items[:40]:
+                    ac = "; ".join((r["acceptance_criteria"] or [])[:3])
+                    lines.append(f"- {r['item_key']} [{r['status']}] {r['title']} "
+                                 f"({float(r['estimate']) if r['estimate'] is not None else '?'} pts)"
+                                 + (f" — AC: {ac}" if ac else ""))
+                parts.append("\n".join(lines))
+        if self._index is not None:
+            comps = tuple(dict.fromkeys(c for r in scope_items for c in (r["components"] or [])))
+            packet = await self._index.packet(project_id, story_ids=tuple(r["item_key"] for r in scope_items),
+                                              components=comps)
+            if packet is not None and packet.text:
+                parts.append("## Project memory (DevMind index — authoritative history)\n" + packet.text)
+        return bounded, "\n\n".join(parts)
 
     async def after_review_ready(self, project_id: str, phase: int, *, provider: str, model: str, actor: str) -> None:
         await self._agile.after_generation(project_id, phase, actor)

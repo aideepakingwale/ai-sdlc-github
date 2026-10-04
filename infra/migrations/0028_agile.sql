@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS agile_proposals (
   project_id   text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   iteration_id text REFERENCES iterations(id) ON DELETE CASCADE,
   phase        integer NOT NULL,                  -- the stage slot that produced it
-  kind         text NOT NULL CHECK (kind IN ('refine','plan')),
+  kind         text NOT NULL CHECK (kind IN ('refine','plan','delta')),
   status       text NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','applied','rejected','superseded')),
   payload      jsonb NOT NULL,
   warnings     jsonb NOT NULL DEFAULT '[]'::jsonb,
@@ -134,3 +134,8 @@ CREATE TABLE IF NOT EXISTS agile_sync_state (
   last_error   text,
   stats        jsonb NOT NULL DEFAULT '{}'::jsonb
 );
+
+-- Agile notifications: a design change that could not be merged into the living specs.
+ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_kind_check;
+ALTER TABLE notifications ADD  CONSTRAINT notifications_kind_check
+  CHECK (kind IN ('stage_ready', 'project_completed', 'spec_conflict'));

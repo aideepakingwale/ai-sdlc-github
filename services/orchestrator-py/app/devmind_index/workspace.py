@@ -173,10 +173,21 @@ class IndexWorkspace:
         d.modified.sort()
         return d
 
-    async def mark_published(self, commit_sha: str) -> None:
+    async def mark_published(
+        self, commit_sha: str, *, files: dict[str, str] | None = None, deleted: list[str] | None = None,
+    ) -> None:
+        """Record what the commit contained. With no arguments the whole workspace is marked published; with a
+        snapshot only those files are (the workspace may have changed since the commit was prepared)."""
         m = await self.manifest()
         m.publishedCommit = commit_sha
-        m.publishedFiles = {p: e.sha256 for p, e in m.files.items()}
+        if files is None:
+            m.publishedFiles = {p: e.sha256 for p, e in m.files.items()}
+        else:
+            merged = dict(m.publishedFiles)
+            merged.update(files)
+            for d in deleted or []:
+                merged.pop(d, None)
+            m.publishedFiles = merged
         await self._write_manifest(m)
 
     async def publishable_manifest(self) -> str:

@@ -106,6 +106,20 @@ function render(kind: string, topic: string, seed: string, userText: string): st
       });
     }
 
+    case 'agile_build': {
+      // Offline Build agent: one living-spec change for the first declared component.
+      const comp = (/COMPONENTS:\s*([a-z0-9_.-]+)/i.exec(userText)?.[1] ?? 'app').toLowerCase();
+      return JSON.stringify({
+        summary: `Increment for ${topic.slice(0, 60)}.`,
+        designDelta: {
+          summary: 'Adds the sprint behaviour to the component spec.',
+          changes: [{ op: 'add', component: comp, section: 'Sprint changes', content: `Behaviour added for ${topic.slice(0, 60)}.`, rationale: 'Required by the committed stories.', baseHash: null }],
+        },
+        testDelta: `# Test delta\n\n- Acceptance tests for ${topic.slice(0, 60)}\n`,
+        incrementNotes: `# Increment notes\n\nDelivered ${topic.slice(0, 60)} (mock provider, ref ${seed}).\n`,
+      });
+    }
+
     case 'agile_plan': {
       // Offline Planning agent: pick READY items in order while they fit the stated CAPACITY.
       const cap = Number(/CAPACITY:\s*([\d.]+)/.exec(userText)?.[1] ?? '0');

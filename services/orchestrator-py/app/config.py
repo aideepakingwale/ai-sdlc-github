@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     # executed only after the phase's HITL gate is APPROVED, by the approver. Set
     # False to revert to the legacy publish-during-generation behaviour.
     PUBLISH_ON_APPROVAL: bool = True
+    # Base branch the .devmind index branch is cut from, and the PR target at release close.
+    INDEX_DEFAULT_BRANCH: str = "main"
 
     # Workflow engine (D-73 fork): v2 adds the data-driven custom phase type and
     # is a backward-compatible superset of v1; set v1 to roll back to the original.

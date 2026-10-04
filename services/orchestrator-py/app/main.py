@@ -131,11 +131,19 @@ async def lifespan(app: FastAPI):
     agile = AgileService(db, dynamo, workflow, audit, authz)
     backlog = BacklogService(db, audit, authz, agile)
     proposals = ProposalService(db, audit, authz, agile)
-    agent_deps.proposals = proposals                      # Refine/Plan agents persist their proposals through it
+    agent_deps.proposals = proposals                      # Refine/Plan/Build agents persist their proposals through it
     agile.on_approved("refine", proposals.apply_refine_hook)
     agile.on_approved("plan", proposals.apply_plan_hook)
+    from .agile.index_service import IndexService, redis_lock_factory
+    from .agile.wiring import register_index_hooks
+
+    index = IndexService(db, content, audit, publisher, workflow, default_branch=settings.INDEX_DEFAULT_BRANCH,
+                         locks=redis_lock_factory(redis))
+    proposals.index = index
+    agent_deps.index = index
+    register_index_hooks(agile, index, proposals)
     gates = GateService(db, dynamo, audit, authz, workflow, regenerate, publisher, agile)
-    chat.lifecycle = AgileLifecycle(agile, gates)
+    chat.lifecycle = AgileLifecycle(agile, gates, index, db)
     flow = FlowService(db, dynamo, audit, authz, content, workflow, regenerate)
     monitor.start_polling()
 
@@ -148,7 +156,7 @@ async def lifespan(app: FastAPI):
     container.skills = SkillService(db, authz, agent_deps, workflow)
     container.workflow = workflow
     container.agile = agile
-    container.extras.update(backlog=backlog, proposals=proposals)
+    container.extras.update(backlog=backlog, proposals=proposals, index=index)
     container.telemetry = telemetry
     container.extras["publisher"] = publisher
     container.canon, container.formworks = canon, formworks

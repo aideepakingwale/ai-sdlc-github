@@ -223,7 +223,7 @@ class ProposalPatch(BaseModel):
 
 @router.get("/api/projects/{project_id}/agile/proposals")
 async def latest_proposal(
-    project_id: str, phase: int, kind: Literal["refine", "plan"],
+    project_id: str, phase: int, kind: Literal["refine", "plan", "delta"],
     user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
 ) -> dict[str, Any]:
     return {"proposal": await c.extras["proposals"].latest(project_id, user, phase, kind)}

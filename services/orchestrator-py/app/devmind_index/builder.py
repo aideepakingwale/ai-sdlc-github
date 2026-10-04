@@ -60,6 +60,7 @@ class IndexBuilder:
         self, *, charter: Charter | None = None, sprint: SprintDigest | None = None,
         release: ReleaseIndex | None = None, current_release: str | None = None,
         current_sprint: str | None = None, source_commit: str | None = None, heal: bool = False,
+        specs: dict[str, str] | None = None,
     ) -> StageResult:
         """Apply new inputs and restage. `heal=True` additionally verifies every file and rewrites any
         that drifted (hand-edited, missing, half-written); leave it off on the hot path."""
@@ -130,6 +131,8 @@ class IndexBuilder:
             writes.append(StagedFile(charter_path(), canonical_json(charter), "charter", sourceCommit=source_commit))
             writes.append(StagedFile(f"{ROOT}/charter.md", charter_md(charter), "charter-md", sourceCommit=source_commit))
         writes.append(StagedFile(README_PATH, readme_md(), "readme"))
+        for spec_file, spec_md in (specs or {}).items():   # living specs are stateful inputs, not derived from sprints
+            writes.append(StagedFile(spec_file, spec_md, "spec", sourceCommit=source_commit))
 
         for rid, rel in releases.items():
             t = tiers[rid]

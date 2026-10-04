@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from .render import sha256
 from .schema import MANIFEST_PATH
 from .workspace import IndexWorkspace
 
@@ -33,5 +34,7 @@ async def build_publish_action(
             "message": message or f"chore(devmind): update index (generation {m.generation}) [skip ci]",
             "strategy": strategy,
         },
-        "stub": {},
+        # Not sent to the connector: lets the caller record exactly what this commit contained.
+        "stub": {"snapshot": {f["path"]: sha256(f["content"]) for f in files if f["path"] != MANIFEST_PATH},
+                 "deletions": list(diff.deleted)},
     }
