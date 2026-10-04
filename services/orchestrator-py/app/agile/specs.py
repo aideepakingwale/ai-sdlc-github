@@ -102,6 +102,12 @@ def sanitise_delta(delta: DesignDelta, *, known_components: set[str] | None = No
         if c.op != "remove" and not content:
             warnings.append(f"change {i}: '{comp}/{sec}' has no content — ignored")
             continue
+        bad = next((ln for ln in content.splitlines()
+                    if re.match(r"^#{1,2}\s", ln) or (ln.lstrip().startswith("<!--") and "DEVMIND" in ln.upper())), None)
+        if bad is not None:               # would corrupt the spec's structure when re-parsed
+            warnings.append(f"change {i}: '{comp}/{sec}' contains a level-1/2 heading or a DevMind banner "
+                            f"({bad.strip()[:40]!r}) — ignored")
+            continue
         if len(content) > MAX_SECTION_CHARS:
             warnings.append(f"change {i}: '{comp}/{sec}' is longer than {MAX_SECTION_CHARS} characters — ignored")
             continue
@@ -133,7 +139,14 @@ def merge_delta(spec_md: str | None, component: str, changes: list[SpecChange]) 
             results.append({**res, "status": "conflict", "reason": "the section no longer exists"})
             continue
         current = section_hash(sections[key])
-        if c.baseHash and c.baseHash != current:
+        if c.op == "replace" and current == section_hash(c.content):    # a replay of an applied change
+            results.append({**res, "status": "unchanged"})
+            continue
+        if not c.baseHash:                # a blind overwrite/removal could destroy a human-reviewed section
+            results.append({**res, "status": "conflict", "currentHash": current,
+                            "reason": f"{c.op} needs the baseHash of the section it was written against"})
+            continue
+        if c.baseHash != current:
             results.append({**res, "status": "conflict", "currentHash": current,
                             "reason": "the section changed after this delta was written"})
             continue

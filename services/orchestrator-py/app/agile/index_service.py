@@ -228,8 +228,9 @@ class IndexService:
         sha = result.get("commitSha")
         if not sha:
             return
-        await self.workspace(project_id).mark_published(
-            sha, files=snap, deleted=(action.get("stub") or {}).get("deletions") or [])
+        async with self._locked(project_id):      # serialise with staging: the manifest has a single writer
+            await self.workspace(project_id).mark_published(
+                sha, files=snap, deleted=(action.get("stub") or {}).get("deletions") or [])
         self._audit.record(project_id=project_id, phase=phase, agent_role="Index", event="index.published",
                            detail={"commit": sha, "files": len(snap), "noop": bool(result.get("noop")),
                                    "branch": action["args"]["branch"]})
