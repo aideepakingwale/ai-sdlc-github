@@ -77,7 +77,7 @@ export function nextStep(o: AgileOverview, stages: FlowStage[]): NextStep {
   const open = foundation.find((s) => s.status !== 'APPROVED');
   if (open) return { tone: 'info', title: `Finish “${open.name}” first`, body: 'The foundation stages run once. Approve them, then start your first sprint.', action: 'open-stage', stageSeq: open.phase };
   if (!it) {
-    const closed = (o.iterations ?? []).filter((i) => i.status === 'closed').length;
+    const closed = (o.iterations ?? []).filter((i) => i.status === 'closed' && (!o.currentRelease || i.releaseId === o.currentRelease.id)).length;
     if (o.currentRelease?.status === 'hardening') {
       const rs = stages.find((s) => s.scope === 'release' && s.release === o.currentRelease?.code);
       return { tone: 'info', title: `Release ${o.currentRelease.code} is in hardening`, body: 'Complete the release stage to close it.', action: 'open-stage', stageSeq: rs?.phase };

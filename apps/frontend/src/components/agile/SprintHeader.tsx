@@ -45,9 +45,9 @@ export default function SprintHeader({ projectId, overview, stages, onOpenStage 
           {canRun && !it && rel?.status === 'open' && closedInRelease && (
             <Button icon="shield" loading={harden.isPending} onClick={() => harden.mutate(undefined)}
               title="Close the release: a final hardening stage, then the release is committed">Harden &amp; release</Button>)}
-          {canRun && it && it.status === 'planned' && (
+          {canRun && it && (it.status === 'planned' || it.status === 'active') && (
             <Button size="sm" variant="ghost" icon="x" loading={cancel.isPending}
-              onClick={() => { if (window.confirm(`Cancel ${it.label}? Only possible before any stage has started.`)) cancel.mutate(undefined); }}>Cancel sprint</Button>)}
+              onClick={() => { if (window.confirm(`Cancel ${it.label}? Its items return to the backlog. Not possible once work on an item has started — close the sprint instead.`)) cancel.mutate(undefined); }}>Cancel sprint</Button>)}
         </div>
       </div>
 

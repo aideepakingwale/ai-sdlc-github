@@ -141,13 +141,14 @@ function Actions({ item: i, sprintOpen, run, projectId, onEdit }: {
 }
 
 function Editor({ item: i, canEdit, projectId }: { item: BacklogItem; canEdit: boolean; projectId: string }) {
+  const [baseVersion] = useState(i.version);            // the version this edit started from: a concurrent change (e.g. Jira) must conflict, not be overwritten
   const [title, setTitle] = useState(i.title);
   const [desc, setDesc] = useState(i.description);
   const [ac, setAc] = useState(i.acceptanceCriteria.join('\n'));
   const [est, setEst] = useState<string>(i.estimate === null ? '' : String(i.estimate));
   const [comps, setComps] = useState(i.components.join(', '));
   const save = useAgileMutation(projectId, () => agileApi.patchItem(projectId, i.key, {
-    expectedVersion: i.version, title, description: desc,
+    expectedVersion: baseVersion, title, description: desc,
     acceptanceCriteria: ac.split('\n').map((s) => s.trim()).filter(Boolean),
     ...(est === '' ? { clearEstimate: true } : { estimate: Number(est) }),
     components: comps.split(',').map((s) => s.trim()).filter(Boolean),

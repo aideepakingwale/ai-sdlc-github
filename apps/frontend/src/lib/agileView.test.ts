@@ -79,6 +79,11 @@ describe('nextStep', () => {
     expect(n.tone).toBe('success');
     expect(n.action).toBe('start-sprint');
   });
+  it('only counts sprints closed in the CURRENT release', () => {
+    const rel2 = { id: 'r2', number: 2, code: 'R-002', name: 'Release 2', goal: '', status: 'open' as const };
+    const n = nextStep(ov({ currentRelease: rel2, iterations: [{ ...it1, releaseId: 'r1', status: 'closed' }] }), foundationDone);
+    expect(n.title).toMatch(/first sprint/i);
+  });
   it('is not enabled → invites to choose a method', () => {
     expect(nextStep(ov({ enabled: false, methodology: 'waterfall' }), []).title).toMatch(/how this project is delivered/);
   });
