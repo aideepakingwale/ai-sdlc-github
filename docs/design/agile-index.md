@@ -6,7 +6,7 @@ Status: **design, for review** · Branch: `feature/devmind-agile-index`
 
 | # | Question | Decision |
 |---|---|---|
-| 1 | Where do index files live? | **In the customer's repository only**, in a dot-folder (`.devmind/`), committed like `.claude/` or `.kiro/`. The repo is the system of record. |
+| 1 | Where do index files live? | **Authored and maintained in a local workspace** (S3 in production, the filesystem in local development), then **committed to the customer's repo** in a dot-folder (`.devmind/`), like `.claude/` or `.kiro/`. The workspace is the working copy; the repo is the published, versioned record (§11). |
 | 2 | Do humans edit them? | **No. Read-only, machine-generated.** Their structure belongs to DevMind. Humans change *inputs* (backlog, approvals), never the index. |
 | 3 | Typical project length | Unknown; designed for **1–100+ sprints** (see §7) with a constant-size context at any length. |
 | 4 | Commit strategy | **Default B:** dedicated `devmind/index` branch, PR to the default branch at release close. **Setting A:** direct commit to the default branch for repos without protection. Per-project setting. |
@@ -228,3 +228,56 @@ keyword/ID lookup (`index/lookup.json`), updated at close, so cold data is found
 2. Connector: **atomic multi-file commit**, branch/PR operations, `github_read_files`/`github_list_tree`.
 3. Jira: search/read/update tools; inbound sync with the ownership table above.
 4. Engine, backlog, gates, UI as in §9.
+
+## 11. Authoring workspace: where the files are created before they reach the repo
+
+**Decision:** the index is created and maintained in a *workspace* that mirrors the repo layout exactly, and a
+separate *publisher* step commits it. This replaces "repo only" in §1 and R3, and makes the system faster, because
+agents never call GitHub to read the index.
+
+### Where the workspace lives (reusing the content store that already exists)
+
+| Environment | Backend | Location |
+|---|---|---|
+| Local development (Docker) | `FilesystemContentStore` | `CONTENT_STORE_PATH` volume: `content-store/{project}/_devmind/.devmind/...` |
+| Production (EC2/AWS) | `S3ContentStore` | `s3://CONTENT_BUCKET/content-store/{project}/_devmind/.devmind/...`, SSE-KMS as configured today |
+| Solo developer, optional | `WorkingTreeStore` (new) | writes straight into a local checkout's `.devmind/` and the developer commits, like Claude Code and Kiro |
+
+All three implement one small interface, so the index code never knows which one it is using. The interface needs a
+**`list_prefix`** operation that the current store lacks (it only has put, get and delete-by-prefix).
+
+### Lifecycle of a file
+
+```
+ generate (agents, DB, Jira snapshot)
+        │   code renders files; LLM writes only short prose
+        ▼
+ WORKSPACE (S3 / filesystem)  ── stage ──►  manifest.json (written LAST = commit marker)
+        │                                      state: staged | published(commitSha)
+        ▼   on gate approval (existing deferred-publish path)
+ PUBLISHER: diff workspace vs last published manifest → one atomic commit (devmind/index branch, or default per setting)
+        ▼
+ REPO .devmind/  (versioned record, reviewed by PR at release close)
+```
+
+* **Readers use the workspace**, never GitHub: ~ms from S3/disk instead of ~hundreds of ms and a rate limit. The
+  repo is read only to **bootstrap** (importing a project that already has `.devmind/`) and to **verify** (hash check).
+* **Atomicity on S3:** S3 has no multi-object transaction, so files are written first and `manifest.json` last. A
+  reader trusts only files the manifest lists, so a crash mid-write leaves an old, consistent index.
+* **Single writer:** one Redis lock per project (the pattern the plan builder already uses) serialises index writes.
+* **Staged vs published:** the manifest records `stagedAt`, `publishedCommit` and per-file hashes; the publisher
+  commits only the diff. If a publish fails, the staged files stay and the gate stays pending, as with the publish
+  queue today.
+* **Durability:** enable S3 bucket versioning so an accidental overwrite is recoverable; in local mode the volume is
+  the only copy until published, so the UI shows "N files not yet published".
+* **Recovery:** if the workspace is lost, rebuild from the last published repo ref (needs the repo read tools) plus the
+  database; nothing hand-written is lost because humans never edit the index.
+* **Read-only enforcement:** the API has no endpoint that edits index files; the only writer is the index service.
+
+### Effect on the plan
+
+* `github_read_files` / `github_list_tree` move from "needed for every read" to "needed for bootstrap and verify only".
+* New: `IndexWorkspace` (over `ContentStore` plus `list_prefix`), `WorkingTreeStore`, the diff-based publisher with
+  the atomic commit from §10.
+* Spike (step 1) now includes the workspace on the **filesystem backend**, so it is testable with no network, and the
+  same tests run against S3 through MinIO/LocalStack, which the project already uses.
