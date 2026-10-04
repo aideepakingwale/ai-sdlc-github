@@ -12,6 +12,7 @@ from typing import Any, AsyncIterator, Callable
 
 from redis.asyncio import Redis
 
+from ..agile.rules import assert_stage_mutable
 from ..agents.phase_agents import EXTERNAL_WRITE_TOOLS, TEMPLATE_TOOLS, AgentDeps
 from ..services.plan_model import build_model_catalog, derive_plan_steps
 from ..agents.prompts import build_phase_prompt
@@ -1247,6 +1248,7 @@ class ChatService:
         wf, stage = await self._stage_for(project_id, phase)
         if not await self._can_write_stage(project_id, stage, user):
             raise SdlcError("FORBIDDEN", f"Triggering the '{stage['name']}' stage requires write permission ({' or '.join(self._stage_writers(stage))})")
+        await assert_stage_mutable(self._db, stage)
         project = await self._db.get_project(project_id)
         session = await self._db.get_session(project_id)
         if not session:

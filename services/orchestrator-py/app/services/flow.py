@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Awaitable, Callable
 
+from ..agile.rules import assert_stage_mutable
 from ..agents.schemas import PHASE_SCHEMAS
 from ..domain.errors import SdlcError
 from ..domain.models import PhaseStatus, UserPublic
@@ -263,6 +264,7 @@ class FlowService:
         stage = await self._workflow.stage_by_seq(project_id, phase)
 
         await self._assert_can_write(project_id, stage, user)
+        await assert_stage_mutable(self._db, stage)
 
         current = await self._dynamo.get_phase_state(project_id, phase)
         if not current or current["status"] == "NOT_STARTED":
@@ -347,6 +349,7 @@ class FlowService:
         consumed the old output are flagged stale. An empty selection means all."""
         stage = await self._workflow.stage_by_seq(project_id, phase)
         await self._assert_can_write(project_id, stage, user)
+        await assert_stage_mutable(self._db, stage)
         schema = PHASE_SCHEMAS.get(stage["template"])
         if schema is None:
             raise SdlcError("VALIDATION_FAILED",

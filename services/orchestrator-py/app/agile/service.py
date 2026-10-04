@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable
 
 import asyncpg
 
+from .rules import assert_stage_mutable
 from ..domain.errors import SdlcError
 from ..domain.models import UserPublic
 from .engine import (
@@ -382,14 +383,7 @@ class AgileService:
         return total
 
     async def assert_stage_mutable(self, project_id: str, stage: dict[str, Any]) -> None:
-        """Stages of a closed or cancelled sprint are history: re-running them would rewrite what was delivered."""
-        iid = stage.get("iterationId")
-        if not iid:
-            return
-        it = await self._db.get_iteration(iid)
-        if it is not None and it["status"] in ("closed", "cancelled"):
-            raise SdlcError("GATE_CONFLICT",
-                            f"Sprint {it['label']} is {it['status']}; its stages are read-only history")
+        await assert_stage_mutable(self._db, stage)
 
     async def _run_hooks(self, table: dict[str, list[Hook]], project_id: str, phase: int, actor: str, label: str) -> None:
         ctx = await self._ctx(project_id, phase, actor)

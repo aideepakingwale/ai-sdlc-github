@@ -220,8 +220,23 @@ async def lifespan(app: FastAPI):
         jira_task = asyncio.create_task(_jira_loop())
         log.info("scheduled Jira sync every %ss", settings.JIRA_SYNC_INTERVAL_SECONDS)
 
+    import asyncio as _asyncio
+
+    async def _reconcile_loop() -> None:
+        while True:
+            await _asyncio.sleep(300)
+            try:
+                n = await container.agile.reconcile_all()
+                if n:
+                    log.info("agile reconcile revisited %s approved stage(s)", n)
+            except Exception:  # noqa: BLE001
+                log.warning("agile reconcile tick failed", exc_info=True)
+
+    reconcile_task = _asyncio.create_task(_reconcile_loop())
+
     log.info("orchestrator (python/langgraph) ready on :%s", settings.ORCHESTRATOR_PORT)
     yield
+    reconcile_task.cancel()
     if jira_task is not None:
         jira_task.cancel()
 

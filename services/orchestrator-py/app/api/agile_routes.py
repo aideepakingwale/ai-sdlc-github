@@ -249,6 +249,15 @@ async def jira_status(
     return await c.extras["jira"].status(project_id, user)
 
 
+@router.post("/api/projects/{project_id}/agile/reconcile")
+async def reconcile(
+    project_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    """Repair any half-finished approval bookkeeping (idempotent). Safe to call at any time."""
+    await c.agile.assert_can_run(project_id, user)
+    return {"revisited": await c.agile.reconcile(project_id)}
+
+
 @router.post("/api/projects/{project_id}/agile/jira/sync")
 async def jira_sync(
     project_id: str, body: JiraSyncBody,

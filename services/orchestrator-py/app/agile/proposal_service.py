@@ -122,6 +122,11 @@ class ProposalService:
             keys=[i["key"] for i in payload["items"]], goal=payload.get("goal", ""), actor_id=None)
         if res is None:
             return
+        if res.get("reason"):                 # sprint closed/cancelled in the meantime: nothing was assigned
+            self._audit.record(project_id=ctx.project_id, phase=ctx.phase, agent_role="Backlog",
+                               event="plan.not_applied", human_reviewer=ctx.actor,
+                               detail={"sprint": ctx.iteration["label"], "reason": res["reason"]})
+            return
         self._audit.record(project_id=ctx.project_id, phase=ctx.phase, agent_role="Backlog",
                            event="plan.committed", human_reviewer=ctx.actor,
                            detail={"sprint": ctx.iteration["label"], "assigned": res["assigned"],

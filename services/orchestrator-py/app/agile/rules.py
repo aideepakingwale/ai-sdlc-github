@@ -108,3 +108,14 @@ def check_transition(current: str, target: str) -> str | None:
 
 def points(rows: list[Any]) -> float:
     return float(sum(float(r["estimate"] or 0) for r in rows))
+
+
+async def assert_stage_mutable(db, stage: dict) -> None:
+    """Stages of a closed or cancelled sprint are history: re-running them would rewrite what was delivered."""
+    from ..domain.errors import SdlcError
+    iid = stage.get("iterationId")
+    if not iid:
+        return
+    it = await db.get_iteration(iid)
+    if it is not None and it["status"] in ("closed", "cancelled"):
+        raise SdlcError("GATE_CONFLICT", f"Sprint {it['label']} is {it['status']}; its stages are read-only history")
