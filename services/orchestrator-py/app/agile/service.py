@@ -490,6 +490,12 @@ class AgileLifecycle:
             keep |= {s["seq"] for s in wf["stages"] if s.get("iterationId") == stage["iterationId"]}
         if stage.get("releaseId"):
             keep |= {s["seq"] for s in wf["stages"] if s.get("releaseId") == stage["releaseId"]}
+            # The release stage consumes the LAST sprint's retro notes (its declared input): keep that sprint only.
+            last = [i for i in await self._db.list_iterations(project_id)
+                    if i["release_id"] == stage["releaseId"] and i["status"] == "closed"]
+            if last:
+                lid = max(last, key=lambda i: i["number"])["id"]
+                keep |= {s["seq"] for s in wf["stages"] if s.get("iterationId") == lid}
         bounded = [a for a in context if a.phase in keep]
         parts: list[str] = []
         scope_items: list[Any] = []

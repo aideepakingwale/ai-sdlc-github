@@ -158,3 +158,15 @@ async def test_index_and_jira_status_endpoints(client):
     assert j["enabled"] is False and "integrations" in j["reason"]
     r = await e.http.post(url(e, "/jira/sync"), json={})
     assert r.status_code == 400 and "No Jira project key" in r.json()["error"]["message"]
+
+
+async def test_reconcile_endpoint_and_out_of_range_start_date(client):
+    e = client
+    await e.http.post(url(e, "/enable"), json={"methodology": "scrum"})
+    await _finish_project_stages(e)
+    r = await e.http.post(url(e, "/reconcile"))
+    assert r.status_code == 200 and r.json() == {"revisited": 0}
+    r = await e.http.post(url(e, "/sprints"), json={"startsOn": "9999-12-31"})
+    assert r.status_code == 400 and r.json()["error"]["code"] == "VALIDATION_FAILED"
+    e.who["user"] = e.stranger
+    assert (await e.http.post(url(e, "/reconcile"))).status_code == 403

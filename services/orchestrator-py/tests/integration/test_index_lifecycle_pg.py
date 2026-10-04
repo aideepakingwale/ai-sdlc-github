@@ -238,3 +238,18 @@ async def test_workspace_integrity_after_a_full_cycle(idx):
     assert await check_integrity(e.index.workspace(e.pid)) == []
     pk = await e.index.packet(e.pid, components=("orders",))
     assert pk and "orders" in pk.text and pk.tokens <= 8000
+
+
+async def test_release_stage_keeps_only_the_last_sprints_artifacts(idx):
+    e = idx
+    await e.agile.enable(e.pid, e.pm, methodology="scrum")
+    await _finish_project_stages(e)
+    await run_sprint(e, 1)
+    await run_sprint(e, 2)
+    await e.agile.start_release_hardening(e.pid, e.po)
+    wf = await e.wf.view(e.pid)
+    s1 = [s["seq"] for s in wf["stages"] if s.get("iterationLabel") == "S-001"]
+    s2 = [s["seq"] for s in wf["stages"] if s.get("iterationLabel") == "S-002"]
+    window = [ContextArtifact(phase=p, type="DOC", title=f"t{p}", summary="s") for p in (*s1, *s2)]
+    bounded, _ = await e.lifecycle.context_for(e.pid, await _stage(e, "release@R-001"), window)
+    assert {a.phase for a in bounded} == set(s2)                  # RETRO_NOTES of S-002 stay; S-001 is in the index
