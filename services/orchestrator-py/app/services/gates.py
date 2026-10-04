@@ -26,6 +26,7 @@ class GateService:
     def __init__(
         self, db: Database, dynamo: DynamoStore, audit: AuditService,
         authz: AuthzService, workflow: Any, regenerate: Regenerate, publisher: Any = None,
+        agile: Any = None,
     ) -> None:
         self._db = db
         self._dynamo = dynamo
@@ -34,6 +35,7 @@ class GateService:
         self._workflow = workflow
         self._regenerate = regenerate
         self._publisher = publisher  # PublishService (D-67); None disables deferred publish
+        self._agile = agile  # AgileService: sprint/release bookkeeping after an approval; None for waterfall-only
 
     async def list_states(self, project_id: str, viewer: UserPublic | None = None) -> list[PhaseStateView]:
         wf = await self._workflow.view(project_id)
@@ -88,6 +90,16 @@ class GateService:
             # Normal completion happens automatically once every assigned review is
             # signed off in the matrix. This endpoint's APPROVE is the managing-PM /
             # admin OVERRIDE that force-completes the gate as the escape hatch.
+            if not override and stage.get("gateMode") == "lightweight":
+                # Sprint ceremonies: ONE authorised reviewer's approval completes the gate (no matrix).
+                await self._authz.assert_can_review_gate(
+                    project_id, stage.get("reviewerRoles") or [stage["reviewerRole"]], user, stage["name"])
+                explicit = [u.lower() for u in (stage.get("reviewerUsers") or []) if u]
+                if explicit and user.email.lower() not in explicit:
+                    raise SdlcError("FORBIDDEN", f"Only {', '.join(explicit)} may approve '{stage['name']}'")
+                return await self._finalize_gate(
+                    project_id, phase, stage, wf, user, False,
+                    {"reviewedArtefacts": [], "mode": "lightweight"}, mode="lightweight")
             if not override:
                 raise SdlcError(
                     "FORBIDDEN",
@@ -136,6 +148,41 @@ class GateService:
         except Exception as err:  # noqa: BLE001 — draft seeding is best-effort
             log.error("amend plan-draft seed failed: %s", err)
         return {"projectId": project_id, "phase": phase, "status": "AMEND_REQUESTED", "nextPhase": None, "planReview": True}
+
+    SYSTEM_APPROVER = UserPublic(
+        id="system-auto-gate", email="auto-gate@devmind.local", displayName="DevMind auto-gate", role="SUPER_ADMIN")
+
+    async def try_auto_approve(
+        self, project_id: str, phase: int, *, provider: str = "", model: str = "",
+    ) -> dict[str, Any] | None:
+        """For stages whose gate mode is `auto`: approve on the platform's behalf ONLY when the independent
+        validation agent's score meets the project's bar and nothing needs a human. Every other case leaves
+        the stage in PENDING_REVIEW for a normal human review. Always audited, with the reasons."""
+        from ..agile.gatemode import decide_auto
+
+        wf = await self._workflow.view(project_id)
+        stage = next((s for s in wf["stages"] if s["seq"] == phase), None)
+        if not stage or stage.get("gateMode") != "auto":
+            return None
+        current = await self._dynamo.get_phase_state(project_id, phase)
+        if not current or current["status"] != "PENDING_REVIEW":
+            return None
+        cfg = await self._db.get_project_agile(project_id)
+        min_score = int(cfg["auto_min_score"]) if cfg else 80
+        pending_publish = bool(self._publisher is not None and await self._publisher.has_pending(project_id, phase))
+        decision = decide_auto(
+            list(await self._db.list_feedback(project_id, phase)), min_score=min_score, provider=provider,
+            model=model, has_pending_publish=pending_publish)
+        if not decision.approve:
+            self._audit.record(
+                project_id=project_id, phase=phase, agent_role="GateController", event="gate.auto_declined",
+                detail={"stage": stage["key"], "score": decision.score, "minScore": min_score,
+                        "reasons": decision.reasons})
+            return None
+        return await self._finalize_gate(
+            project_id, phase, stage, wf, self.SYSTEM_APPROVER, False,
+            {"reviewedArtefacts": [], "autoDecision": {"score": decision.score, "minScore": min_score}},
+            mode="auto")
 
     async def _required_reviewer_users(self, project_id: str, stage: dict) -> list[str]:
         """The reviewer USER emails available for this stage (the matrix columns),
@@ -305,10 +352,10 @@ class GateService:
 
     async def _finalize_gate(
         self, project_id: str, phase: int, stage: dict, wf: dict, user: UserPublic,
-        override: bool, state: dict,
+        override: bool, state: dict, mode: str = "full",
     ) -> dict[str, Any]:
-        """All required reviewers have signed (or an admin override) — publish the
-        queued external writes, transition the gate to APPROVED and advance."""
+        """All required reviewers have signed (or an admin override, a lightweight approval or the
+        platform's auto-gate) — publish the queued external writes, transition the gate to APPROVED and advance."""
         if self._publisher is not None:
             published = await self._publisher.publish(
                 project_id=project_id, phase=phase, approver_email=user.email,
@@ -323,12 +370,15 @@ class GateService:
         next_phase = await self._advance_if_level_done(project_id, phase, wf)
         self._audit.record(
             project_id=project_id, phase=phase, agent_role="GateController",
-            event="gate.approved_override" if override else "gate.approved",
+            event=("gate.auto_approved" if mode == "auto" else
+                   "gate.approved_override" if override else "gate.approved"),
             human_reviewer=user.email,
-            detail={"role": user.role, "stage": stage["key"], "nextPhase": next_phase,
+            detail={"role": user.role, "stage": stage["key"], "nextPhase": next_phase, "gateMode": mode,
                     "superAdminOverride": override, "published": published.get("published", 0),
-                    "reviewed": state.get("reviewedArtefacts")},
+                    "reviewed": state.get("reviewedArtefacts"), **(state.get("autoDecision") or {})},
         )
+        if self._agile is not None:
+            await self._agile.on_stage_approved(project_id, phase, user.email)
         return {"projectId": project_id, "phase": phase, "status": "APPROVED", "complete": True,
                 "nextPhase": next_phase, "published": published.get("published", 0), **state}
 
@@ -357,6 +407,10 @@ class GateService:
                 project_id, [s for s in wf["stages"] if s["seq"] in levels[level_idx + 1]]
             )
             return next_seq
+        if wf.get("iterative"):
+            # Iterative delivery has no "last stage": sprints keep coming. The project stays ACTIVE until
+            # the next sprint (or release) is started, which moves the project pointer to its entry stage.
+            return None
         max_seq = max(s["seq"] for s in wf["stages"])
         await self._db.set_project_phase(project_id, max_seq, "COMPLETED")
         await self._notify_project_completed(project_id)

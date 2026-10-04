@@ -102,9 +102,11 @@ class FakeRedis:
 class FakeAudit:
     def __init__(self) -> None:
         self.events: list[str] = []
+        self.records: list[dict] = []   # full audit payloads, for tests that assert on event details
 
     def record(self, **kwargs):
         self.events.append(kwargs["event"])
+        self.records.append(kwargs)
 
     async def flush(self):
         pass

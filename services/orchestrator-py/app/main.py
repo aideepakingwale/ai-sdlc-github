@@ -123,7 +123,11 @@ async def lifespan(app: FastAPI):
             emit=lambda _e: None,
         )
 
-    gates = GateService(db, dynamo, audit, authz, workflow, regenerate, publisher)
+    from .agile.service import AgileLifecycle, AgileService
+
+    agile = AgileService(db, dynamo, workflow, audit, authz)
+    gates = GateService(db, dynamo, audit, authz, workflow, regenerate, publisher, agile)
+    chat.lifecycle = AgileLifecycle(agile, gates)
     flow = FlowService(db, dynamo, audit, authz, content, workflow, regenerate)
     monitor.start_polling()
 
@@ -135,6 +139,7 @@ async def lifespan(app: FastAPI):
     container.content, container.flow = content, flow
     container.skills = SkillService(db, authz, agent_deps, workflow)
     container.workflow = workflow
+    container.agile = agile
     container.telemetry = telemetry
     container.extras["publisher"] = publisher
     container.canon, container.formworks = canon, formworks
@@ -240,3 +245,6 @@ async def readyz(request: Request) -> JSONResponse:
 app.include_router(auth_routes.router)
 app.include_router(chat_routes.router)
 app.include_router(project_routes.router)
+from .api import agile_routes  # noqa: E402
+
+app.include_router(agile_routes.router)

@@ -73,6 +73,12 @@ class OutputSpec(BaseModel):
     reviewers: list[str] = Field(default_factory=list)  # emails
 
 
+Scope = Literal["project", "iteration", "release"]
+GateMode = Literal["full", "lightweight", "auto"]
+AgileRole = Literal["refine", "plan", "build", "review", "retro", "release"]
+Methodology = Literal["waterfall", "scrum", "kanban"]
+
+
 class StageConfig(BaseModel):
     key: str
     name: str = Field(min_length=3, max_length=80)
@@ -108,6 +114,14 @@ class StageConfig(BaseModel):
     outputSpecs: list[OutputSpec] = Field(default_factory=list)
     contextSources: list[str] = Field(default_factory=list)
     agentNotes: str = Field(default="", max_length=8000)
+    # --- Agile delivery. All optional/additive: a stage defaults to the classic single-run behaviour.
+    # scope: "project" runs once; "iteration" is materialised once per sprint; "release" once per release.
+    scope: Scope = "project"
+    # What the agile engine does around the stage (structured proposals, deltas, closing a sprint ...).
+    agileRole: AgileRole | None = None
+    # How the gate completes: full = review matrix; lightweight = one authorised reviewer's approval;
+    # auto = approved by the platform when the validator score meets the project's bar (else a human reviews).
+    gateMode: GateMode = "full"
 
     def reviewers(self) -> list[str]:
         """Roles allowed to approve/amend this stage's gate."""
@@ -142,6 +156,7 @@ class StageConfig(BaseModel):
 
 class WorkflowConfig(BaseModel):
     stages: list[StageConfig] = Field(min_length=1, max_length=MAX_STAGES)
+    methodology: Methodology = "waterfall"
 
 
 def default_workflow() -> WorkflowConfig:
@@ -235,6 +250,7 @@ def validate_workflow(config: WorkflowConfig) -> list[str]:
                 )
         if s.userPerms and not s.perm_users("write") and not s.writers():
             errors.append(f"Stage '{s.key}': at least one user needs write permission")
+    errors.extend(_validate_agile(config, by_key))
     if errors:
         return errors
 
@@ -262,6 +278,62 @@ def validate_workflow(config: WorkflowConfig) -> list[str]:
                 f"Stage '{s.key}': inputs {missing} are not produced by any upstream stage "
                 f"(ancestors: {sorted(ancestors[s.key]) or 'none'}) — fix dependsOn order or outputs"
             )
+    return errors
+
+
+def _validate_agile(config: WorkflowConfig, by_key: dict[str, StageConfig]) -> list[str]:
+    """Structural rules for iterative (Scrum/Kanban) workflows. A waterfall config must be unchanged:
+    every stage is project-scoped, so none of these rules fire for it."""
+    errors: list[str] = []
+    scoped = [s for s in config.stages if s.scope != "project"]
+    roles = [s.agileRole for s in config.stages if s.agileRole]
+    if config.methodology == "waterfall":
+        for s in config.stages:
+            if s.scope != "project":
+                errors.append(f"Stage '{s.key}': scope '{s.scope}' needs a Scrum or Kanban methodology")
+            if s.agileRole:
+                errors.append(f"Stage '{s.key}': agile role '{s.agileRole}' needs a Scrum or Kanban methodology")
+        return errors
+    if not any(s.scope == "iteration" for s in config.stages):
+        errors.append("An iterative workflow needs at least one iteration-scoped stage")
+    if len(roles) != len(set(roles)):
+        errors.append("Each agile role may be used by only one stage")
+    for s in config.stages:
+        if s.agileRole and s.template != CUSTOM_TEMPLATE:
+            errors.append(f"Stage '{s.key}': agile stages must use the custom template ({CUSTOM_TEMPLATE})")
+        if s.agileRole in ("refine", "plan", "build", "review", "retro") and s.scope != "iteration":
+            errors.append(f"Stage '{s.key}': agile role '{s.agileRole}' must be iteration-scoped")
+        if s.agileRole == "release" and s.scope != "release":
+            errors.append(f"Stage '{s.key}': agile role 'release' must be release-scoped")
+        if s.scope == "release" and s.agileRole not in (None, "release"):
+            errors.append(f"Stage '{s.key}': a release-scoped stage can only have the 'release' role")
+        for dep in s.dependsOn:
+            d = by_key.get(dep)
+            if d is not None and s.scope == "project" and d.scope != "project":
+                errors.append(
+                    f"Stage '{s.key}' is project-scoped and cannot depend on {d.scope}-scoped stage '{dep}'")
+            if d is not None and s.scope == "iteration" and d.scope == "release":
+                errors.append(f"Stage '{s.key}' (iteration) cannot depend on release-scoped stage '{dep}'")
+    # The iteration block must be connected: exactly one entry stage (the one the previous sprint feeds)
+    # and every iteration stage reachable from it, otherwise a sprint could be half-blocked forever.
+    block = [s for s in config.stages if s.scope == "iteration"]
+    if block:
+        keys = {s.key for s in block}
+        entries = [s for s in block if not any(d in keys for d in s.dependsOn)]
+        if len(entries) != 1:
+            errors.append(
+                f"The iteration block must have exactly one entry stage, found {len(entries)}: "
+                f"{[e.key for e in entries]}")
+        sinks = [s for s in block if not any(s.key in o.dependsOn for o in block)]
+        if len(sinks) != 1:
+            errors.append(
+                f"The iteration block must have exactly one closing stage, found {len(sinks)}: "
+                f"{[x.key for x in sinks]}")
+    rel = [s for s in config.stages if s.scope == "release"]
+    if len(rel) > 1:
+        errors.append("At most one release-scoped stage is supported")
+    if scoped and config.methodology == "kanban" and any(s.agileRole == "plan" for s in config.stages):
+        errors.append("Kanban has no sprint-planning stage (use the Scrum methodology for that)")
     return errors
 
 
@@ -353,7 +425,25 @@ class WorkflowService:
             version = row["version"]
         else:
             config, version = default_workflow(), 0
-        return {"config": config.model_dump(), "version": version, **derive(config)}
+        view = {"config": config.model_dump(), "version": version, **derive(config)}
+        view["methodology"] = config.methodology
+        view["iterative"] = config.methodology != "waterfall"
+        if view["iterative"]:
+            # Iterative (Scrum/Kanban): materialise the sprints/releases started so far. Every stage of every
+            # sprint is a normal stage slot, so the rest of the platform needs no special cases.
+            from ..agile.engine import InstanceRef, IterationRef, ReleaseRef, expand
+
+            its = await self._db.list_iterations(project_id)
+            rels = await self._db.list_releases(project_id)
+            insts = await self._db.list_stage_instances(project_id)
+            view.update(expand(
+                {"stages": view["stages"], "levels": view["levels"]},
+                iterations=[IterationRef(i["id"], i["number"], i["label"], i["release_id"], i["status"]) for i in its],
+                releases=[ReleaseRef(r["id"], r["number"], r["code"], r["status"]) for r in rels],
+                instances=[InstanceRef(i["seq"], i["key"], i["base_key"], i["scope"], i["iteration_id"],
+                                       i["release_id"]) for i in insts],
+            ))
+        return view
 
     async def set_stage_reviewers(self, project_id: str, seq: int, users: list[str], user: Any) -> dict[str, Any]:
         """Set the authorised reviewer users (emails) for one stage — used by the
@@ -370,6 +460,27 @@ class WorkflowService:
                 s["reviewerUsers"] = clean
                 break
         return await self.save(project_id, cfg, user)
+
+    async def _guard_agile_structure(self, project_id: str, config: WorkflowConfig, states: list[dict[str, Any]]) -> None:
+        """Once sprints exist (or any stage has run), the SHAPE of an iterative workflow is frozen: changing
+        stage keys, scopes or roles would orphan the materialised sprint slots. Metadata (reviewers, team,
+        notes, gate modes ...) stays editable."""
+        row = await self._db.get_workflow(project_id)
+        old = WorkflowConfig.model_validate(row["config"]) if row else None
+        progressed = any(s.get("status") not in (None, "NOT_STARTED") for s in states)
+        if old is not None and old.methodology != config.methodology and (progressed or old.methodology != "waterfall"):
+            raise SdlcError("GATE_CONFLICT", "The methodology cannot be changed once the project has started")
+        if config.methodology == "waterfall":
+            return
+        has_instances = bool(await self._db.list_stage_instances(project_id))
+        if old is None or not (has_instances or progressed):
+            return
+        shape = lambda c: [(x.key, x.scope, x.agileRole, tuple(x.dependsOn)) for x in c.stages]  # noqa: E731
+        if shape(old) != shape(config):
+            raise SdlcError(
+                "GATE_CONFLICT",
+                "Sprints have started: stage keys, order, scope, agile roles and dependencies are frozen. "
+                "You can still change reviewers, team, notes and gate modes.")
 
     async def stage_by_seq(self, project_id: str, seq: int) -> dict[str, Any]:
         view = await self.view(project_id)
@@ -392,9 +503,12 @@ class WorkflowService:
 
         # Guard running work: a stage slot that already progressed cannot vanish.
         states = await self._dynamo.list_phase_states(project_id)
+        await self._guard_agile_structure(project_id, config, states)
         active = [s for s in states if s.get("status") not in (None, "NOT_STARTED")]
         new_count = len(config.stages)
-        for st in active:
+        # Iterative projects own many more slots than base stages (one set per sprint); their structure is
+        # protected by _guard_agile_structure instead of this slot-count check.
+        for st in (active if config.methodology == "waterfall" else []):
             seq = int(st["SK"].split("#")[1])
             if seq > new_count:
                 raise SdlcError(

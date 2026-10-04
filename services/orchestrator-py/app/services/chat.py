@@ -54,6 +54,9 @@ class ChatService:
         self._settings = settings
         self._publisher = publisher  # PublishService (D-67): stores deferred publish plans
         self._pipeline = build_pipeline()
+        # Set by the composition root: runs sprint/release bookkeeping + the auto-gate once a stage reaches
+        # PENDING_REVIEW. None = classic behaviour (waterfall-only deployments, tests).
+        self.lifecycle: Any = None
 
     async def _run_stage_pipeline(
         self, state: AgentState, *, project_id: str, seq: int, reviewer_role: str,
@@ -230,6 +233,7 @@ class ChatService:
                         detail={"reviewerRole": stage["reviewerRole"], "stage": stage["key"],
                                 "amendCycle": bool(amend)},
                     )
+                    await self._after_review_ready(project["id"], seq, final_state, user.email)
             last_gate = final_state.gate_status
             responses.append(final_state.final_response)
             if not phase_result:  # status/fast-path answer — one response is enough
@@ -1368,6 +1372,7 @@ class ChatService:
                 self._audit.record(project_id=project_id, phase=phase, agent_role=stage["persona"],
                                    event="gate.pending_review", human_reviewer=user.email,
                                    detail={"reviewerRole": stage["reviewerRole"], "stage": stage["key"], "viaPlan": True})
+                await self._after_review_ready(project_id, phase, final_state, user.email)
                 settled = True
             # Impact propagation (#): a re-run (retrigger/amend) just produced a new
             # version of this stage's outputs, so downstream stages that already
@@ -1395,6 +1400,18 @@ class ChatService:
         turn_msg = f"▶ Plan triggered — {stage['name']}" + (f"\n\nInstructions: {prompt_overlay}" if prompt_overlay else "")
         await self._db.insert_chat_turn(session["id"], phase, turn_msg, safe_response)
         emit({"type": "done", "finalResponse": safe_response, "phase": phase, "gateStatus": last_gate})
+
+    async def _after_review_ready(self, project_id: str, phase: int, state: Any, actor: str) -> None:
+        """The stage just reached PENDING_REVIEW: let the agile lifecycle react (index staging, proposals) and
+        give an `auto` gate its chance. Never allowed to fail the generation that already succeeded."""
+        if self.lifecycle is None:
+            return
+        try:
+            await self.lifecycle.after_review_ready(
+                project_id, phase, provider=getattr(state, "last_provider", "") or "",
+                model=getattr(state, "last_model", "") or "", actor=actor)
+        except Exception:  # noqa: BLE001
+            log.exception("after-review lifecycle failed project=%s phase=%s", project_id, phase)
 
     async def _flag_downstream_stale(
         self, project_id: str, phase: int, wf: dict, states: dict, stage_name: str,

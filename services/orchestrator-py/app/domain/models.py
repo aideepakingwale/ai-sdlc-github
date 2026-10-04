@@ -65,6 +65,9 @@ PHASES: list[PhaseDefinition] = [
                     produces=["APP_CODE", "UNIT_TESTS", "PULL_REQUEST"]),  # phase 6
 ]
 MAX_PHASE = 6
+# Upper bound of a stage SLOT number. Waterfall projects use 1..N; iterative (Scrum/Kanban) projects
+# allocate a fresh slot for every stage of every sprint, so the bound must be generous.
+MAX_SEQ = 100_000
 
 
 # The data-driven custom phase type (D-74, workflow v2 template 7). Kept OUT of
@@ -95,7 +98,7 @@ class ArtifactRef(BaseModel):
 
 
 class ContextArtifact(BaseModel):
-    phase: int = Field(ge=1, le=12)
+    phase: int = Field(ge=1, le=MAX_SEQ)
     type: str
     title: str
     summary: str
@@ -115,7 +118,7 @@ class AgentState(BaseModel):
     project_id: str
     session_id: str
     # Runtime stage slot (seq in the workflow's derived order; up to 12, D-30).
-    current_phase: int = Field(ge=1, le=12)
+    current_phase: int = Field(ge=1, le=MAX_SEQ)
     # Which agent template drives this stage's generation: 1..6 built-in engines,
     # or 7 = the data-driven custom phase (D-74).
     stage_template: int = Field(default=1, ge=1, le=7)

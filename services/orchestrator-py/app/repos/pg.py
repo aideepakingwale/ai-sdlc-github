@@ -10,6 +10,7 @@ from typing import Any
 import asyncpg
 
 from ..domain.models import ContextArtifact
+from .agile_pg import AgileRepo
 
 
 def new_id() -> str:
@@ -21,7 +22,7 @@ async def _init_conn(conn: asyncpg.Connection) -> None:
         await conn.set_type_codec(typ, encoder=json.dumps, decoder=json.loads, schema="pg_catalog")
 
 
-class Database:
+class Database(AgileRepo):
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         self.pool: asyncpg.Pool | None = None

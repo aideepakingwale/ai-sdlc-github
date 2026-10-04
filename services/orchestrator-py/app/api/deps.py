@@ -40,6 +40,7 @@ class Container:
     canon: Any = None
     formworks: Any = None
     gen_jobs: Any = None  # durable background stage generation (D-97 L2)
+    agile: Any = None     # AgileService: sprints, releases, backlog, proposals
     extras: dict[str, Any] = field(default_factory=dict)
 
 
