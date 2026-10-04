@@ -228,7 +228,7 @@ class AgileService:
         if cap < 0:
             raise SdlcError("VALIDATION_FAILED", "capacity cannot be negative")
         release = await self._release_for_sprint(project_id, release_id)
-        base = await self._base_view(project_id)
+        base = await self._base_view(project_id, release)
         block = iteration_block(base["stages"])
         if block is None:
             raise SdlcError("VALIDATION_FAILED", "The workflow has no iteration-scoped stages")
@@ -236,12 +236,15 @@ class AgileService:
         if not dt.date(2000, 1, 1) <= starts <= dt.date(2100, 12, 31):
             raise SdlcError("VALIDATION_FAILED", "startsOn must be a date between 2000 and 2100")
         ends = starts + dt.timedelta(days=int(cfg["sprint_days"]))
-        status = "active" if cfg["methodology"] == "kanban" else "planned"
+        has_plan = any(x.get("agileRole") == "plan" for x in base["stages"] if x.get("scope") == "iteration")
+        # Without a planning ceremony (Kanban, or a release whose stage set has none) the sprint is live at once.
+        status = "active" if cfg["methodology"] == "kanban" or not has_plan else "planned"
 
         def slots_for(label: str, number: int, existing: list[Any]) -> list[tuple[int, str, str]]:
             refs = [InstanceRef(e["seq"], e["key"], e["base_key"], e["scope"], e["iteration_id"], e["release_id"])
                     for e in existing]
-            alloc = allocate_seqs(base["stages"], refs, scope="iteration", first=number == 1)
+            alloc = allocate_seqs(base["stages"], refs, scope="iteration",
+                                  first=self._reusable(base["stages"], "iteration", refs, release))
             return [(seq, instance_key(k, label), k) for k, seq in alloc.items()]
 
         try:
@@ -312,6 +315,95 @@ class AgileService:
         return self._iteration_view(row)
 
     # ------------------------------------------------------------------ releases
+    async def create_release(
+        self, project_id: str, user: UserPublic, *, name: str, goal: str = "", forked_from: str | None = None,
+        stage_preset: str = "inherit", stages: list[dict[str, Any]] | None = None, intake_rule: str = "pool",
+        use_pool: bool = True, setup: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Start a (parallel) release. It can be blank or forked from another release's last closed sprint, and it
+        has its OWN stage set: inherited, a preset, or custom. Forking records provenance only — nothing is merged
+        back, and the carried context is written by the index layer from the answers kept in `setup`."""
+        from ..services.workflow import WorkflowConfig
+        from ..services.workflow_v2 import validate_release_stages
+        from .templates import PRESETS, preset_stages
+
+        await self.assert_can_run(project_id, user)
+        await self._settings(project_id)
+        name, goal = (name or "").strip(), (goal or "").strip()
+        if not 1 <= len(name) <= 120:
+            raise SdlcError("VALIDATION_FAILED", "A release needs a name of 1-120 characters")
+        if len(goal) > 400:
+            raise SdlcError("VALIDATION_FAILED", "The release goal must be 400 characters or fewer")
+        if intake_rule not in ("pool", "epic"):
+            raise SdlcError("VALIDATION_FAILED", "intakeRule must be 'pool' or 'epic'")
+        if stages is not None and stage_preset not in ("inherit", "custom"):
+            raise SdlcError("VALIDATION_FAILED", "Give either a stage preset or a custom stage list, not both")
+        if stages is None and stage_preset == "custom":
+            raise SdlcError("VALIDATION_FAILED", "A custom stage set needs a list of stages")
+        if stage_preset not in PRESETS and stage_preset != "custom":
+            raise SdlcError("VALIDATION_FAILED", f"Unknown stage preset '{stage_preset}'")
+        row = await self._db.get_workflow(project_id)
+        project_cfg = WorkflowConfig.model_validate(row["config"])
+        workflow_stages = stages if stages is not None else preset_stages(project_cfg, stage_preset)
+        if workflow_stages is not None:
+            errors = validate_release_stages(project_cfg, workflow_stages)
+            if errors:
+                raise SdlcError("VALIDATION_FAILED", " | ".join(errors[:5]), {"errors": errors})
+        baseline: dict[str, Any] = {}
+        if forked_from:
+            src = await self._db.get_release(forked_from)
+            if not src or src["project_id"] != project_id:
+                raise SdlcError("NOT_FOUND", "The release to fork from was not found")
+            closed = [i for i in await self._db.list_iterations(project_id)
+                      if i["release_id"] == src["id"] and i["status"] == "closed"]
+            if not closed:
+                raise SdlcError("GATE_CONFLICT",
+                                f"Release {src['code']} has no closed sprint yet, so there is nothing stable to fork from")
+            last = max(closed, key=lambda i: i["number"])
+            baseline = {"release": src["code"], "sprint": last["label"],
+                        "at": dt.datetime.now(dt.UTC).isoformat()}
+        rel = await self._db.insert_release(
+            project_id=project_id, name=name, goal=goal, forked_from=forked_from, fork_baseline=baseline,
+            intake_rule=intake_rule, use_pool=use_pool, created_by=user.id, setup=setup or {},
+            workflow={"stages": workflow_stages, "preset": stage_preset} if workflow_stages is not None else None)
+        self._audit.record(
+            project_id=project_id, agent_role="Agile", event="release.created", human_reviewer=user.email,
+            detail={"release": rel["code"], "forkedFrom": baseline.get("release"), "preset": stage_preset,
+                    "custom": stages is not None, "intakeRule": intake_rule, "usePool": use_pool})
+        by_id = {r["id"]: r for r in await self._db.list_releases(project_id)}
+        return self._release_view(rel, by_id)
+
+    async def set_release_stages(
+        self, project_id: str, user: UserPublic, release_id: str, *, stage_preset: str = "custom",
+        stages: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Change a release's stage set — only while it has no sprint yet (its slots are not materialised)."""
+        from ..services.workflow import WorkflowConfig
+        from ..services.workflow_v2 import validate_release_stages
+        from .templates import preset_stages
+
+        await self.assert_can_run(project_id, user)
+        rel = await self._db.get_release(release_id)
+        if not rel or rel["project_id"] != project_id:
+            raise SdlcError("NOT_FOUND", "Release not found")
+        if any(i["release_id"] == release_id for i in await self._db.list_iterations(project_id)) or any(
+                i["release_id"] == release_id for i in await self._db.list_stage_instances(project_id)):
+            raise SdlcError("GATE_CONFLICT", f"Release {rel['code']} has already started; its stage set is frozen")
+        row = await self._db.get_workflow(project_id)
+        project_cfg = WorkflowConfig.model_validate(row["config"])
+        new_stages = stages if stage_preset == "custom" else preset_stages(project_cfg, stage_preset)
+        if stage_preset == "custom" and stages is None:
+            raise SdlcError("VALIDATION_FAILED", "A custom stage set needs a list of stages")
+        if new_stages is not None:
+            errors = validate_release_stages(project_cfg, new_stages)
+            if errors:
+                raise SdlcError("VALIDATION_FAILED", " | ".join(errors[:5]), {"errors": errors})
+        updated = await self._db.update_release(
+            release_id, workflow={"stages": new_stages, "preset": stage_preset} if new_stages is not None else None)
+        self._audit.record(project_id=project_id, agent_role="Agile", event="release.stages_changed",
+                           human_reviewer=user.email, detail={"release": rel["code"], "preset": stage_preset})
+        return self._release_view(updated)
+
     async def start_release_hardening(self, project_id: str, user: UserPublic, release_id: str | None = None) -> dict[str, Any]:
         await self.assert_can_run(project_id, user)
         await self._settings(project_id)
@@ -336,13 +428,21 @@ class AgileService:
             raise SdlcError("GATE_CONFLICT", "Close the current sprint before starting release hardening")
         if not any(i["release_id"] == rel["id"] and i["status"] == "closed" for i in iterations):
             raise SdlcError("GATE_CONFLICT", f"Release {rel['code']} has no completed sprint yet")
-        base = await self._base_view(project_id)
+        base = await self._base_view(project_id, rel)
+        if not any(x.get("scope") == "release" for x in base["stages"]):
+            # This release's stage set has no hardening/release stage: finish it right away.
+            await self._db.set_release_status(rel["id"], "hardening")
+            closed, nxt = await self._db.close_release_and_open_next(project_id, rel["id"])
+            self._audit.record(project_id=project_id, agent_role="Agile", event="release.closed",
+                               human_reviewer=user.email,
+                               detail={"release": rel["code"], "next": nxt["code"] if nxt else None, "noReleaseStage": True})
+            return self._release_view(await self._db.get_release(rel["id"]))
 
         def slots_for(code: str, number: int, existing: list[Any]) -> list[tuple[int, str, str]]:
             refs = [InstanceRef(e["seq"], e["key"], e["base_key"], e["scope"], e["iteration_id"], e["release_id"])
                     for e in existing]
-            first = not any(r.scope == "release" for r in refs)
-            alloc = allocate_seqs(base["stages"], refs, scope="release", first=first)
+            alloc = allocate_seqs(base["stages"], refs, scope="release",
+                                  first=self._reusable(base["stages"], "release", refs, rel))
             return [(seq, instance_key(k, code), k) for k, seq in alloc.items()]
 
         try:
@@ -448,13 +548,20 @@ class AgileService:
         role, it, rel = ctx.role, ctx.iteration, ctx.release
         if it and role == "plan" and it["status"] == "planned":
             await self._db.update_iteration(it["id"], status="active", started_at=dt.datetime.now(dt.UTC))
-        if it and role == "retro" and it["status"] in ("planned", "active"):
+        if it and it["status"] in ("planned", "active") and await self._is_sink(ctx, it):
             await self.close_sprint(ctx.project_id, it["id"], ctx.actor)
         if rel and role == "release" and rel["status"] == "hardening":
             closed, nxt = await self._db.close_release_and_open_next(ctx.project_id, rel["id"])   # one transaction
             if closed is not None:
                 self._audit.record(project_id=ctx.project_id, agent_role="Agile", event="release.closed",
                                    detail={"release": rel["code"], "next": nxt["code"] if nxt else None})
+
+    async def _is_sink(self, ctx: StageCtx, it: Any) -> bool:
+        """The sprint closes when the closing stage of ITS release's stage set is approved (the retro in the
+        standard template, but a release may run a different stage set)."""
+        release = await self._db.get_release(it["release_id"])
+        block = iteration_block((await self._base_view(ctx.project_id, release))["stages"])
+        return block is not None and (ctx.stage.get("baseKey") or ctx.stage["key"]) == block.sink
 
     async def close_sprint(self, project_id: str, iteration_id: str, actor: str) -> dict[str, Any]:
         """Idempotent. Done work stays; everything else returns to the backlog; velocity is recorded."""
@@ -480,14 +587,28 @@ class AgileService:
         return self._iteration_view(row)
 
     # ------------------------------------------------------------------ helpers
-    async def _base_view(self, project_id: str) -> dict[str, Any]:
-        """The derived BASE workflow (one sprint's worth of stages), before expansion."""
+    async def _base_view(self, project_id: str, release: Any = None) -> dict[str, Any]:
+        """The derived BASE workflow (one sprint's / one release's worth of stages), before expansion. A release
+        may carry its own stage set; otherwise it runs the project's."""
         from ..services.workflow import WorkflowConfig, derive
+        from ..services.workflow_v2 import release_base
 
         row = await self._db.get_workflow(project_id)
         if not row:
             raise SdlcError("VALIDATION_FAILED", "No workflow configured")
-        return derive(WorkflowConfig.model_validate(row["config"]))
+        cfg = WorkflowConfig.model_validate(row["config"])
+        if release is not None and release["workflow"]:
+            return release_base(cfg, release["workflow"]["stages"])
+        return derive(cfg)
+
+    @staticmethod
+    def _reusable(base_stages: list[dict[str, Any]], scope: str, refs: list[InstanceRef], release: Any) -> bool:
+        """The first sprint/release of a project reuses the base template's slot numbers; later ones (and any
+        release with its own stage set) take fresh slots. Never reuse a slot that is already in use."""
+        if release["workflow"]:
+            return False
+        base_seqs = {s["seq"] for s in base_stages if s.get("scope") == scope}
+        return not any(r.seq in base_seqs for r in refs)
 
     async def _notify_ready(self, project_id: str, stages: list[dict[str, Any]]) -> None:
         for st in stages:

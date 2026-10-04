@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from ..services.workflow_v2 import CUSTOM_TEMPLATE, ENTRY_INPUT, StageConfig, WorkflowConfig
 
 
@@ -67,3 +69,78 @@ def template_for(methodology: str) -> WorkflowConfig:
     if methodology == "kanban":
         return kanban_workflow()
     raise ValueError(f"unknown methodology '{methodology}'")
+
+
+# ------------------------------------------------------------------ per-release stage sets
+# A forked release is built for a NEW scope; it need not run the stages of the original project. Its stage set is
+# either inherited (None), one of these presets, or a custom list. Presets are derived from the project's own
+# iteration/release stages by dropping stages and re-wiring the dependencies around them, so they stay valid for
+# whatever the project's template looks like.
+SCOPED = ("iteration", "release")
+PRESETS: dict[str, dict[str, Any]] = {
+    "inherit": {"label": "Same stages as the project", "drop": None},
+    "lean": {"label": "No planning ceremony (refine → build → review → retro)", "drop": ("plan",)},
+    "hotfix": {"label": "Fix and ship (build → review → release)", "drop": ("refine", "plan", "retro")},
+    "build-only": {"label": "Build and review only, no release stage", "drop": ("refine", "plan", "retro", "release")},
+}
+
+
+def scoped_stages(config: WorkflowConfig) -> list[dict[str, Any]]:
+    """The release-level part of a workflow: its iteration- and release-scoped stages, as plain dicts."""
+    return [s.model_dump() for s in config.stages if s.scope in SCOPED]
+
+
+def drop_stages(stages: list[dict[str, Any]], drop: tuple[str, ...] | set[str]) -> list[dict[str, Any]]:
+    """Remove stages by key and re-wire everything that depended on them to the dropped stage's own dependencies
+    (transitively), so the remaining graph stays connected."""
+    drop = set(drop)
+    by_key = {s["key"]: s for s in stages}
+
+    def resolve(key: str, seen: frozenset[str] = frozenset()) -> list[str]:
+        if key not in drop:
+            return [key]
+        if key in seen or key not in by_key:
+            return []
+        out: list[str] = []
+        for d in by_key[key]["dependsOn"]:
+            out += resolve(d, seen | {key})
+        return out
+
+    produced_by_dropped = {o: s for s in stages if s["key"] in drop for o in s["outputs"]}
+
+    def resolve_input(name: str, seen: frozenset[str] = frozenset()) -> list[str]:
+        """An input that only a dropped stage produced is replaced by that stage's own inputs."""
+        src = produced_by_dropped.get(name)
+        if src is None or name in seen:
+            return [name]
+        out: list[str] = []
+        for i in src["inputs"]:
+            out += resolve_input(i, seen | {name})
+        return out
+
+    kept = []
+    for s in stages:
+        if s["key"] in drop:
+            continue
+        deps: list[str] = []
+        for d in s["dependsOn"]:
+            for r in resolve(d):
+                if r not in deps:
+                    deps.append(r)
+        inputs: list[str] = []
+        for i in s["inputs"]:
+            for r in resolve_input(i):
+                if r not in inputs:
+                    inputs.append(r)
+        kept.append({**s, "dependsOn": deps, "inputs": inputs})
+    return kept
+
+
+def preset_stages(project_config: WorkflowConfig, preset: str) -> list[dict[str, Any]] | None:
+    """The stage set for a preset; None means inherit the project's workflow."""
+    if preset not in PRESETS:
+        raise ValueError(f"unknown stage preset '{preset}'")
+    drop = PRESETS[preset]["drop"]
+    if drop is None:
+        return None
+    return drop_stages(scoped_stages(project_config), drop)

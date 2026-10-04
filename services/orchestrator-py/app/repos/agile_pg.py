@@ -17,7 +17,7 @@ BACKLOG_FIELDS = {
     "components", "labels", "iteration_id", "jira_key", "jira_updated", "jira_synced_at",
 }
 ITERATION_FIELDS = {"goal", "status", "capacity", "starts_on", "ends_on", "started_at", "closed_at", "summary"}
-RELEASE_FIELDS = {"name", "goal", "intake_rule", "use_pool", "setup"}
+RELEASE_FIELDS = {"name", "goal", "intake_rule", "use_pool", "setup", "workflow"}
 AGILE_FIELDS = {"sprint_days", "default_capacity", "wip_limit", "index_strategy", "auto_min_score"}
 RANK_STEP = 1024.0
 
@@ -73,14 +73,15 @@ class AgileRepo:
         conn: asyncpg.Connection, project_id: str, name: str, goal: str = "", *, forked_from: str | None = None,
         fork_baseline: dict[str, Any] | None = None, setup: dict[str, Any] | None = None,
         intake_rule: str = "pool", use_pool: bool = True, created_by: str | None = None,
+        workflow: dict[str, Any] | None = None,
     ) -> asyncpg.Record:
         await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"rel:{project_id}")
         n = await conn.fetchval("SELECT COALESCE(MAX(number),0)+1 FROM releases WHERE project_id=$1", project_id)
         return await conn.fetchrow(
             "INSERT INTO releases (id, project_id, number, code, name, goal, forked_from, fork_baseline, setup, "
-            "intake_rule, use_pool, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *",
+            "intake_rule, use_pool, created_by, workflow) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *",
             _id(), project_id, n, f"R-{n:03d}", name, goal, forked_from, fork_baseline or {}, setup or {},
-            intake_rule, use_pool, created_by,
+            intake_rule, use_pool, created_by, workflow,
         )
 
     async def insert_release(self, *, project_id: str, name: str, goal: str = "", **kw: Any) -> asyncpg.Record:

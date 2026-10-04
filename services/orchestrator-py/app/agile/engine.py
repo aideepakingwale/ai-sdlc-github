@@ -111,11 +111,25 @@ def _levels(stages: list[dict[str, Any]]) -> list[list[int]]:
 
 def expand(
     base: dict[str, Any], *, iterations: list[IterationRef], releases: list[ReleaseRef],
-    instances: list[InstanceRef],
+    instances: list[InstanceRef], release_bases: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Expand the derived base view with the materialised sprints/releases."""
-    base_stages: list[dict[str, Any]] = base["stages"]
-    block = iteration_block(base_stages)
+    """Expand the derived base view with the materialised sprints/releases. A release may have its OWN stage set
+    (`release_bases[release_id]`, a derived base view); the others use the project's `base`."""
+    project_stages: list[dict[str, Any]] = base["stages"]
+    release_bases = release_bases or {}
+
+    def stages_for(release_id: str | None) -> list[dict[str, Any]]:
+        b = release_bases.get(release_id) if release_id else None
+        return b["stages"] if b else project_stages
+
+    blocks: dict[str | None, Block | None] = {}
+
+    def block_for(release_id: str | None) -> Block | None:
+        if release_id not in blocks:
+            blocks[release_id] = iteration_block(stages_for(release_id))
+        return blocks[release_id]
+
+    base_stages = project_stages
     inst_by = {(i.base_key, i.iteration_id or i.release_id): i for i in instances}
     iters = sorted((i for i in iterations if i.status != "cancelled"), key=lambda i: i.number)
     rel_by_id = {r.id: r for r in releases}
@@ -130,13 +144,14 @@ def expand(
     for it in iters:
         rel = rel_by_id.get(it.release_id)
         prev = prev_in_release.get(it.release_id)
-        for s in sorted((x for x in base_stages if x.get("scope") == "iteration"), key=lambda x: x["seq"]):
+        rel_stages, block = stages_for(it.release_id), block_for(it.release_id)
+        for s in sorted((x for x in rel_stages if x.get("scope") == "iteration"), key=lambda x: x["seq"]):
             inst = inst_by.get((s["key"], it.id))
             if inst is None:
                 continue
             deps: list[str] = []
             for d in s["dependsOn"]:
-                dep_stage = next((x for x in base_stages if x["key"] == d), None)
+                dep_stage = next((x for x in rel_stages if x["key"] == d), None)
                 if dep_stage is not None and dep_stage.get("scope") == "iteration":
                     deps.append(instance_key(d, it.label))
                 else:
@@ -154,13 +169,14 @@ def expand(
 
     for rel in sorted(releases, key=lambda r: r.number):
         last_it = max((i for i in iters if i.release_id == rel.id), key=lambda i: i.number, default=None)
-        for s in sorted((x for x in base_stages if x.get("scope") == "release"), key=lambda x: x["seq"]):
+        rel_stages = stages_for(rel.id)
+        for s in sorted((x for x in rel_stages if x.get("scope") == "release"), key=lambda x: x["seq"]):
             inst = inst_by.get((s["key"], rel.id))
             if inst is None:
                 continue
             deps = []
             for d in s["dependsOn"]:
-                dep_stage = next((x for x in base_stages if x["key"] == d), None)
+                dep_stage = next((x for x in rel_stages if x["key"] == d), None)
                 if dep_stage is not None and dep_stage.get("scope") == "iteration":
                     if last_it is not None:
                         deps.append(instance_key(d, last_it.label))

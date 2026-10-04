@@ -414,6 +414,33 @@ def derive(config: WorkflowConfig) -> dict[str, Any]:
     return {"stages": stages, "levels": levels}
 
 
+def combine_release_config(project: WorkflowConfig, release_stages: list[dict[str, Any]]) -> WorkflowConfig:
+    """The project's foundation (project-scoped) stages plus a release's OWN iteration/release stage set: the
+    workflow that release actually runs. Raises ValidationError on malformed stages."""
+    foundation = [s for s in project.stages if s.scope == "project"]
+    return WorkflowConfig(methodology=project.methodology,
+                          stages=[*foundation, *[StageConfig.model_validate(s) for s in release_stages]])
+
+
+def validate_release_stages(project: WorkflowConfig, release_stages: list[dict[str, Any]]) -> list[str]:
+    """Same rules as a project workflow, applied to foundation + the release's stage set; plus: the release stage
+    set may only contain iteration- and release-scoped stages (the foundation is shared)."""
+    if any(s.get("scope", "project") == "project" for s in release_stages):
+        return ["A release's own stages must be iteration- or release-scoped; the foundation stages are shared"]
+    try:
+        combined = combine_release_config(project, release_stages)
+    except ValidationError as err:
+        return [f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in err.errors()[:5]]
+    return validate_workflow(combined)
+
+
+def release_base(project: WorkflowConfig, release_stages: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """Derived BASE view (one sprint's / one release's worth of stages) for a release; the project's own when the
+    release inherits."""
+    cfg = project if not release_stages else combine_release_config(project, release_stages)
+    return derive(cfg)
+
+
 class WorkflowService:
     def __init__(self, db: Any, dynamo: Any, audit: Any) -> None:
         self._db = db
@@ -438,8 +465,10 @@ class WorkflowService:
             its = await self._db.list_iterations(project_id)
             rels = await self._db.list_releases(project_id)
             insts = await self._db.list_stage_instances(project_id)
+            bases = {r["id"]: release_base(config, r["workflow"]["stages"] if r["workflow"] else None)
+                     for r in rels if r["workflow"]}
             view.update(expand(
-                {"stages": view["stages"], "levels": view["levels"]},
+                {"stages": view["stages"], "levels": view["levels"]}, release_bases=bases,
                 iterations=[IterationRef(i["id"], i["number"], i["label"], i["release_id"], i["status"]) for i in its],
                 releases=[ReleaseRef(r["id"], r["number"], r["code"], r["status"]) for r in rels],
                 instances=[InstanceRef(i["seq"], i["key"], i["base_key"], i["scope"], i["iteration_id"],
