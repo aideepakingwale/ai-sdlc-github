@@ -1,4 +1,3 @@
-import pytest
 
 from app.agile.specs import (
     MAX_CHANGES, DesignDelta, SpecChange, component_slug, merge_delta, parse_spec, render_delta_md, render_spec,

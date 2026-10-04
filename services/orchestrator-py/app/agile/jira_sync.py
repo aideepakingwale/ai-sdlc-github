@@ -163,7 +163,7 @@ class JiraSyncService:
                 for issue in page.get("issues", []):
                     try:
                         row = await self._apply_issue(project_id, issue, res)
-                    except Exception as err:  # noqa: BLE001 — one bad issue must not stop the run
+                    except Exception as err:
                         res.errors.append(f"{issue.get('key')}: {str(err)[:160]}")
                         continue
                     if row is not None:
@@ -180,7 +180,7 @@ class JiraSyncService:
             await self._link_epics(project_id, epic_ids, pending_links)
             res.watermark = newest.isoformat() if newest else None
             res.status = "partial" if res.errors else "ok"
-        except Exception as err:  # noqa: BLE001 — connector/transport failure: keep the old watermark
+        except Exception as err:
             res.status, res.watermark = "error", (mark.isoformat() if mark else None)
             res.errors.append(str(err)[:300])
             await self._db.save_sync_state(project_id, watermark=None, status="error", error=str(err)[:500], stats=res.view())
@@ -305,7 +305,7 @@ class JiraSyncService:
             try:
                 await self.sync(pid)
                 n += 1
-            except Exception:  # noqa: BLE001
+            except Exception:
                 log.warning("scheduled Jira sync failed project=%s", pid, exc_info=True)
         return n
 

@@ -148,5 +148,5 @@ class ProposalService:
                     title=f"{len(conflicts)} design change(s) could not be merged into the living specs",
                     body="; ".join(f"{c['component']}/{c['section']}: {c.get('reason', '')}" for c in conflicts[:5]),
                     roles=["TA", "SA"])
-            except Exception:  # noqa: BLE001
+            except Exception:
                 log.warning("spec_conflict notification failed", exc_info=True)

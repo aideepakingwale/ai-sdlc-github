@@ -18,7 +18,7 @@ from ..devmind_index.reader import IndexReader
 from ..devmind_index.schema import Charter, Decision, ReleaseIndex, SprintDigest, Story, Tier
 from ..devmind_index.workspace import IndexWorkspace
 from .specs import (
-    DesignDelta, SpecChange, group_by_component, merge_delta, spec_path,
+    DesignDelta, group_by_component, merge_delta, spec_path,
 )
 
 log = logging.getLogger("agile")

@@ -15,7 +15,7 @@ import asyncpg
 from ..domain.errors import SdlcError
 from ..domain.models import UserPublic
 from .engine import (
-    InstanceRef, IterationRef, ReleaseRef, allocate_seqs, instance_key, iteration_block,
+    InstanceRef, allocate_seqs, instance_key, iteration_block,
 )
 from .templates import template_for
 
@@ -325,7 +325,7 @@ class AgileService:
                 for fn in self._on_approved.get(name, []):
                     await fn(ctx)
             await self._advance_lifecycle(ctx)
-        except Exception as err:  # noqa: BLE001 — an approval must never be undone by bookkeeping
+        except Exception as err:
             log.exception("agile approval hook failed project=%s phase=%s", project_id, phase)
             self._audit.record(project_id=project_id, phase=phase, agent_role="Agile", event="agile.hook_failed",
                                detail={"stage": ctx.stage["key"], "error": str(err)[:300]})
@@ -338,7 +338,7 @@ class AgileService:
             for fn in table.get(name, []):
                 try:
                     await fn(ctx)
-                except Exception as err:  # noqa: BLE001
+                except Exception as err:
                     log.exception("agile %s hook failed project=%s phase=%s", label, project_id, phase)
                     self._audit.record(project_id=project_id, phase=phase, agent_role="Agile",
                                        event="agile.hook_failed",
@@ -377,7 +377,7 @@ class AgileService:
         items = await self._db.list_backlog(project_id, iteration_id=iteration_id)
         done = [i for i in items if i["status"] == "done"]
         left = [i for i in items if i["status"] != "done"]
-        pts = lambda rows: float(sum(float(r["estimate"] or 0) for r in rows))  # noqa: E731
+        pts = lambda rows: float(sum(float(r["estimate"] or 0) for r in rows))
         carried = await self._db.release_unfinished_items(iteration_id, to_status="ready")
         summary = {
             "velocity": pts(done), "completed": len(done), "committedPoints": pts(items), "committed": len(items),
@@ -409,7 +409,7 @@ class AgileService:
                     project_id=project_id, phase=st["seq"], kind="stage_ready",
                     title=f"{st['name']} is ready to run",
                     body="The sprint's first stage is open.", roles=st.get("team") or [])
-            except Exception:  # noqa: BLE001 — notifications are best-effort
+            except Exception:
                 log.warning("stage_ready notification failed", exc_info=True)
 
 
@@ -427,7 +427,7 @@ class AgileLifecycle:
         if self._jira is not None and stage.get("agileRole") in ("refine", "plan"):
             try:                                   # start refinement/planning from the freshest Jira state
                 await self._jira.sync(project_id)
-            except Exception:  # noqa: BLE001 — Jira being unreachable must never block a ceremony
+            except Exception:
                 log.warning("pre-ceremony Jira sync skipped", exc_info=True)
         wf = await self._agile._workflow.view(project_id)
         keep = {s["seq"] for s in wf["stages"] if s.get("scope", "project") == "project"}

@@ -64,7 +64,6 @@ class IndexBuilder:
     ) -> StageResult:
         """Apply new inputs and restage. `heal=True` additionally verifies every file and rewrites any
         that drifted (hand-edited, missing, half-written); leave it off on the hot path."""
-        r = self.reader
         force: set[str] = set()
         if heal:
             drift = await self.ws.verify()

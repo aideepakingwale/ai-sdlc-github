@@ -1,6 +1,5 @@
 """Shared environment + helpers for the Agile integration tests (real Postgres)."""
 
-import pytest
 
 from app.agile.backlog import BacklogService
 from app.agile.proposal_service import ProposalService

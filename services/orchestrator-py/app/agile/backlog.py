@@ -259,6 +259,6 @@ class BacklogService:
         if self.sync_hook is not None:
             try:
                 await self.sync_hook(project_id, row, op)
-            except Exception:  # noqa: BLE001 — Jira being down must never block backlog edits
+            except Exception:
                 import logging
                 logging.getLogger("agile").warning("jira write-through failed for %s", row["item_key"], exc_info=True)

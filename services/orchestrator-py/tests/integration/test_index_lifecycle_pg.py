@@ -1,6 +1,5 @@
 """The project-memory loop end to end on a real Postgres: stage on generation, commit on approval."""
 
-import types
 
 import pytest
 

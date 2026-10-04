@@ -86,9 +86,12 @@ export default function Workspace() {
     enabled: Boolean(activeProjectId),
   });
 
+  // Older closed sprints arrive summarised; the ones a person opens are requested explicitly.
+  const [extraSprints, setExtraSprints] = useState<string[]>([]);
   const flow = useQuery({
-    queryKey: ['flow', activeProjectId],
-    queryFn: () => api.get<ProjectFlow>(`/api/projects/${activeProjectId}/flow`),
+    queryKey: ['flow', activeProjectId, extraSprints.join(',')],
+    queryFn: () => api.get<ProjectFlow>(`/api/projects/${activeProjectId}/flow${extraSprints.length ? `?sprints=${extraSprints.join(',')}` : ''}`),
+    placeholderData: (prev) => prev,
     enabled: Boolean(activeProjectId),
     refetchInterval: 5_000,
   });
@@ -103,6 +106,7 @@ export default function Workspace() {
     setSelectedStage(null);
     setFocusedPhase(null);
     setView('stage');
+    setExtraSprints([]);
   }, [activeProjectId]);
   // An Agile project opens on its sprint board; classic projects keep the stage view.
   useEffect(() => {
@@ -240,7 +244,8 @@ export default function Workspace() {
           </div>
           {activeProjectId && phaseStates.length > 0 ? (
             flow.data?.iterative
-              ? <SprintRail flow={flow.data} iterations={agile.data?.iterations ?? []} currentPhase={currentPhase} selected={activeStage} onSelect={selectStage} />
+              ? <SprintRail flow={flow.data} iterations={agile.data?.iterations ?? []} currentPhase={currentPhase} selected={activeStage} onSelect={selectStage}
+                  onLoadSprint={(l) => setExtraSprints((x) => (x.includes(l) ? x : [...x, l]))} />
               : <PhaseTracker states={phaseStates} currentPhase={currentPhase} selected={activeStage} onSelect={selectStage} />
           ) : (
             <div className="rounded-lg bg-white/5 p-3 text-xs text-slate-400">

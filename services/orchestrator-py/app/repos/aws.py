@@ -73,10 +73,20 @@ class DynamoStore:
     async def list_phase_states(self, project_id: str) -> list[dict[str, Any]]:
         from boto3.dynamodb.conditions import Key
 
-        res = await asyncio.to_thread(
-            lambda: self.phase_table.query(KeyConditionExpression=Key("PK").eq(f"PROJECT#{project_id}"))
-        )
-        return res.get("Items", [])
+        # A single Query returns at most 1 MB. Iterative projects own hundreds of stage slots, so follow
+        # LastEvaluatedKey instead of silently truncating the list.
+        def _all() -> list[dict[str, Any]]:
+            items: list[dict[str, Any]] = []
+            kwargs: dict[str, Any] = {"KeyConditionExpression": Key("PK").eq(f"PROJECT#{project_id}")}
+            while True:
+                res = self.phase_table.query(**kwargs)
+                items.extend(res.get("Items", []))
+                last = res.get("LastEvaluatedKey")
+                if not last:
+                    return items
+                kwargs["ExclusiveStartKey"] = last
+
+        return await asyncio.to_thread(_all)
 
     async def delete_phase_states(self, project_id: str) -> int:
         """Remove all PHASE# items for a project ( project deletion)."""

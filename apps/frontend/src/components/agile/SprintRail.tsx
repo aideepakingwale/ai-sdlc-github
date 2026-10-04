@@ -9,9 +9,13 @@ import { Icon } from '../ui/Icon';
 const TAG: Record<string, string> = { active: 'bg-blue-500/30 text-blue-200', planned: 'bg-amber-500/30 text-amber-200', closed: 'bg-emerald-500/20 text-emerald-200', cancelled: 'bg-white/10 text-slate-400' };
 
 /** Sidebar rail for iterative projects: foundation stages, then one collapsible group per sprint. */
-export default function SprintRail({ flow, iterations, currentPhase, selected, onSelect }: {
+export default function SprintRail({ flow, iterations, currentPhase, selected, onSelect, onLoadSprint }: {
   flow: ProjectFlow; iterations: Iteration[]; currentPhase: number; selected?: number; onSelect: (seq: number) => void;
+  /** Ask the server for one older (summarised) sprint in full. */
+  onLoadSprint?: (label: string) => void;
 }) {
+  const earlier = flow.collapsedSprints ?? [];
+  const [showEarlier, setShowEarlier] = useState(false);
   const groups = groupStages(flow.stages, iterations);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const isCollapsed = (key: string, status: string): boolean => collapsed[key] ?? (status === 'closed');
@@ -38,6 +42,24 @@ export default function SprintRail({ flow, iterations, currentPhase, selected, o
           </section>
         );
       })}
+      {earlier.length > 0 && (
+        <section aria-label="Earlier sprints">
+          <button type="button" onClick={() => setShowEarlier(!showEarlier)} aria-expanded={showEarlier}
+            className="flex w-full items-center gap-1.5 px-1 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400 hover:text-slate-200">
+            <Icon name="chevron-right" size={12} className={showEarlier ? 'rotate-90' : ''} />Earlier sprints
+            <span className="ml-auto font-normal normal-case text-slate-500">{earlier.length}</span>
+          </button>
+          {showEarlier && (
+            <ul className="max-h-48 space-y-0.5 overflow-y-auto pl-4 text-xs text-slate-300">
+              {earlier.slice().reverse().map((c) => (
+                <li key={c.label} className="flex items-center gap-2">
+                  <span className="font-mono">{c.label}</span>
+                  <span className="text-slate-500">{c.approved}/{c.stages} approved</span>
+                  {onLoadSprint && <button type="button" onClick={() => onLoadSprint(c.label)} className="ml-auto text-brand-300 hover:underline">Open</button>}
+                </li>))}
+            </ul>)}
+        </section>
+      )}
     </div>
   );
 }

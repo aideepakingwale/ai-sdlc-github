@@ -263,7 +263,7 @@ async def test_a_new_run_supersedes_the_old_proposal(env):
 
 async def test_plan_agent_commits_only_valid_ready_items_on_approval(env):
     e = env
-    s = await started(e, default_capacity=8)
+    await started(e, default_capacity=8)
     a = await story(e, "A", est=5, status="ready"); b = await story(e, "B", est=3, status="ready")
     c = await story(e, "C", est=5, status="ready"); d = await story(e, "D", est=2)          # D is not ready
     await _approve(e, "refine@S-001")
@@ -292,7 +292,7 @@ async def test_plan_falls_back_to_rank_order_when_the_model_is_useless(env):
     first = await story(e, "First", est=3, status="ready"); second = await story(e, "Second", est=3, status="ready")
     await story(e, "Third", est=3, status="ready")
     for llm in (FakeLlm(fail=True), FakeLlm(LlmPlan(picks=[LlmPlanPick(key="DM-999")]))):
-        res = await run_agent(e, run_plan, "plan@S-001", llm)
+        await run_agent(e, run_plan, "plan@S-001", llm)
         st = await _stage(e, "plan@S-001")
         prop = await e.proposals.latest(e.pid, e.po, st["seq"], "plan")
         assert [i["key"] for i in prop["payload"]["items"]] == [first["key"], second["key"]]

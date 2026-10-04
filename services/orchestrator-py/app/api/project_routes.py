@@ -303,11 +303,13 @@ async def save_workflow(
 # ------------------------------------------------------------------ pipeline flow + retrigger (D-24)
 @router.get("/api/projects/{project_id}/flow")
 async def project_flow(
-    project_id: str, user: UserPublic = Depends(current_user),
+    project_id: str, sprints: str = "", user: UserPublic = Depends(current_user),
     container: Container = Depends(get_container),
 ) -> dict:
+    """`sprints=S-003,S-004` additionally returns those (older, summarised) sprints in full."""
     await container.authz.assert_project_access(project_id, user)
-    return await container.flow.flow(project_id, user)
+    wanted = [x.strip() for x in sprints.split(",") if x.strip()][:10]
+    return await container.flow.flow(project_id, user, wanted)
 
 
 @router.get("/api/projects/{project_id}/phases/{phase_id}")
@@ -322,7 +324,7 @@ async def phase_detail(
         raise SdlcError("VALIDATION_FAILED", "phaseId must be a valid stage slot (1-100000)")
     await container.authz.assert_project_access(project_id, user)
 
-    flow = await container.flow.flow(project_id, user)
+    flow = await container.flow.flow(project_id, user, window=False)   # any slot, however old its sprint
     stage = next((s for s in flow["stages"] if s["phase"] == phase_id), None)
     if not stage:
         raise SdlcError("NOT_FOUND", "Phase not found")

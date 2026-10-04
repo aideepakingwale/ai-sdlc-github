@@ -101,7 +101,7 @@ async def run_refine(deps: AgentDeps, state: AgentState, emit: Any) -> PhaseAgen
                           event="ai.generation", provider=result.provider, model=result.model,
                           prompt_tokens=result.usage["promptTokens"], completion_tokens=result.usage["completionTokens"],
                           artefact_body=result.content, detail={"agile": "refine"})
-    except Exception as err:  # noqa: BLE001 — the stage must still complete
+    except Exception as err:
         log.warning("refine model call failed: %s", err)
         unavailable = f"The AI refinement could not be produced ({str(err)[:160]}). Edit the backlog manually."
         llm_out = LlmRefine(summary=unavailable)
@@ -144,7 +144,7 @@ async def run_plan(deps: AgentDeps, state: AgentState, emit: Any) -> PhaseAgentR
                           event="ai.generation", provider=result.provider, model=result.model,
                           prompt_tokens=result.usage["promptTokens"], completion_tokens=result.usage["completionTokens"],
                           artefact_body=result.content, detail={"agile": "plan"})
-    except Exception as err:  # noqa: BLE001
+    except Exception as err:
         log.warning("plan model call failed: %s", err)
         llm_out = None
         note = f"The AI plan could not be produced ({str(err)[:160]}); items were chosen by backlog rank."
@@ -274,7 +274,7 @@ async def run_build(deps: AgentDeps, state: AgentState, emit: Any) -> PhaseAgent
                           event="ai.generation", provider=result.provider, model=result.model,
                           prompt_tokens=result.usage["promptTokens"], completion_tokens=result.usage["completionTokens"],
                           artefact_body=result.content, detail={"agile": "build"})
-    except Exception as err:  # noqa: BLE001
+    except Exception as err:
         log.warning("build model call failed: %s", err)
         unavailable = f"The AI increment description could not be produced ({str(err)[:160]})."
         out = LlmBuild(summary=unavailable)

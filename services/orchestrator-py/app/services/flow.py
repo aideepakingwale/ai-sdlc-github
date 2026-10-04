@@ -81,7 +81,11 @@ class FlowService:
         self._workflow = workflow
         self._regenerate = regenerate
 
-    async def flow(self, project_id: str, viewer: UserPublic) -> dict[str, Any]:
+    # Iterative projects keep every sprint's stages forever; the UI polls this endpoint, so older CLOSED sprints
+    # are summarised instead of sent in full (ask for one with `sprints=["S-004"]`).
+    KEEP_CLOSED_SPRINTS = 2
+
+    async def flow(self, project_id: str, viewer: UserPublic, sprints: list[str] | None = None, *, window: bool = True) -> dict[str, Any]:
         """Rendered straight from the persisted workflow config (D-30): dynamic
         stages, derived order, parallel levels, team composition and I/O."""
         project = await self._db.get_project(project_id)
@@ -182,6 +186,10 @@ class FlowService:
                 "canRetrigger": can_retrigger,
             })
 
+        collapsed: list[dict[str, Any]] = []
+        levels = wf["levels"]
+        if wf.get("iterative") and window:
+            stages, levels, collapsed = self._window_sprints(stages, levels, sprints or [])
         return {
             "projectId": project_id,
             "name": project["name"],
@@ -193,9 +201,34 @@ class FlowService:
             "workflowVersion": wf["version"],
             "methodology": wf.get("methodology", "waterfall"),
             "iterative": bool(wf.get("iterative")),
-            "levels": wf["levels"],
+            "collapsedSprints": collapsed,
+            "levels": levels,
             "stages": stages,
         }
+
+    def _window_sprints(
+        self, stages: list[dict[str, Any]], levels: list[list[int]], wanted: list[str],
+    ) -> tuple[list[dict[str, Any]], list[list[int]], list[dict[str, Any]]]:
+        """Keep full stage detail for the foundation, the open/planned sprint, the most recent closed sprints,
+        every release stage and any sprint explicitly asked for; summarise the rest."""
+        by_label: dict[str, list[dict[str, Any]]] = {}
+        for st in stages:
+            if st.get("iterationLabel"):
+                by_label.setdefault(st["iterationLabel"], []).append(st)
+
+        def settled(group: list[dict[str, Any]]) -> bool:
+            return all(g["status"] == "APPROVED" for g in group)
+
+        closed = sorted((lb for lb, g in by_label.items() if settled(g)), key=lambda lb: by_label[lb][0].get("iteration") or 0)
+        hide = set(closed[:-self.KEEP_CLOSED_SPRINTS] if self.KEEP_CLOSED_SPRINTS else closed) - set(wanted)
+        if not hide:
+            return stages, levels, []
+        gone = {g["phase"] for lb in hide for g in by_label[lb]}
+        kept = [st for st in stages if st["phase"] not in gone]
+        new_levels = [[q for q in lv if q not in gone] for lv in levels]
+        collapsed = [{"label": lb, "number": by_label[lb][0].get("iteration"), "status": "closed",
+                      "stages": len(by_label[lb]), "approved": len(by_label[lb])} for lb in sorted(hide, key=lambda x: by_label[x][0].get("iteration") or 0)]
+        return kept, [lv for lv in new_levels if lv], collapsed
 
     async def mark_downstream_stale(self, project_id: str, phase: int, reason: str) -> list[int]:
         """Flag every downstream stage that already consumed this stage's output as

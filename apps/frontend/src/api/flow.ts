@@ -54,6 +54,8 @@ export interface ProjectFlow {
   workflowVersion: number;
   methodology?: 'waterfall' | 'scrum' | 'kanban';
   iterative?: boolean;
+  /** Older closed sprints, summarised to keep the payload small; request one with `?sprints=S-004`. */
+  collapsedSprints?: Array<{ label: string; number: number | null; status: string; stages: number; approved: number }>;
   levels: number[][];
   stages: FlowStage[];
 }

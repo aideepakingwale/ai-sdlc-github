@@ -16,7 +16,7 @@ ADMIN_DSN = os.environ.get("TEST_DATABASE_URL")
 MIGRATIONS = Path(__file__).resolve().parents[4] / "infra" / "migrations"
 
 
-def pytest_collection_modifyitems(config, items):  # noqa: ANN001
+def pytest_collection_modifyitems(config, items):
     if ADMIN_DSN:
         return
     skip = pytest.mark.skip(reason="TEST_DATABASE_URL not set (real-Postgres integration tests)")
