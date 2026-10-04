@@ -9,6 +9,9 @@ Status: **design, for review** · Branch: `feature/devmind-agile-index`
 | 1 | Where do index files live? | **In the customer's repository only**, in a dot-folder (`.devmind/`), committed like `.claude/` or `.kiro/`. The repo is the system of record. |
 | 2 | Do humans edit them? | **No. Read-only, machine-generated.** Their structure belongs to DevMind. Humans change *inputs* (backlog, approvals), never the index. |
 | 3 | Typical project length | Unknown; designed for **1–100+ sprints** (see §7) with a constant-size context at any length. |
+| 4 | Commit strategy | **Default B:** dedicated `devmind/index` branch, PR to the default branch at release close. **Setting A:** direct commit to the default branch for repos without protection. Per-project setting. |
+| 5 | Jira vs the `.devmind/` backlog | Kept **in sync**. Sync model refined in §10 (field ownership, not a two-way merge). |
+| 6 | Archive | **Kept for the life of the project**, in tiers: *active*, *closed*, *archived* (§4). Staleness is a separate flag. |
 
 ## 2. Goals and non-goals
 
@@ -54,6 +57,16 @@ the repo.
 Every file starts with a header (`generatedBy`, `schema`, `sourceCommit`, `contentHash`). The manifest stores each
 file's hash, so a human edit is **detected** (hash mismatch) and reported, never silently trusted.
 
+### Tiers of *age* vs the *stale* flag
+
+These are two different things and must not be mixed:
+
+* **Tier (age):** `active` (current release and the one before) → `closed` (older releases, files kept as-is, loaded only by
+  pointer) → `archived` (rolled into one consolidated file per release; the per-sprint files are removed from the
+  working tree and remain in git history). The manifest lists each file's tier, so nothing scans folders.
+* **Stale (validity):** an orthogonal flag set when a source artifact changed after the digest was written. A stale
+  entry is loaded with a warning or regenerated; it never silently changes tier.
+
 ## 5. The tiers and the budgeted context packet
 
 | Tier | Content | Size target | Loaded |
@@ -79,8 +92,9 @@ deterministic.
   sprint slice. The sprint slice reuses the existing *confirmed scope* mechanism (generate only these items).
 * **Gates.** Mode per stage: `full` (review matrix), `lightweight` (one PO sign-off), `auto` (validator score ≥
   Definition of Done). Full gates at the architecture runway and release; light/auto per sprint.
-* **Write path.** Sprint/release close → the index writer renders files → queued as `github_commit_*` actions →
-  committed by `PublishService` on approval. Reuses `github.commitFiles`.
+* **Write path.** Sprint/release close → the index writer renders files → queued as one publish action →
+  committed by `PublishService` on approval to `devmind/index` (strategy B) or the default branch (strategy A).
+  **Not a reuse of `commitFiles` as it is today** — see §10 (it makes one commit per file, non-atomically).
 * **Read path.** **New dependency:** the connector has no tool to read files/trees from the repo. Add
   `github_read_files` and `github_list_tree` (read-only, size-capped, ref-pinned) so the orchestrator can load
   `.devmind/` at a specific commit. A short-lived cache keyed by commit SHA avoids repeated API calls.
@@ -123,10 +137,9 @@ Reading everything would be ~28k tokens a year and growing; the packet stays **~
 
 ## 8. Open items for the next review
 
-1. Commit strategy: direct to the default branch, a dedicated `devmind/index` branch, or a PR per close?
-2. GitHub App permissions: contents read **and** write on the target repo.
-3. Is Jira the backlog of record (reference it) or is the backlog stored only in `.devmind/`?
-4. Retention: how long are archived digests kept in the repo before they are dropped from the tree (history keeps them)?
+1. GitHub App permissions: contents read/write and pull requests write on the target repo.
+2. Who is notified when the release PR is open and unmerged (see §10, risk R1)?
+3. Teams without Jira: DevMind UI is the backlog editor (see §10, R4).
 
 ## 9. Delivery plan
 
@@ -140,3 +153,78 @@ Reading everything would be ~28k tokens a year and growing; the packet stays **~
 
 Acceptance for step 1: given a 60-sprint synthetic project the assembled packet is within budget, deterministic,
 identical on re-run, and every pointer resolves.
+
+## 10. Verification of the decisions (accuracy, performance, risk)
+
+Cross-checked against the current code and the design. Findings that change the plan are marked **[changes plan]**.
+
+### Existing code facts
+* **[changes plan]** `github.commitFiles` makes **one commit per file**, with two API calls each (GET sha, PUT). For a sprint
+  close of ~6 files that is 6 commits and 12 calls, **not atomic** (a failure leaves a partial index), and it uses the
+  Contents API (~1 MB per file). The index needs an **atomic multi-file commit** through the Git Data API
+  (blobs → tree → commit → move the ref, with the expected parent so a concurrent writer is detected).
+* **[changes plan]** The Jira connector can only **create** epics, stories and tests. Sync needs read/search (JQL with an
+  `updated >` watermark), field update, status transitions and optionally webhooks.
+* No tool reads repo files back (already noted).
+
+### R1 — Strategy B: the index branch can drift from the code
+The index lives on `devmind/index`, the code on the default branch, so (a) DevMind must read the index **from that
+ref**, never the default branch; (b) a developer's checkout or an IDE assistant sees a stale `.devmind/` until the
+release PR merges; (c) an ignored release PR leaves the branch diverging for weeks. Mitigations: each close merges the
+default branch **into** `devmind/index` first (no conflicts because index files are append-only); a stale-PR alert after N
+days; each index file records `sourceCommit` on the default branch so readers can tell how far behind they are.
+Squash-merging the release PR is fine: history of per-sprint commits stays on the branch.
+
+### R2 — Strategy A on protected branches
+A direct commit fails on a protected default branch and also triggers CI. The setting must be validated at project
+setup (a dry-run commit check) and fall back to B with a clear message, never fail silently at a gate approval.
+
+### R3 — "Repo only" cannot cover everything
+Index files are the **record**, but in-flight state (generation parts, locks, gate state, the working backlog edits,
+the publish queue) is mutable and must stay in the database/DynamoDB. The accurate statement is: *the repo is the
+system of record for closed work; the database holds operational state for open work.* The index is rebuildable from
+the record, and operational state from nothing — so the publish queue must be durable before the gate approves.
+
+### R4 — Jira "in sync" is the riskiest decision
+True two-way sync means conflicts, ID mapping, eventual consistency, rate limits and a "who wins" argument for every
+field; it also contradicts "humans never edit the index". Refinement (**[changes plan]**):
+
+| Data | Owner | Direction |
+|---|---|---|
+| Title, description, acceptance criteria, priority, estimate, status, sprint membership | **Jira** (humans edit) | Jira → `.devmind` snapshot only |
+| Stories the Refine agent proposes | DevMind creates once, then **Jira owns them** | DevMind → Jira (create) |
+| Links to artifacts, tests, trace, delivery status | **DevMind** | DevMind → `.devmind`; optional write-back of a link field/comment to Jira |
+| Anything edited in `.devmind/` | nobody | detected by hash, reported, overwritten from sources |
+
+Rules: inbound sync is incremental (`updated >` watermark), at sprint boundaries and on demand, optionally webhook-driven;
+**never** the whole backlog — the index holds only the active sprint, the next slice and epic roll-ups (a 5,000-story
+backlog stays in Jira); every mirrored item carries `jiraKey` and `jiraUpdated` so stale snapshots are detectable. For
+teams **without Jira**, the DevMind UI is the backlog editor (state in the database) and `.devmind/` is its rendering.
+
+### R5 — Archive forever: fine, with conditions
+Size is trivial (100 sprints ≈ a few MB of text) but file **count** and tree listings matter, hence the
+consolidated per-release archive file and a manifest that lists tiers so no code lists directories. Keep each file under
+~256 KB (reads via the Contents API cap at 1 MB). Archive entries stay discoverable through a small
+keyword/ID lookup (`index/lookup.json`), updated at close, so cold data is found without a scan.
+
+### Performance budget (targets to verify in the spike)
+| Operation | Target | How |
+|---|---|---|
+| Assemble a context packet | ≤ 6 reads, < 1 s warm | manifest + SHA-keyed cache; one tree call; blobs fetched only when the SHA changed |
+| Close a sprint (write) | 1 commit, ~4 API calls | Git Data API atomic commit |
+| Jira inbound sync | O(changed items) | JQL `updated >` watermark, paged |
+| Packet size | ≤ 8k tokens at any sprint count | tiered budget |
+| GitHub rate limit | well inside 5,000 req/hour per installation | caching, batching |
+
+### Accuracy controls
+* Structured facts come from the database/Jira by code; the LLM writes only short prose.
+* Reference check on every digest: each story, component and artifact ID it mentions must exist.
+* Round-trip test: render → parse → render must be byte-identical; schema-validated on read.
+* Hash and `sourceCommit` verification on load; mismatches are reported, never trusted.
+* A 60-sprint synthetic project in CI: packet size flat, deterministic, every pointer resolves.
+
+### Updated delivery plan
+1. Spike: schema, renderer, tiering, manifest, budgeted assembler, synthetic fixture (pure code, no network).
+2. Connector: **atomic multi-file commit**, branch/PR operations, `github_read_files`/`github_list_tree`.
+3. Jira: search/read/update tools; inbound sync with the ownership table above.
+4. Engine, backlog, gates, UI as in §9.
