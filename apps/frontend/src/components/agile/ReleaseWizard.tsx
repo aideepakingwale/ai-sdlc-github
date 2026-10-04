@@ -28,6 +28,7 @@ export default function ReleaseWizard({ projectId, focusRelease, onClose, onDone
   const [previewing, setPreviewing] = useState(false);
   const [resume, setResume] = useState<string | null>(null);
   const dialog = useRef<HTMLDivElement>(null);
+  const previewSeq = useRef(0);
 
   // Defaults come from the server (project policy); the person's answers sit on top of them.
   useEffect(() => {
@@ -49,11 +50,22 @@ export default function ReleaseWizard({ projectId, focusRelease, onClose, onDone
   const steps = wizardSteps(a);
   const current: WizardStepId = steps[Math.min(step, steps.length - 1)]!;
   const problem = stepProblem(current, a, canFork);
-  const set = (patch: Partial<ReleaseAnswers>): void => { setA({ ...a, ...patch }); setPreview(null); };
+  const set = (patch: Partial<ReleaseAnswers>): void => {
+    // Only a fork has a source release, context and items to move: leaving fork must not leave them behind.
+    const reset: Partial<ReleaseAnswers> = patch.startFrom === 'blank'
+      ? { sourceRelease: undefined, carry: [], unfinishedItems: 'none', items: [], jiraLabel: undefined } : {};
+    setA({ ...a, ...patch, ...reset }); setPreview(null);
+  };
   const question = (id: string): Question | undefined => q.data.questions.find((x) => x.id === id);
   const goReview = async (): Promise<void> => {
+    const mine = ++previewSeq.current;                       // a slower, older preview must never overwrite a newer one
     setStep(steps.length - 1); setPreviewing(true);
-    try { setPreview(await agileApi.previewRelease(projectId, a)); } catch (e) { setPreview({ valid: false, errors: [errorText(e)], warnings: [], steps: [], summary: {} }); } finally { setPreviewing(false); }
+    try {
+      const p = await agileApi.previewRelease(projectId, a);
+      if (mine === previewSeq.current) setPreview(p);
+    } catch (e) {
+      if (mine === previewSeq.current) setPreview({ valid: false, errors: [errorText(e)], warnings: [], steps: [], summary: {} });
+    } finally { if (mine === previewSeq.current) setPreviewing(false); }
   };
   const next = (): void => { if (steps[step + 1] === 'review') void goReview(); else setStep(step + 1); };
   const failed = start.error instanceof ApiError && start.error.details?.resumable ? start.error : null;

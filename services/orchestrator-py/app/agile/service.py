@@ -366,7 +366,15 @@ class AgileService:
         from .templates import PRESETS, preset_stages
 
         await self.assert_can_run(project_id, user)
-        await self._settings(project_id)
+        cfg = await self._settings(project_id)
+        # Project policy: a locked question is always its default, whichever way the release is created.
+        locked, defaults = set(cfg["release_locks"] or []), cfg["release_defaults"] or {}
+        if "intakeRule" in locked and "intakeRule" in defaults:
+            intake_rule = defaults["intakeRule"]
+        if "usePool" in locked and "usePool" in defaults:
+            use_pool = bool(defaults["usePool"])
+        if "stagePreset" in locked and "stagePreset" in defaults:
+            stage_preset, stages = defaults["stagePreset"], None
         name, goal = (name or "").strip(), (goal or "").strip()
         if not 1 <= len(name) <= 120:
             raise SdlcError("VALIDATION_FAILED", "A release needs a name of 1-120 characters")
@@ -421,6 +429,9 @@ class AgileService:
         from .templates import preset_stages
 
         await self.assert_can_run(project_id, user)
+        cfg = await self._settings(project_id)
+        if "stagePreset" in (cfg["release_locks"] or []):
+            raise SdlcError("FORBIDDEN", "The stage set of a release is locked by the project's release policy")
         rel = await self._db.get_release(release_id)
         if not rel or rel["project_id"] != project_id:
             raise SdlcError("NOT_FOUND", "Release not found")
@@ -593,11 +604,18 @@ class AgileService:
             await self._db.update_iteration(it["id"], status="active", started_at=dt.datetime.now(dt.UTC))
         if it and it["status"] in ("planned", "active") and ctx.is_sink:
             await self.close_sprint(ctx.project_id, it["id"], ctx.actor)
-        if rel and role == "release" and rel["status"] == "hardening":
+        if rel and rel["status"] == "hardening" and ctx.stage.get("scope") == "release" and await self._release_stages_done(ctx, rel):
             closed, nxt = await self._db.close_release_and_open_next(ctx.project_id, rel["id"])   # one transaction
             if closed is not None:
                 self._audit.record(project_id=ctx.project_id, agent_role="Agile", event="release.closed",
                                    detail={"release": rel["code"], "next": nxt["code"] if nxt else None})
+
+    async def _release_stages_done(self, ctx: StageCtx, rel: Any) -> bool:
+        """A release closes when ALL of its release-scoped stages are approved (whatever their roles are)."""
+        wf = await self._workflow.view(ctx.project_id)
+        states = {s["SK"]: s for s in await self._dynamo.list_phase_states(ctx.project_id)}
+        mine = [s for s in wf["stages"] if s.get("releaseId") == rel["id"]]
+        return bool(mine) and all((states.get(f"PHASE#{s['seq']}") or {}).get("status") == "APPROVED" for s in mine)
 
     async def close_sprint(self, project_id: str, iteration_id: str, actor: str) -> dict[str, Any]:
         """Idempotent. Done work stays; everything else returns to the backlog; velocity is recorded."""

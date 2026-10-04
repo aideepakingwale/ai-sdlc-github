@@ -4,7 +4,8 @@ import { agileApi, type AgileOverview, type BacklogList } from '../../api/agile'
 
 /** `release` = the release in focus (several run in parallel); omitted = the server picks the busiest one. */
 export function useOverview(projectId: string, release?: string | null) {
-  return useQuery({ queryKey: ['agile', projectId, release ?? 'auto'], queryFn: () => agileApi.overview(projectId, release ?? undefined), refetchInterval: 8_000, enabled: Boolean(projectId) });
+  return useQuery({ queryKey: ['agile', projectId, release ?? 'auto'], queryFn: () => agileApi.overview(projectId, release ?? undefined), refetchInterval: 8_000, enabled: Boolean(projectId),
+    placeholderData: (previous) => previous });   // switching release keeps the screen (no flash back to "Loading…")
 }
 
 export type BacklogScope = 'all' | 'pool' | 'release' | 'eligible';
@@ -40,6 +41,9 @@ export function useAgileMutation<A, R>(projectId: string, fn: (arg: A) => Promis
       void qc.invalidateQueries({ queryKey: ['agile-backlog', projectId] });
       void qc.invalidateQueries({ queryKey: ['flow', projectId] });
       void qc.invalidateQueries({ queryKey: ['agile-index', projectId] });
+      void qc.invalidateQueries({ queryKey: ['agile-carry', projectId] });
+      void qc.invalidateQueries({ queryKey: ['agile-release-epics', projectId] });
+      void qc.invalidateQueries({ queryKey: ['agile-questions', projectId] });
     },
   });
 }

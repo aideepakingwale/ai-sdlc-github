@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ProjectFlow } from '../../api/flow';
 import AgileSetup from './AgileSetup';
 import BacklogView from './BacklogView';
@@ -24,6 +24,10 @@ export default function AgileHub({ projectId, flow, onOpenStage }: {
   const [focus, setFocus] = usePersistedRelease(projectId);
   const [wizard, setWizard] = useState(false);
   const ov = useOverview(projectId, focus);
+  // A remembered release that no longer exists must not leave the bar with nothing selected.
+  const releases = ov.data?.releases;
+  const stale = Boolean(focus && releases && !releases.some((r) => r.id === focus));
+  useEffect(() => { if (stale) setFocus(null); }, [stale]);
   if (ov.isError) return <div className="p-6"><Callout tone="error" title="Could not load Agile delivery">{ov.error instanceof Error ? ov.error.message : 'Request failed'}</Callout></div>;
   if (!ov.data) return <div className="p-6 text-sm text-slate-400">Loading…</div>;
   const o = ov.data;
@@ -34,7 +38,7 @@ export default function AgileHub({ projectId, flow, onOpenStage }: {
   }
   return (
     <div className="flex h-full flex-col overflow-hidden bg-slate-50">
-      <ReleaseBar overview={o} focus={focus} onFocus={setFocus} onNew={() => setWizard(true)} />
+      <ReleaseBar overview={o} focus={stale ? null : focus} onFocus={setFocus} onNew={() => setWizard(true)} />
       <SprintHeader projectId={projectId} overview={o} stages={flow.stages} onOpenStage={onOpenStage} />
       <div className="flex gap-1 border-b border-slate-200 bg-white px-4" role="tablist" aria-label="Agile views">
         {TABS.map((t) => (

@@ -26,6 +26,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS iterations_one_open_per_release_idx
 
 ALTER TABLE backlog_items ADD COLUMN IF NOT EXISTS release_id text REFERENCES releases(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS backlog_release_idx ON backlog_items (project_id, release_id);
+-- Existing work keeps its release: an item that was ever committed to a sprint belongs to that sprint's release.
+-- Everything else (the open backlog) stays in the shared pool.
+UPDATE backlog_items b SET release_id = i.release_id FROM iterations i WHERE b.iteration_id = i.id AND b.release_id IS NULL;
 
 -- Epic → release mapping for the "by epic" intake rule. An epic belongs to at most one release.
 CREATE TABLE IF NOT EXISTS release_epics (

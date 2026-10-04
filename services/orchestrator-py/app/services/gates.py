@@ -407,13 +407,12 @@ class GateService:
         seq, or complete the project after the last level."""
         # Releases run in parallel, so a stage only waits for (and unlocks) the stages of ITS OWN lane: the stages of
         # the same release. Project-wide stages and waterfall projects have a single lane, which is the old behaviour.
+        from ..agile.rules import lane_of
+
         by_seq = {s["seq"]: s for s in wf["stages"]}
         me = by_seq.get(phase)
         if me is None:
             return None
-        def lane_of(st: dict) -> Any:
-            return st.get("releaseId") or st.get("parentReleaseId")
-
         lane = lane_of(me)
         lane_stages = [s for s in wf["stages"] if lane_of(s) == lane]
         by_level: dict[int, list[int]] = {}

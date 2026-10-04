@@ -74,7 +74,7 @@ def template_for(methodology: str) -> WorkflowConfig:
 # ------------------------------------------------------------------ per-release stage sets
 # A forked release is built for a NEW scope; it need not run the stages of the original project. Its stage set is
 # either inherited (None), one of these presets, or a custom list. Presets are derived from the project's own
-# iteration/release stages by dropping stages and re-wiring the dependencies around them, so they stay valid for
+# iteration/release stages by dropping the stages that play a given agile role and re-wiring the dependencies around them, so they stay valid for
 # whatever the project's template looks like.
 SCOPED = ("iteration", "release")
 PRESETS: dict[str, dict[str, Any]] = {
@@ -140,7 +140,9 @@ def preset_stages(project_config: WorkflowConfig, preset: str) -> list[dict[str,
     """The stage set for a preset; None means inherit the project's workflow."""
     if preset not in PRESETS:
         raise ValueError(f"unknown stage preset '{preset}'")
-    drop = PRESETS[preset]["drop"]
-    if drop is None:
+    roles = PRESETS[preset]["drop"]
+    if roles is None:
         return None
-    return drop_stages(scoped_stages(project_config), drop)
+    stages = scoped_stages(project_config)
+    # Presets name ceremonies (agile ROLES), not stage keys: a project may key its planning stage anything.
+    return drop_stages(stages, {s["key"] for s in stages if s.get("agileRole") in roles})

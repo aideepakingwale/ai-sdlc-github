@@ -202,7 +202,10 @@ class BacklogService:
         if target == "in_progress":
             cfg = await self._db.get_project_agile(project_id)
             if cfg and cfg["wip_limit"]:
-                wip = [r for r in await self._db.list_backlog(project_id, statuses=["in_progress"])]
+                # The limit is per release: one release's work must not block another's (the pool counts as one lane).
+                wip = [r for r in await self._db.list_backlog(
+                    project_id, statuses=["in_progress"], release_id=row["release_id"],
+                    scope="release" if row["release_id"] else "pool")]
                 if len(wip) >= cfg["wip_limit"] and row["status"] != "in_progress":
                     raise SdlcError("GATE_CONFLICT",
                                     f"WIP limit reached ({cfg['wip_limit']}): finish something before starting {row['item_key']}")

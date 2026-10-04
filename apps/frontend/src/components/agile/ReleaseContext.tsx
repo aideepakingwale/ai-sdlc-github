@@ -21,7 +21,7 @@ export default function ReleaseContext({ projectId, overview }: { projectId: str
   const suggest = useAgileMutation(projectId, async () => agileApi.suggestCarry(projectId, rel!.forkedFromId!, { scopeText: `${rel!.name}. ${rel!.goal}` }));
   const extend = useAgileMutation(projectId, async () => agileApi.extendCarry(projectId, rel!.id, pick));
   const unmap = useAgileMutation(projectId, (epic: string) => agileApi.unmapEpic(projectId, epic));
-  const resume = useAgileMutation(projectId, () => agileApi.startRelease(projectId, { ...rel!.setupAnswers!, resumeReleaseId: rel!.id }));
+  const resume = useAgileMutation(projectId, () => agileApi.startRelease(projectId, { resumeReleaseId: rel!.id }));
   if (!rel) return <div className="p-6 text-sm text-slate-500">No release is selected.</div>;
   const c = carry.data;
   const carried = new Set((c?.carried ?? []).map((x) => x.id));

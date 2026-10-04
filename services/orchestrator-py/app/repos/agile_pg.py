@@ -415,7 +415,8 @@ class AgileRepo:
         assert self.pool
         rows = await self.pool.fetch(
             "UPDATE backlog_items SET release_id=$2, version=version+1, updated_at=now() "
-            "WHERE project_id=$1 AND id = ANY($3) AND release_id IS NULL AND status <> 'dropped' RETURNING id",
+            "WHERE project_id=$1 AND id = ANY($3) AND release_id IS NULL AND iteration_id IS NULL "
+            "AND status NOT IN ('dropped','in_sprint','in_progress') RETURNING id",
             project_id, release_id, item_ids)
         got = [r["id"] for r in rows]
         return got, [i for i in item_ids if i not in got]
@@ -444,16 +445,23 @@ class AgileRepo:
 
     # ------------------------------------------------------------------ epic → release mapping (intake rule "epic")
     async def map_epic(self, project_id: str, epic_id: str, release_id: str, by: str | None) -> bool:
-        """An epic belongs to at most one release. False when it is already mapped to a DIFFERENT release."""
+        """An epic belongs to at most one release. One statement, so concurrent callers cannot both win: it inserts the
+        mapping, or re-points it when the epic's current release is CLOSED (or already this one). False = the epic still
+        belongs to a different, live release."""
         assert self.pool
-        async with self.pool.acquire() as conn, conn.transaction():
-            cur = await conn.fetchval("SELECT release_id FROM release_epics WHERE epic_id=$1 FOR UPDATE", epic_id)
-            if cur is not None and cur != release_id:
-                return False
-            await conn.execute(
-                "INSERT INTO release_epics (epic_id, release_id, project_id, mapped_by) VALUES ($1,$2,$3,$4) "
-                "ON CONFLICT (epic_id) DO NOTHING", epic_id, release_id, project_id, by)
-            return True
+        got = await self.pool.fetchval(
+            "INSERT INTO release_epics (epic_id, release_id, project_id, mapped_by) VALUES ($1,$2,$3,$4) "
+            "ON CONFLICT (epic_id) DO UPDATE SET release_id=EXCLUDED.release_id, mapped_by=EXCLUDED.mapped_by, mapped_at=now() "
+            "WHERE release_epics.release_id = EXCLUDED.release_id "
+            "OR (SELECT status FROM releases WHERE id = release_epics.release_id) = 'closed' "
+            "RETURNING release_id", epic_id, release_id, project_id, by)
+        return got is not None
+
+    async def epic_mapping(self, epic_id: str) -> asyncpg.Record | None:
+        assert self.pool
+        return await self.pool.fetchrow(
+            "SELECT e.release_id, r.code, r.status FROM release_epics e JOIN releases r ON r.id=e.release_id WHERE e.epic_id=$1",
+            epic_id)
 
     async def unmap_epic(self, epic_id: str) -> None:
         assert self.pool

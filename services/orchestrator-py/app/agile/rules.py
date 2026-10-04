@@ -119,3 +119,18 @@ async def assert_stage_mutable(db, stage: dict) -> None:
     it = await db.get_iteration(iid)
     if it is not None and it["status"] in ("closed", "cancelled"):
         raise SdlcError("GATE_CONFLICT", f"Sprint {it['label']} is {it['status']}; its stages are read-only history")
+
+
+def lane_of(stage: dict) -> Any:
+    """The lane a stage belongs to: its release (parallel releases never wait for each other), or None for the
+    project-wide stages and for every stage of a waterfall project."""
+    return stage.get("releaseId") or stage.get("parentReleaseId")
+
+
+def level_peers(wf: dict, phase: int) -> list[int]:
+    """The stage slots that run together with `phase`: same dependency level AND same lane, in slot order. For a
+    waterfall project this is exactly the old 'every stage of the level'."""
+    me = next((s for s in wf["stages"] if s["seq"] == phase), None)
+    if me is None:
+        return sorted(wf["levels"][0])
+    return sorted(s["seq"] for s in wf["stages"] if s["level"] == me["level"] and lane_of(s) == lane_of(me))

@@ -110,7 +110,15 @@ code is branched is the owners' decision.
   claims it for that release (atomically); another release's items are refused; a release may opt out of the pool.
   *By epic* intake: an epic maps to at most one release; a **new** Jira issue under a mapped epic goes to that release,
   everything else to the pool. Routing happens once, at first import; later epic changes in Jira never move an item.
-* **Gates are per lane.** A stage waits only for (and unlocks) the stages of its own release.
+* **Gates and chat are per lane.** A stage waits only for (and unlocks) the stages of its own release; a chat turn runs
+  only the ready stages of the current stage's release. The project's "current stage" pointer therefore means *most
+  recently advanced*; trigger a stage directly to work in a specific release.
+* **Resume is bound to the stored setup.** An interrupted start is resumed with only the release id: the server repeats
+  the answers it was started with (including a custom stage set) and refuses a release that is not part-way. `start`
+  validates epics and items up front, so a bad answer never leaves a half-made release. Policy locks apply however a
+  release is created. A release closes when all of its release-scoped stages are approved (whatever their roles).
+  The WIP limit is counted per release; an epic mapped to a *closed* release can be mapped again. Migration `0029`
+  backfills each committed item's release from its sprint; the open backlog stays in the shared pool.
 
 ## 7. Configuration
 

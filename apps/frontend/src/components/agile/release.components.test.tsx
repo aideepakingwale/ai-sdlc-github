@@ -12,12 +12,13 @@ import { ApiError } from '../../api/client';
 const api = vi.hoisted(() => ({
   agileApi: {
     questions: vi.fn(), previewRelease: vi.fn(), startRelease: vi.fn(), suggestCarry: vi.fn(), carry: vi.fn(), extendCarry: vi.fn(),
-    claim: vi.fn(), releaseEpics: vi.fn(), unmapEpic: vi.fn(), updateSettings: vi.fn(), backlog: vi.fn(), jira: vi.fn(), createItem: vi.fn(), setStatus: vi.fn(),
+    claim: vi.fn(), releaseEpics: vi.fn(), unmapEpic: vi.fn(), updateSettings: vi.fn(), overview: vi.fn(), index: vi.fn(), backlog: vi.fn(), jira: vi.fn(), createItem: vi.fn(), setStatus: vi.fn(),
     addToSprint: vi.fn(), removeFromSprint: vi.fn(), move: vi.fn(), patchItem: vi.fn(),
   },
 }));
 vi.mock('../../api/agile', async (orig) => ({ ...(await orig<typeof AgileApi>()), agileApi: api.agileApi }));
 
+import AgileHub from './AgileHub';
 import BacklogView from './BacklogView';
 import ReleaseBar from './ReleaseBar';
 import ReleaseContext from './ReleaseContext';
@@ -272,7 +273,7 @@ describe('part-way setup and release policy', () => {
     await render(<ReleaseContext projectId="p" overview={stalled} />);
     expect(host.textContent).toContain('stopped part-way');
     await click(byText('button', 'Resume setup'));
-    expect(api.agileApi.startRelease).toHaveBeenCalledWith('p', { name: 'Hotfix', startFrom: 'blank', resumeReleaseId: 'r3' });
+    expect(api.agileApi.startRelease).toHaveBeenCalledWith('p', { resumeReleaseId: 'r3' });          // the server repeats the stored setup
   });
 
   it('lets the project admin pre-fill and lock answers, but only locks answers that have a default', async () => {
@@ -295,5 +296,38 @@ describe('part-way setup and release policy', () => {
     api.agileApi.carry.mockResolvedValue({ forkedFrom: null, baseline: {}, carried: [], new: [], counts: {}, sourceChanged: [], budget: { maxItems: 40, maxBytes: 60000 } });
     await render(<ReleaseContext projectId="p" overview={overview({ permissions: { canManage: false, canRun: true } })} />);
     expect(host.querySelector('section[aria-label="Release policy"]')).toBeNull();
+  });
+});
+
+
+describe('AgileHub focus', () => {
+  it('forgets a remembered release that no longer exists instead of leaving nothing selected', async () => {
+    window.localStorage.setItem('devmind:release:p', 'gone');
+    api.agileApi.overview.mockResolvedValue(overview());
+    api.agileApi.backlog.mockResolvedValue({ summary: { count: 0, points: 0 }, items: [] });
+    await render(<AgileHub projectId="p" flow={{ stages: [] } as never} onOpenStage={() => undefined} />);
+    expect(window.localStorage.getItem('devmind:release:p')).toBeNull();
+    const pressed = [...host.querySelectorAll('nav[aria-label="Releases"] button[aria-pressed]')].map((b) => b.getAttribute('aria-pressed'));
+    expect(pressed).toContain('true');
+    expect(api.agileApi.overview.mock.calls.at(-1)![1]).toBeUndefined();            // asks the server to pick again
+  });
+});
+
+describe('wizard answers when the person changes their mind', () => {
+  it('drops the fork-only answers when switching back to a blank release', async () => {
+    api.agileApi.questions.mockResolvedValue(questions({ defaults: { startFrom: 'fork' } }));
+    api.agileApi.suggestCarry.mockResolvedValue({ source: 'rules', rejected: [], budget: { maxItems: 40, maxBytes: 60000 },
+      suggestions: [{ id: 'spec:a/b', kind: 'spec-section', title: 'a / b', reason: '', bytes: 5 }],
+      candidates: [{ id: 'spec:a/b', kind: 'spec-section', title: 'a / b', bytes: 5, tooLarge: false }] });
+    api.agileApi.previewRelease.mockResolvedValue({ valid: true, errors: [], warnings: [], steps: [], summary: {} });
+    await render(<ReleaseWizard projectId="p" focusRelease="r1" onClose={() => undefined} onDone={() => undefined} />);
+    await type(host.querySelector('input'), 'x');
+    await click(byText('button', 'Next')); await click(byText('button', 'Next'));            // → carry (a suggestion is selected)
+    await click(byText('button', 'Back'));                                                    // → source
+    await click(host.querySelector('input[type="radio"][name="Start from"]:not(:checked)'));  // back to blank
+    for (let i = 0; i < 3; i++) await click(byText('button', 'Next'));                        // source → stages → intake → review
+    const sent = api.agileApi.previewRelease.mock.calls[0]![1];
+    expect(sent.startFrom).toBe('blank');
+    expect(sent.carry).toEqual([]); expect(sent.sourceRelease).toBeUndefined();
   });
 });

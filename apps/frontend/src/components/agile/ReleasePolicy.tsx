@@ -17,10 +17,16 @@ export default function ReleasePolicy({ projectId, overview }: { projectId: stri
   const locks = overview.settings?.releaseLocks ?? [];
   const [vals, setVals] = useState<Record<string, string>>(() => Object.fromEntries(ROWS.filter((r) => r.id in defaults).map((r) => [r.id, String(defaults[r.id])])));
   const [locked, setLocked] = useState<string[]>(locks);
-  const save = useAgileMutation(projectId, () => agileApi.updateSettings(projectId, {
-    releaseDefaults: Object.fromEntries(Object.entries(vals).filter(([, v]) => v !== '').map(([k, v]) => [k, k === 'usePool' ? v === 'true' : v])),
-    releaseLocks: locked.filter((l) => vals[l]),
-  }));
+  // Only the rows shown here are edited: defaults and locks set through the API for other questions are kept.
+  const shown = new Set<string>(ROWS.map((r) => r.id));
+  const save = useAgileMutation(projectId, () => {
+    const edited = Object.fromEntries(Object.entries(vals).filter(([, v]) => v !== '').map(([k, v]) => [k, k === 'usePool' ? v === 'true' : v]));
+    const keep = Object.fromEntries(Object.entries(defaults).filter(([k]) => !shown.has(k)));
+    return agileApi.updateSettings(projectId, {
+      releaseDefaults: { ...keep, ...edited },
+      releaseLocks: [...locks.filter((l) => !shown.has(l)), ...locked.filter((l) => shown.has(l) && vals[l])],
+    });
+  });
   return (
     <section aria-label="Release policy" className="rounded-xl border border-slate-200 bg-white p-4">
       <h3 className="text-sm font-semibold text-slate-800">Policy for new releases</h3>

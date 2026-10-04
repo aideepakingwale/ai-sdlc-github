@@ -80,7 +80,7 @@ async def test_0029_upgrades_a_running_agile_project_without_loss(tmp_path):
         assert await db.run_migrations(MIGRATIONS) == []
         rel = await db.get_release("r1")
         assert (rel["intake_rule"], rel["use_pool"], rel["forked_from"], rel["setup"]) == ("pool", True, None, {})
-        assert (await db.pool.fetchrow("SELECT * FROM backlog_items WHERE id='b1'"))["release_id"] is None   # shared pool
+        assert (await db.pool.fetchrow("SELECT * FROM backlog_items WHERE id='b1'"))["release_id"] == "r1"     # backfilled from its sprint
         assert (await db.get_iteration("i1"))["status"] == "active"
         # a second release may now run its own sprint in parallel, but a release still has only one open sprint
         await db.pool.execute("INSERT INTO releases (id,project_id,number,code,name) VALUES ('r2','p',2,'R-002','Release 2')")

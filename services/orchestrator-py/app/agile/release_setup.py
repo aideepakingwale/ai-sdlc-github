@@ -157,17 +157,19 @@ class ReleaseSetupService:
             steps.append("New Jira issues: " + ("routed to this release by epic, otherwise to the shared pool"
                                                 if a["intakeRule"] == "epic" else "go to the shared unassigned pool"))
             if a["intakeRule"] == "epic":
+                errors += await self._db_errors(project_id, a, source)
                 ep = []
                 for ref in a["epics"]:
                     row = await self._db.get_backlog_item(project_id, ref)
                     if row is None or row["type"] != "epic":
-                        errors.append(f"epics: '{ref}' is not an epic")
                         continue
                     kids = [r for r in await self._db.list_backlog(project_id, scope="pool") if r["epic_id"] == row["id"]]
                     ep.append({"epic": row["item_key"], "poolItems": len(kids)})
                 summary["epics"] = ep
                 if ep:
                     steps.append("Map epics: " + ", ".join(f"{e['epic']} ({e['poolItems']} pool item(s))" for e in ep))
+            elif source is not None and a["unfinishedItems"] == "selected":
+                errors += await self._db_errors(project_id, a, source)
             if a.get("jiraLabel"):
                 steps.append(f"Label moved items “{a['jiraLabel']}”")
             if a["firstSprint"] == "now":
@@ -185,6 +187,24 @@ class ReleaseSetupService:
         if not any(i["release_id"] == src["id"] and i["status"] == "closed" for i in await self._db.list_iterations(project_id)):
             return None, [f"sourceRelease: {src['code']} has no closed sprint yet, so there is nothing stable to fork from"]
         return src, []
+
+    async def _db_errors(self, project_id: str, a: dict[str, Any], source: Any | None, release: Any | None = None) -> list[str]:
+        """Checks that need the database (so `start` refuses up front what `preview` would have reported):
+        the epics exist, are epics and are free to map; the items to move are really unfinished items of the source."""
+        errors: list[str] = []
+        if a["intakeRule"] == "epic":
+            for ref in a.get("epics") or []:
+                row = await self._db.get_backlog_item(project_id, ref)
+                if row is None or row["type"] != "epic":
+                    errors.append(f"epics: '{ref}' is not an epic of this project")
+                    continue
+                cur = await self._db.epic_mapping(row["id"])
+                if cur is not None and cur["status"] != "closed" and (release is None or cur["release_id"] != release["id"]):
+                    errors.append(f"epics: {row['item_key']} already belongs to release {cur['code']}; unmap it there first")
+        if source is not None and a["unfinishedItems"] == "selected":
+            mv = await self._movable(project_id, source, a)
+            errors += [f"items: {sk['id']} — {sk['reason']}" for sk in mv["skipped"]]
+        return errors
 
     async def _check_carry(self, project_id: str, source: Any, a: dict[str, Any]) -> tuple[list[Any], list[dict[str, str]]]:
         from .carry import select
@@ -213,29 +233,38 @@ class ReleaseSetupService:
         each idempotent, with progress kept on the release: an interrupted start is resumed by calling again with
         `resume_release_id`."""
         await self._agile.assert_can_run(project_id, user)
-        a = await self._answers(project_id, raw)
+        rel = None
+        if resume_release_id:
+            # Resume repeats the STORED setup: the answers it was started with, only for a release whose setup is part-way.
+            rel = await self._db.get_release(resume_release_id)
+            if not rel or rel["project_id"] != project_id:
+                raise SdlcError("NOT_FOUND", "Release not found")
+            stored = rel["setup"] or {}
+            if stored.get("status") == "complete" or not stored.get("answers"):
+                raise SdlcError("GATE_CONFLICT", f"Release {rel['code']} was not left part-way by the questionnaire; there is nothing to resume")
+            a = dict(stored["answers"])
+        else:
+            a = await self._answers(project_id, raw)
+        done_steps = dict((rel["setup"] or {}).get("progress") or {}) if rel else {}
         errors = validate(a)
         source, errs = await self._source(project_id, a)
         errors += errs
+        if not errors:
+            errors += await self._db_errors(project_id, a, source, rel)
         if errors:
             raise SdlcError("VALIDATION_FAILED", " | ".join(errors[:6]), {"errors": errors})
-        if source:
+        if source and not done_steps.get("carry"):
             chosen, rejected = await self._check_carry(project_id, source, a)
             if rejected:
                 raise SdlcError("VALIDATION_FAILED", "The carry set is not valid: " + "; ".join(
                     f"{r['id']} ({r['reason']})" for r in rejected[:5]), {"rejected": rejected})
         # 1. the release itself
-        if resume_release_id:
-            rel = await self._db.get_release(resume_release_id)
-            if not rel or rel["project_id"] != project_id:
-                raise SdlcError("NOT_FOUND", "Release not found")
-        else:
+        if rel is None:
             made = await self._agile.create_release(
                 project_id, user, name=a["name"], goal=str(a.get("goal", "")), forked_from=source["id"] if source else None,
                 stage_preset=a["stagePreset"], stages=a.get("stages") if a["stagePreset"] == "custom" else None,
                 intake_rule=a["intakeRule"], use_pool=bool(a["usePool"]),
-                setup={"version": QUESTIONNAIRE_VERSION, "answers": {k: v for k, v in a.items() if k != "stages"},
-                       "progress": {"created": True}, "by": user.email})
+                setup={"version": QUESTIONNAIRE_VERSION, "answers": a, "progress": {"created": True}, "by": user.email})
             rel = await self._db.get_release(made["id"])
         progress: dict[str, Any] = dict((rel["setup"] or {}).get("progress") or {"created": True})
         setup = dict(rel["setup"] or {})

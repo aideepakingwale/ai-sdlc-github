@@ -12,7 +12,7 @@ from typing import Any, AsyncIterator, Callable
 
 from redis.asyncio import Redis
 
-from ..agile.rules import assert_stage_mutable
+from ..agile.rules import assert_stage_mutable, level_peers
 from ..agents.phase_agents import EXTERNAL_WRITE_TOOLS, TEMPLATE_TOOLS, AgentDeps
 from ..services.plan_model import build_model_catalog, derive_plan_steps
 from ..agents.prompts import build_phase_prompt
@@ -144,7 +144,7 @@ class ChatService:
         # current stage slot; a single run generates EVERY ready stage in it.
         wf = await self._workflow.view(project["id"])
         stages_by_seq = {s["seq"]: s for s in wf["stages"]}
-        level_seqs = next((seqs for seqs in wf["levels"] if phase_id in seqs), wf["levels"][0])
+        level_seqs = level_peers(wf, phase_id)          # same level AND same release lane
         states = {s["SK"]: s for s in await self._dynamo.list_phase_states(project["id"])}
 
         pending = [
@@ -280,7 +280,7 @@ class ChatService:
 
         wf = await self._workflow.view(project_id)
         stages_by_seq = {s["seq"]: s for s in wf["stages"]}
-        level_seqs = next((seqs for seqs in wf["levels"] if phase_id in seqs), wf["levels"][0])
+        level_seqs = level_peers(wf, phase_id)          # same level AND same release lane
         states = {s["SK"]: s for s in await self._dynamo.list_phase_states(project_id)}
 
         pending = [
