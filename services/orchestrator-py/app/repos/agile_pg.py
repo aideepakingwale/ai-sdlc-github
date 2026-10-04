@@ -14,7 +14,7 @@ import asyncpg
 # Columns of backlog_items that callers may change through `update_backlog_item`.
 BACKLOG_FIELDS = {
     "type", "title", "description", "acceptance_criteria", "estimate", "rank", "status", "epic_id",
-    "components", "labels", "iteration_id", "jira_key", "jira_updated", "jira_synced_at",
+    "components", "labels", "iteration_id", "jira_key", "jira_updated", "jira_synced_at", "release_id",
 }
 ITERATION_FIELDS = {"goal", "status", "capacity", "starts_on", "ends_on", "started_at", "closed_at", "summary"}
 RELEASE_FIELDS = {"name", "goal", "intake_rule", "use_pool", "setup", "workflow"}
@@ -226,10 +226,16 @@ class AgileRepo:
     # ------------------------------------------------------------------ backlog
     async def list_backlog(
         self, project_id: str, *, statuses: list[str] | None = None, iteration_id: str | None = None,
-        limit: int = 2000,
+        limit: int = 2000, release_id: str | None = None, scope: str = "all",
     ) -> list[asyncpg.Record]:
+        """`scope`: all | release (only `release_id`) | eligible (`release_id` + the shared pool) | pool."""
         assert self.pool
         sql, args = "SELECT * FROM backlog_items WHERE project_id=$1", [project_id]
+        if scope == "pool":
+            sql += " AND release_id IS NULL"
+        elif scope in ("release", "eligible"):
+            args.append(release_id)
+            sql += f" AND (release_id=${len(args)}" + (" OR release_id IS NULL)" if scope == "eligible" else ")")
         if statuses:
             args.append(statuses)
             sql += f" AND status = ANY(${len(args)})"
@@ -238,6 +244,15 @@ class AgileRepo:
             sql += f" AND iteration_id=${len(args)}"
         args.append(limit)
         return await self.pool.fetch(sql + f" ORDER BY rank, created_at LIMIT ${len(args)}", *args)
+
+    async def list_backlog_for_iteration(self, project_id: str, iteration_id: str | None) -> list[asyncpg.Record]:
+        """The backlog a sprint's ceremonies may see and change: its release's items, plus the shared pool when the
+        release draws from it. Without a sprint: everything."""
+        it = await self.get_iteration(iteration_id) if iteration_id else None
+        rel = await self.get_release(it["release_id"]) if it else None
+        if rel is None:
+            return await self.list_backlog(project_id)
+        return await self.list_backlog(project_id, release_id=rel["id"], scope="eligible" if rel["use_pool"] else "release")
 
     async def get_backlog_item(self, project_id: str, item_id: str) -> asyncpg.Record | None:
         assert self.pool
@@ -368,13 +383,19 @@ class AgileRepo:
         (needs force), 'not_ready' or 'closed'."""
         assert self.pool
         async with self.pool.acquire() as conn, conn.transaction():
-            it = await conn.fetchrow("SELECT status, capacity FROM iterations WHERE id=$1 FOR UPDATE", iteration_id)
+            it = await conn.fetchrow(
+                "SELECT i.status, i.capacity, i.release_id, r.use_pool FROM iterations i "
+                "JOIN releases r ON r.id=i.release_id WHERE i.id=$1 FOR UPDATE OF i", iteration_id)
             if it is None or it["status"] not in ("planned", "active"):
                 return "closed", 0.0, 0.0
             item = await conn.fetchrow(
-                "SELECT status, estimate, iteration_id FROM backlog_items WHERE project_id=$1 AND id=$2 FOR UPDATE",
-                project_id, item_id)
+                "SELECT status, estimate, iteration_id, release_id FROM backlog_items "
+                "WHERE project_id=$1 AND id=$2 FOR UPDATE", project_id, item_id)
             cap = float(it["capacity"])
+            if item is not None and item["release_id"] not in (None, it["release_id"]):
+                return "other_release", 0.0, cap          # the item belongs to a different release
+            if item is not None and item["release_id"] is None and not it["use_pool"]:
+                return "pool_closed", 0.0, cap            # this release does not draw from the shared pool
             if item is None or item["status"] != "ready" or item["iteration_id"] is not None or item["estimate"] is None:
                 return "not_ready", 0.0, cap
             current = float(await conn.fetchval(
@@ -382,10 +403,73 @@ class AgileRepo:
             after = current + float(item["estimate"])
             if after > cap and not force:
                 return "over", after, cap
-            await conn.execute(
-                "UPDATE backlog_items SET status='in_sprint', iteration_id=$2, version=version+1, updated_at=now() "
-                "WHERE id=$1", item_id, iteration_id)
+            await conn.execute(      # committing a pool item to a sprint claims it for the sprint's release
+                "UPDATE backlog_items SET status='in_sprint', iteration_id=$2, release_id=$3, version=version+1, "
+                "updated_at=now() WHERE id=$1", item_id, iteration_id, it["release_id"])
             return ("added" if after <= cap else "added_over"), after, cap
+
+    async def claim_pool_items(self, project_id: str, release_id: str, item_ids: list[str]) -> tuple[list[str], list[str]]:
+        """Pull items from the shared pool into a release, atomically: an item already claimed elsewhere (or not in
+        the pool) is left alone. Returns (claimed ids, skipped ids)."""
+        assert self.pool
+        rows = await self.pool.fetch(
+            "UPDATE backlog_items SET release_id=$2, version=version+1, updated_at=now() "
+            "WHERE project_id=$1 AND id = ANY($3) AND release_id IS NULL AND status <> 'dropped' RETURNING id",
+            project_id, release_id, item_ids)
+        got = [r["id"] for r in rows]
+        return got, [i for i in item_ids if i not in got]
+
+    async def move_items_between_releases(
+        self, project_id: str, from_release: str, to_release: str, item_ids: list[str] | None = None,
+    ) -> tuple[list[asyncpg.Record], list[dict[str, str]]]:
+        """Re-parent UNFINISHED items (not done/dropped, not committed to a sprint) from one release to another in
+        one transaction. Their Jira keys are kept. All of the source's unfinished items when `item_ids` is None.
+        Returns (moved rows, skipped [{id, reason}])."""
+        assert self.pool
+        async with self.pool.acquire() as conn, conn.transaction():
+            cand = await conn.fetch(
+                "SELECT * FROM backlog_items WHERE project_id=$1 AND release_id=$2 AND type <> 'epic' "
+                "AND ($3::text[] IS NULL OR id = ANY($3)) FOR UPDATE", project_id, from_release, item_ids)
+            movable = [r for r in cand if r["status"] in ("new", "refined", "ready") and r["iteration_id"] is None]
+            skipped = [{"id": r["id"], "reason": f"is {r['status']}" + (" in a sprint" if r["iteration_id"] else "")}
+                       for r in cand if r not in movable]
+            skipped += [{"id": i, "reason": "not an unfinished item of the source release"}
+                        for i in (item_ids or []) if i not in {r["id"] for r in cand}]
+            ids = [r["id"] for r in movable]
+            rows = await conn.fetch(
+                "UPDATE backlog_items SET release_id=$2, version=version+1, updated_at=now() "
+                "WHERE id = ANY($1) RETURNING *", ids, to_release) if ids else []
+            return list(rows), skipped
+
+    # ------------------------------------------------------------------ epic → release mapping (intake rule "epic")
+    async def map_epic(self, project_id: str, epic_id: str, release_id: str, by: str | None) -> bool:
+        """An epic belongs to at most one release. False when it is already mapped to a DIFFERENT release."""
+        assert self.pool
+        async with self.pool.acquire() as conn, conn.transaction():
+            cur = await conn.fetchval("SELECT release_id FROM release_epics WHERE epic_id=$1 FOR UPDATE", epic_id)
+            if cur is not None and cur != release_id:
+                return False
+            await conn.execute(
+                "INSERT INTO release_epics (epic_id, release_id, project_id, mapped_by) VALUES ($1,$2,$3,$4) "
+                "ON CONFLICT (epic_id) DO NOTHING", epic_id, release_id, project_id, by)
+            return True
+
+    async def unmap_epic(self, epic_id: str) -> None:
+        assert self.pool
+        await self.pool.execute("DELETE FROM release_epics WHERE epic_id=$1", epic_id)
+
+    async def list_release_epics(self, release_id: str) -> list[asyncpg.Record]:
+        assert self.pool
+        return await self.pool.fetch(
+            "SELECT e.*, b.item_key, b.title, b.jira_key FROM release_epics e JOIN backlog_items b ON b.id=e.epic_id "
+            "WHERE e.release_id=$1 ORDER BY b.rank", release_id)
+
+    async def release_for_epic(self, epic_id: str) -> str | None:
+        """The release that mapped this epic, but only when that release still takes new work by epic."""
+        assert self.pool
+        return await self.pool.fetchval(
+            "SELECT r.id FROM release_epics e JOIN releases r ON r.id=e.release_id "
+            "WHERE e.epic_id=$1 AND r.intake_rule='epic' AND r.status IN ('open','hardening')", epic_id)
 
     async def count_backlog_by_status(self, project_id: str) -> dict[str, int]:
         assert self.pool
@@ -463,6 +547,7 @@ class AgileRepo:
 
     async def apply_refine(
         self, *, project_id: str, proposal_id: str, ops: list[dict[str, Any]], actor_id: str | None,
+        release_id: str | None = None, use_pool: bool = True,
     ) -> dict[str, Any] | None:
         """Apply a refinement proposal in ONE transaction. Returns None when it was already decided
         (so a replay or a race can never apply it twice)."""
@@ -493,6 +578,7 @@ class AgileRepo:
                     }
                     # 'refined' = has real content; work items without acceptance criteria stay 'new'.
                     f["status"] = "refined" if op["type"] == "epic" or op["acceptanceCriteria"] else "new"
+                    f["release_id"] = release_id           # new work belongs to the release that refined it
                     row = await self._insert_item(conn, project_id, actor_id, f)
                     ref_ids[op["ref"]] = row["id"]
                     out["created"].append(row["item_key"])
@@ -501,6 +587,9 @@ class AgileRepo:
                     "SELECT * FROM backlog_items WHERE project_id=$1 AND item_key=$2 FOR UPDATE", project_id, op["target"])
                 if item is None or item["status"] in COMMITTED or item["status"] == "dropped":
                     out["skipped"].append({"ref": op["ref"], "reason": "item changed since the proposal"})
+                    continue
+                if release_id is not None and item["release_id"] not in (release_id, None if use_pool else release_id):
+                    out["skipped"].append({"ref": op["ref"], "reason": "item belongs to another release"})
                     continue
                 if op["op"] == "drop":
                     if item["status"] in ("new", "refined", "ready"):
@@ -541,7 +630,10 @@ class AgileRepo:
         """Commit the planned items to the sprint atomically; items that stopped being 'ready' are skipped."""
         assert self.pool
         async with self.pool.acquire() as conn, conn.transaction():
-            status = await conn.fetchval("SELECT status FROM iterations WHERE id=$1 FOR UPDATE", iteration_id)
+            it = await conn.fetchrow(
+                "SELECT i.status, i.release_id, r.use_pool FROM iterations i JOIN releases r ON r.id=i.release_id "
+                "WHERE i.id=$1 FOR UPDATE OF i", iteration_id)
+            status = it["status"] if it else None
             if status not in ("planned", "active"):
                 # A settled (closed/cancelled) sprint must never receive work, e.g. when its Plan stage is re-run.
                 await conn.execute("UPDATE agile_proposals SET status='superseded', decided_at=now() "
@@ -550,9 +642,10 @@ class AgileRepo:
             if not await self._claim_proposal(conn, proposal_id, actor_id):
                 return None
             rows = await conn.fetch(
-                "UPDATE backlog_items SET status='in_sprint', iteration_id=$3, version=version+1, updated_at=now() "
-                "WHERE project_id=$1 AND item_key = ANY($2) AND status='ready' AND iteration_id IS NULL "
-                "RETURNING item_key", project_id, keys, iteration_id)
+                "UPDATE backlog_items SET status='in_sprint', iteration_id=$3, release_id=$4, version=version+1, "
+                "updated_at=now() WHERE project_id=$1 AND item_key = ANY($2) AND status='ready' "
+                "AND iteration_id IS NULL AND (release_id=$4 OR (release_id IS NULL AND $5)) RETURNING item_key",
+                project_id, keys, iteration_id, it["release_id"], it["use_pool"])
             assigned = sorted(r["item_key"] for r in rows)
             if goal:
                 await conn.execute("UPDATE iterations SET goal=$2 WHERE id=$1 AND goal=''", iteration_id, goal)

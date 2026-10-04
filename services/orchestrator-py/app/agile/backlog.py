@@ -22,7 +22,7 @@ def item_view(row: Any, epic_key: str | None = None) -> dict[str, Any]:
         "estimate": float(row["estimate"]) if row["estimate"] is not None else None,
         "rank": float(row["rank"]), "status": row["status"], "epicKey": epic_key,
         "components": list(row["components"] or []), "labels": list(row["labels"] or []),
-        "iterationId": row["iteration_id"], "jiraKey": row["jira_key"], "version": row["version"],
+        "iterationId": row["iteration_id"], "releaseId": row["release_id"], "jiraKey": row["jira_key"], "version": row["version"],
         "problems": ready_problems(row) if row["status"] in ("new", "refined", "ready") else [],
         "createdAt": row["created_at"].isoformat(), "updatedAt": row["updated_at"].isoformat(),
     }
@@ -53,13 +53,20 @@ class BacklogService:
 
     # ------------------------------------------------------------------ reads
     async def list(self, project_id: str, user: UserPublic, *, status: list[str] | None = None,
-                   iteration_id: str | None = None, q: str | None = None) -> dict[str, Any]:
+                   iteration_id: str | None = None, q: str | None = None, release_id: str | None = None,
+                   scope: str = "all") -> dict[str, Any]:
+        """`scope`: all | pool (unassigned) | release (just `release_id`) | eligible (`release_id` + the pool)."""
         await self._authz.assert_project_access(project_id, user)
         for s in status or []:
             if s not in STATUSES:
                 raise SdlcError("VALIDATION_FAILED", f"unknown status '{s}'")
-        rows = await self._db.list_backlog(project_id, statuses=status, iteration_id=iteration_id)
-        everything = rows if not (status or iteration_id) else await self._db.list_backlog(project_id)
+        if scope not in ("all", "pool", "release", "eligible"):
+            raise SdlcError("VALIDATION_FAILED", "scope must be all, pool, release or eligible")
+        if scope in ("release", "eligible") and not release_id:
+            raise SdlcError("VALIDATION_FAILED", f"scope '{scope}' needs a releaseId")
+        rows = await self._db.list_backlog(project_id, statuses=status, iteration_id=iteration_id,
+                                           release_id=release_id, scope=scope)
+        everything = rows if scope == "all" and not (status or iteration_id) else await self._db.list_backlog(project_id)
         keys = {r["id"]: r["item_key"] for r in everything}
         if q:
             ql = q.lower().strip()
@@ -74,6 +81,14 @@ class BacklogService:
         await self._authz.assert_project_access(project_id, user)
         row = await self._row(project_id, ref)
         return item_view(row, await self._epic_key(project_id, row))
+
+    async def _release(self, project_id: str, release_id: str, *, must_be_live: bool = False) -> Any:
+        rel = await self._db.get_release(release_id)
+        if rel is None or rel["project_id"] != project_id:
+            raise SdlcError("NOT_FOUND", "Release not found")
+        if must_be_live and rel["status"] == "closed":
+            raise SdlcError("GATE_CONFLICT", f"Release {rel['code']} is closed")
+        return rel
 
     async def _row(self, project_id: str, ref: str) -> Any:
         row = await self._db.get_backlog_item(project_id, ref)
@@ -132,6 +147,8 @@ class BacklogService:
         if f.get("type") == "epic":
             f.pop("estimate", None)
         f["status"] = "refined" if (f.get("type") == "epic" or f.get("acceptance_criteria")) else "new"
+        if data.get("releaseId"):
+            f["release_id"] = (await self._release(project_id, data["releaseId"], must_be_live=True))["id"]
         row = await self._db.insert_backlog_item(project_id=project_id, created_by=user.id, **f)
         self._audit.record(project_id=project_id, agent_role="Backlog", event="backlog.created",
                            human_reviewer=user.email, detail={"key": row["item_key"], "type": row["type"]})
@@ -228,13 +245,25 @@ class BacklogService:
         return item_view(new, await self._epic_key(project_id, new))
 
     # ------------------------------------------------------------------ sprint commitment
-    async def add_to_sprint(self, project_id: str, user: UserPublic, ref: str, *, force: bool = False) -> dict[str, Any]:
-        """Commit a ready item to the open sprint. Capacity is enforced; going over needs `force` and is audited."""
+    async def add_to_sprint(self, project_id: str, user: UserPublic, ref: str, *, force: bool = False,
+                            iteration_id: str | None = None) -> dict[str, Any]:
+        """Commit a ready item to an open sprint. Capacity is enforced; going over needs `force` and is audited.
+        Which sprint: the one named, else the open sprint of the item's release, else the project's only open one."""
         await self._assert_edit(project_id, user)
-        it = await self._db.get_open_iteration(project_id)
+        row = await self._row(project_id, ref)
+        if iteration_id:
+            it = await self._db.get_iteration(iteration_id)
+            if it is None or it["project_id"] != project_id:
+                raise SdlcError("NOT_FOUND", "Sprint not found")
+        elif row["release_id"]:
+            it = await self._db.get_open_iteration(project_id, row["release_id"])
+        else:
+            opens = await self._db.list_open_iterations(project_id)
+            if len(opens) > 1:
+                raise SdlcError("VALIDATION_FAILED", "Several sprints are open: say which sprint to add the item to (sprintId)")
+            it = opens[0] if opens else None
         if it is None:
             raise SdlcError("GATE_CONFLICT", "There is no open sprint to add to")
-        row = await self._row(project_id, ref)
         if row["status"] != "ready":
             raise SdlcError("GATE_CONFLICT", f"{row['item_key']} is '{row['status']}'; only ready items can be added")
         problems = ready_problems(row)
@@ -245,6 +274,12 @@ class BacklogService:
             raise SdlcError("GATE_CONFLICT",
                             f"Adding {row['item_key']} ({float(row['estimate']):g} pts) would put the sprint at {total:g} of "
                             f"{cap:g} points. Confirm to overcommit.")
+        if outcome == "other_release":
+            raise SdlcError("GATE_CONFLICT", f"{row['item_key']} belongs to another release")
+        if outcome == "pool_closed":
+            raise SdlcError("GATE_CONFLICT",
+                            f"{row['item_key']} is in the shared pool, which the release of sprint {it['label']} does not draw from. "
+                            "Claim it for the release first.")
         if outcome in ("closed", "not_ready"):
             raise SdlcError("GATE_CONFLICT", "The item could not be added (it changed, or the sprint is no longer open)")
         over = outcome == "added_over"
@@ -271,3 +306,75 @@ class BacklogService:
             except Exception:
                 import logging
                 logging.getLogger("agile").warning("jira write-through failed for %s", row["item_key"], exc_info=True)
+
+
+    # ------------------------------------------------------------------ release scoping (parallel releases)
+
+    async def claim_into_release(self, project_id: str, user: UserPublic, release_id: str, refs: list[str]) -> dict[str, Any]:
+        """Pull items from the shared pool into a release (atomic; an item someone else claimed first is skipped)."""
+        await self._assert_edit(project_id, user)
+        rel = await self._release(project_id, release_id, must_be_live=True)
+        if not 1 <= len(refs) <= 200:
+            raise SdlcError("VALIDATION_FAILED", "Pick between 1 and 200 items")
+        rows = [await self._row(project_id, r) for r in refs]
+        claimed, skipped = await self._db.claim_pool_items(project_id, rel["id"], [r["id"] for r in rows])
+        keys = {r["id"]: r["item_key"] for r in rows}
+        self._audit.record(project_id=project_id, agent_role="Backlog", event="release.items_claimed",
+                           human_reviewer=user.email, detail={"release": rel["code"], "claimed": [keys[i] for i in claimed],
+                                                              "skipped": [keys[i] for i in skipped]})
+        return {"claimed": [keys[i] for i in claimed], "skipped": [keys[i] for i in skipped]}
+
+    async def move_unfinished(self, project_id: str, user: UserPublic, from_release: str, to_release: str,
+                              refs: list[str] | None = None) -> dict[str, Any]:
+        """Move a release's UNFINISHED items to another release. Jira keys are kept; the source records the move."""
+        await self._assert_edit(project_id, user)
+        src = await self._release(project_id, from_release)
+        dst = await self._release(project_id, to_release, must_be_live=True)
+        if src["id"] == dst["id"]:
+            raise SdlcError("VALIDATION_FAILED", "Pick two different releases")
+        ids = [(await self._row(project_id, r))["id"] for r in refs] if refs is not None else None
+        moved, skipped = await self._db.move_items_between_releases(project_id, src["id"], dst["id"], ids)
+        self._audit.record(project_id=project_id, agent_role="Backlog", event="release.items_moved",
+                           human_reviewer=user.email, detail={"from": src["code"], "to": dst["code"],
+                                                              "moved": [r["item_key"] for r in moved], "skipped": skipped[:20]})
+        return {"moved": [r["item_key"] for r in moved], "skipped": skipped}
+
+    async def epics_of_release(self, project_id: str, user: UserPublic, release_id: str) -> list[dict[str, Any]]:
+        await self._authz.assert_project_access(project_id, user)
+        await self._release(project_id, release_id)
+        return [{"epicKey": r["item_key"], "title": r["title"], "jiraKey": r["jira_key"]}
+                for r in await self._db.list_release_epics(release_id)]
+
+    async def map_epic(self, project_id: str, user: UserPublic, release_id: str, epic_ref: str, *,
+                       adopt_existing: bool = False, preview: bool = False) -> dict[str, Any]:
+        """Map an epic to a release (rule "by epic"): new Jira issues under it are routed to that release. With
+        `adopt_existing` the epic's items still in the pool move into the release too; `preview` only reports them."""
+        await self._assert_edit(project_id, user)
+        rel = await self._release(project_id, release_id, must_be_live=True)
+        epic = await self._row(project_id, epic_ref)
+        if epic["type"] != "epic":
+            raise SdlcError("VALIDATION_FAILED", f"{epic['item_key']} is not an epic")
+        children = [r for r in await self._db.list_backlog(project_id, scope="pool")
+                    if r["epic_id"] == epic["id"] and r["status"] != "dropped"]
+        if preview:
+            return {"epicKey": epic["item_key"], "poolItems": [r["item_key"] for r in children]}
+        if rel["intake_rule"] != "epic":
+            raise SdlcError("GATE_CONFLICT", f"Release {rel['code']} takes new work from the pool; switch its intake rule to 'epic' first")
+        if not await self._db.map_epic(project_id, epic["id"], rel["id"], user.id):
+            raise SdlcError("GATE_CONFLICT", f"{epic['item_key']} already belongs to another release; unmap it there first")
+        claimed: list[str] = []
+        if adopt_existing:
+            ids, _ = await self._db.claim_pool_items(project_id, rel["id"], [r["id"] for r in children] + [epic["id"]])
+            claimed = [r["item_key"] for r in children if r["id"] in ids]
+        elif epic["release_id"] is None:
+            await self._db.claim_pool_items(project_id, rel["id"], [epic["id"]])
+        self._audit.record(project_id=project_id, agent_role="Backlog", event="release.epic_mapped",
+                           human_reviewer=user.email, detail={"release": rel["code"], "epic": epic["item_key"], "adopted": claimed})
+        return {"epicKey": epic["item_key"], "adopted": claimed}
+
+    async def unmap_epic(self, project_id: str, user: UserPublic, epic_ref: str) -> None:
+        await self._assert_edit(project_id, user)
+        epic = await self._row(project_id, epic_ref)
+        await self._db.unmap_epic(epic["id"])
+        self._audit.record(project_id=project_id, agent_role="Backlog", event="release.epic_unmapped",
+                           human_reviewer=user.email, detail={"epic": epic["item_key"]})

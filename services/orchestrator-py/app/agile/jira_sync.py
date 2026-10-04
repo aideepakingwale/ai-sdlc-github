@@ -152,6 +152,7 @@ class JiraSyncService:
         token: str | None = None
         epic_ids: dict[str, str] = {}                     # jira key -> backlog id, for epic links
         pending_links: list[tuple[str, str]] = []         # (backlog id, epic jira key) resolved after the pass
+        new_ids: set[str] = set()                         # items first imported by THIS run (the intake rule applies once)
         try:
             for _ in range(MAX_PAGES):
                 args: dict[str, Any] = {"projectKey": key, "maxResults": PAGE_SIZE}
@@ -162,6 +163,7 @@ class JiraSyncService:
                 page = await self._mcp.call("jira_search_issues", args)
                 res.pages += 1
                 for issue in page.get("issues", []):
+                    before = res.created
                     try:
                         row = await self._apply_issue(project_id, issue, res)
                     except Exception as err:
@@ -169,6 +171,8 @@ class JiraSyncService:
                         failed_ts.append(parse_ts(issue.get("updated")))
                         continue
                     if row is not None:
+                        if res.created > before:
+                            new_ids.add(row["id"])
                         if row["type"] == "epic":
                             epic_ids[issue["key"]] = row["id"]
                         if issue.get("epicKey") and row["type"] != "epic":
@@ -179,7 +183,7 @@ class JiraSyncService:
                 token = page.get("nextPageToken")
                 if not token:
                     break
-            await self._link_epics(project_id, epic_ids, pending_links)
+            await self._link_epics(project_id, epic_ids, pending_links, new_ids)
             if failed_ts:                                   # a failed issue must be re-read next run: never move past it
                 if any(t is None for t in failed_ts):
                     newest = mark
@@ -262,14 +266,23 @@ class JiraSyncService:
                 return r
         return None
 
-    async def _link_epics(self, project_id: str, epic_ids: dict[str, str], links: list[tuple[str, str]]) -> None:
+    async def _link_epics(self, project_id: str, epic_ids: dict[str, str], links: list[tuple[str, str]],
+                          new_ids: set[str] | None = None) -> None:
+        """Link items to their epics. A NEWLY imported item is also routed by the intake rule: when its epic is
+        mapped to a release that takes work "by epic", the item goes to that release; everything else stays in the
+        shared pool. Routing happens once, at first import; later epic-link changes in Jira never move an item."""
         for backlog_id, epic_key in links:
             epic_id = epic_ids.get(epic_key)
             if epic_id is None:
                 e = await self._db.get_backlog_by_jira(project_id, epic_key)
                 epic_id = e["id"] if e and e["type"] == "epic" else None
             if epic_id:
-                await self._db.update_backlog_item(project_id, backlog_id, expected_version=None, epic_id=epic_id)
+                fields: dict[str, Any] = {"epic_id": epic_id}
+                if new_ids and backlog_id in new_ids:
+                    release_id = await self._db.release_for_epic(epic_id)
+                    if release_id:
+                        fields["release_id"] = release_id
+                await self._db.update_backlog_item(project_id, backlog_id, expected_version=None, **fields)
 
     # ------------------------------------------------------------------ outbound (write-through)
     async def write_through(self, project_id: str, row: Any, op: str) -> None:

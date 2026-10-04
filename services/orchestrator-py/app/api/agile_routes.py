@@ -37,13 +37,30 @@ class StartSprintRequest(BaseModel):
     goal: str = Field(default="", max_length=240)
     capacity: float | None = Field(default=None, ge=0, le=10_000)
     startsOn: dt.date | None = None
+    releaseId: str | None = None
+
+
+class CreateReleaseRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    goal: str = Field(default="", max_length=400)
+    forkedFrom: str | None = None
+    stagePreset: str = "inherit"
+    stages: list[dict[str, Any]] | None = Field(default=None, max_length=30)
+    intakeRule: Literal["pool", "epic"] = "pool"
+    usePool: bool = True
+
+
+class ReleaseStagesRequest(BaseModel):
+    stagePreset: str = "custom"
+    stages: list[dict[str, Any]] | None = Field(default=None, max_length=30)
 
 
 @router.get("/api/projects/{project_id}/agile")
 async def agile_overview(
-    project_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+    project_id: str, release: str | None = None,
+    user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
 ) -> dict[str, Any]:
-    return await c.agile.overview(project_id, user)
+    return await c.agile.overview(project_id, user, release)
 
 
 @router.post("/api/projects/{project_id}/agile/enable")
@@ -86,7 +103,7 @@ async def start_sprint(
     user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
 ) -> dict[str, Any]:
     return await c.agile.start_sprint(
-        project_id, user, goal=body.goal, capacity=body.capacity, starts_on=body.startsOn)
+        project_id, user, goal=body.goal, capacity=body.capacity, starts_on=body.startsOn, release_id=body.releaseId)
 
 
 @router.post("/api/projects/{project_id}/agile/sprints/{iteration_id}/cancel")
@@ -95,6 +112,32 @@ async def cancel_sprint(
     user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
 ) -> dict[str, Any]:
     return await c.agile.cancel_sprint(project_id, user, iteration_id)
+
+
+@router.post("/api/projects/{project_id}/agile/releases")
+async def create_release(
+    project_id: str, body: CreateReleaseRequest,
+    user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    return await c.agile.create_release(
+        project_id, user, name=body.name, goal=body.goal, forked_from=body.forkedFrom, stage_preset=body.stagePreset,
+        stages=body.stages, intake_rule=body.intakeRule, use_pool=body.usePool)
+
+
+@router.put("/api/projects/{project_id}/agile/releases/{release_id}/stages")
+async def set_release_stages(
+    project_id: str, release_id: str, body: ReleaseStagesRequest,
+    user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    return await c.agile.set_release_stages(project_id, user, release_id, stage_preset=body.stagePreset, stages=body.stages)
+
+
+@router.get("/api/projects/{project_id}/agile/stage-presets")
+async def stage_presets(project_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict[str, Any]:
+    from ..agile.templates import PRESETS
+
+    await c.authz.assert_project_access(project_id, user)
+    return {"presets": [{"id": k, "label": v["label"]} for k, v in PRESETS.items()] + [{"id": "custom", "label": "Choose the stages myself"}]}
 
 
 @router.post("/api/projects/{project_id}/agile/releases/{release_id}/harden")
@@ -115,6 +158,7 @@ class BacklogCreate(BaseModel):
     components: list[str] = Field(default_factory=list, max_length=10)
     labels: list[str] = Field(default_factory=list, max_length=20)
     epicKey: str | None = None
+    releaseId: str | None = None
 
 
 class BacklogPatch(BaseModel):
@@ -143,15 +187,33 @@ class MoveBody(BaseModel):
 
 class SprintAddBody(BaseModel):
     force: bool = False
+    sprintId: str | None = None
+
+
+class ClaimBody(BaseModel):
+    items: list[str] = Field(min_length=1, max_length=200)
+
+
+class MoveUnfinishedBody(BaseModel):
+    toRelease: str
+    items: list[str] | None = Field(default=None, max_length=200)
+
+
+class MapEpicBody(BaseModel):
+    epic: str
+    adoptExisting: bool = False
+    preview: bool = False
 
 
 @router.get("/api/projects/{project_id}/agile/backlog")
 async def list_backlog(
     project_id: str, status: str | None = None, iteration: str | None = None, q: str | None = None,
+    release: str | None = None, scope: str = "all",
     user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
 ) -> dict[str, Any]:
     statuses = [s for s in (status or "").split(",") if s] or None
-    return await c.extras["backlog"].list(project_id, user, status=statuses, iteration_id=iteration, q=q)
+    return await c.extras["backlog"].list(project_id, user, status=statuses, iteration_id=iteration, q=q,
+                                          release_id=release, scope=scope)
 
 
 @router.post("/api/projects/{project_id}/agile/backlog")
@@ -205,7 +267,7 @@ async def backlog_add_to_sprint(
     project_id: str, ref: str, body: SprintAddBody,
     user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
 ) -> dict[str, Any]:
-    return await c.extras["backlog"].add_to_sprint(project_id, user, ref, force=body.force)
+    return await c.extras["backlog"].add_to_sprint(project_id, user, ref, force=body.force, iteration_id=body.sprintId)
 
 
 @router.delete("/api/projects/{project_id}/agile/backlog/{ref}/sprint")
@@ -273,3 +335,46 @@ async def index_status(
     """State of the `.devmind/` project memory: tiers, unpublished changes, drift, specs."""
     await c.authz.assert_project_access(project_id, user)
     return await c.extras["index"].status(project_id)
+
+
+# ------------------------------------------------------------------ release scoping (parallel releases)
+@router.post("/api/projects/{project_id}/agile/releases/{release_id}/claim")
+async def claim_items(
+    project_id: str, release_id: str, body: ClaimBody,
+    user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    """Pull items from the shared pool into a release."""
+    return await c.extras["backlog"].claim_into_release(project_id, user, release_id, body.items)
+
+
+@router.post("/api/projects/{project_id}/agile/releases/{release_id}/move-unfinished")
+async def move_unfinished(
+    project_id: str, release_id: str, body: MoveUnfinishedBody,
+    user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    """Move unfinished items (Jira keys kept) from this release to another."""
+    return await c.extras["backlog"].move_unfinished(project_id, user, release_id, body.toRelease, body.items)
+
+
+@router.get("/api/projects/{project_id}/agile/releases/{release_id}/epics")
+async def release_epics(
+    project_id: str, release_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    return {"epics": await c.extras["backlog"].epics_of_release(project_id, user, release_id)}
+
+
+@router.post("/api/projects/{project_id}/agile/releases/{release_id}/epics")
+async def map_epic(
+    project_id: str, release_id: str, body: MapEpicBody,
+    user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    return await c.extras["backlog"].map_epic(project_id, user, release_id, body.epic,
+                                              adopt_existing=body.adoptExisting, preview=body.preview)
+
+
+@router.delete("/api/projects/{project_id}/agile/epics/{epic}/release")
+async def unmap_epic(
+    project_id: str, epic: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    await c.extras["backlog"].unmap_epic(project_id, user, epic)
+    return {"ok": True}

@@ -32,7 +32,7 @@ class ProposalService:
     # ------------------------------------------------------------------ creation (called by the agents)
     async def create_refine(self, project_id: str, phase: int, iteration_id: str | None, llm: LlmRefine,
                             extra_warnings: list[str] | None = None) -> dict[str, Any]:
-        existing = await self._db.list_backlog(project_id)
+        existing = await self._db.list_backlog_for_iteration(project_id, iteration_id)
         payload, warnings = sanitise_refine(llm, existing)
         warnings = [*(extra_warnings or []), *warnings]
         row = await self._db.insert_proposal(project_id=project_id, iteration_id=iteration_id, phase=phase,
@@ -41,7 +41,7 @@ class ProposalService:
 
     async def create_plan(self, project_id: str, phase: int, iteration: Any, llm: LlmPlan | None,
                           extra_warnings: list[str] | None = None) -> dict[str, Any]:
-        backlog = await self._db.list_backlog(project_id)
+        backlog = await self._db.list_backlog_for_iteration(project_id, iteration["id"])
         cfg = await self._db.get_project_agile(project_id)
         cap = float(iteration["capacity"])
         wip = cfg["wip_limit"] if cfg else None
@@ -82,7 +82,7 @@ class ProposalService:
         if row["status"] != "proposed":
             raise SdlcError("GATE_CONFLICT", f"This proposal is already {row['status']}")
         if row["kind"] == "refine":
-            clean, warnings = sanitise_refine(refine_to_llm(payload), await self._db.list_backlog(project_id))
+            clean, warnings = sanitise_refine(refine_to_llm(payload), await self._db.list_backlog_for_iteration(project_id, row["iteration_id"]))
         elif row["kind"] == "delta":
             d, warnings = sanitise_delta(DesignDelta.model_validate(payload))
             clean = d.model_dump()
@@ -90,7 +90,7 @@ class ProposalService:
             it = await self._db.get_iteration(row["iteration_id"])
             if it is None:
                 raise SdlcError("NOT_FOUND", "The sprint of this proposal no longer exists")
-            clean, warnings = revalidate_plan(payload, await self._db.list_backlog(project_id), capacity=float(it["capacity"]))
+            clean, warnings = revalidate_plan(payload, await self._db.list_backlog_for_iteration(project_id, it["id"]), capacity=float(it["capacity"]))
         new = await self._db.update_proposal(proposal_id, expected_version=expected_version, payload=clean, warnings=warnings)
         if new is None:
             raise SdlcError("GATE_CONFLICT", "The proposal changed meanwhile — reload and try again")
@@ -104,9 +104,12 @@ class ProposalService:
         if not row or row["status"] != "proposed":
             return                                           # nothing to apply, or already applied (idempotent)
         # Re-sanitise against the CURRENT backlog: it may have changed since the proposal was made.
-        payload, warnings = sanitise_refine(refine_to_llm(row["payload"]), await self._db.list_backlog(ctx.project_id))
+        it_id = ctx.iteration["id"] if ctx.iteration else None
+        payload, warnings = sanitise_refine(refine_to_llm(row["payload"]), await self._db.list_backlog_for_iteration(ctx.project_id, it_id))
+        rel = await self._db.get_release(ctx.iteration["release_id"]) if ctx.iteration else None
         res = await self._db.apply_refine(project_id=ctx.project_id, proposal_id=row["id"], ops=payload["ops"],
-                                          actor_id=None)
+                                          actor_id=None, release_id=rel["id"] if rel else None,
+                                          use_pool=rel["use_pool"] if rel else True)
         if res is None:
             return
         self._audit.record(project_id=ctx.project_id, phase=ctx.phase, agent_role="Backlog",
@@ -118,7 +121,7 @@ class ProposalService:
         row = await self._db.latest_proposal(ctx.project_id, ctx.phase, "plan")
         if not row or row["status"] != "proposed" or ctx.iteration is None:
             return
-        backlog = await self._db.list_backlog(ctx.project_id)
+        backlog = await self._db.list_backlog_for_iteration(ctx.project_id, ctx.iteration["id"])
         committed = points([b for b in backlog if b["iteration_id"] == ctx.iteration["id"]])
         cfg = await self._db.get_project_agile(ctx.project_id)
         payload, warnings = revalidate_plan(row["payload"], backlog, capacity=float(ctx.iteration["capacity"]),

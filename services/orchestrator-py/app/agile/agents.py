@@ -81,7 +81,7 @@ async def _context(deps: AgentDeps, state: AgentState, emit: Any) -> str:
 async def run_refine(deps: AgentDeps, state: AgentState, emit: Any) -> PhaseAgentResult:
     persona = state.custom_persona or "Product Owner"
     emit({"type": "node", "node": "agent", "label": f"{persona} refining the backlog for '{state.stage_name}'"})
-    rows = await deps.db.list_backlog(state.project_id)
+    rows = await deps.db.list_backlog_for_iteration(state.project_id, state.iteration_id)
     user = (
         f"## Instruction\n{state.user_input or 'Refine the backlog.'}\n\n"
         f"## Project\n{state.project_profile or state.tech_stack}\n\n"
@@ -124,7 +124,7 @@ async def run_plan(deps: AgentDeps, state: AgentState, emit: Any) -> PhaseAgentR
     iteration = await deps.db.get_iteration(state.iteration_id) if state.iteration_id else None
     if iteration is None:
         raise ValueError("this planning stage is not attached to a sprint")
-    rows = await deps.db.list_backlog(state.project_id)
+    rows = await deps.db.list_backlog_for_iteration(state.project_id, state.iteration_id)
     cap = float(iteration["capacity"])
     user = (
         f"## Instruction\n{state.user_input or 'Plan the sprint.'}\n\n"
