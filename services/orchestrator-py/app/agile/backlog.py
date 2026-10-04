@@ -162,6 +162,8 @@ class BacklogService:
 
     async def set_status(self, project_id: str, user: UserPublic, ref: str, target: str, *,
                          expected_version: int | None) -> dict[str, Any]:
+        if target not in STATUSES:
+            raise SdlcError("VALIDATION_FAILED", f"unknown status '{target}'")
         row = await self._row(project_id, ref)
         why = check_transition(row["status"], target)
         if why:
