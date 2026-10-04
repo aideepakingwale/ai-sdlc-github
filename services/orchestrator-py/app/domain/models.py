@@ -163,6 +163,9 @@ class AgentState(BaseModel):
     project_traits: dict[str, bool | None] = Field(default_factory=dict)
     # Custom phase (D-74, workflow v2 template 7): the PM-defined phase config the
     # generic runner uses. Ignored by the six built-in engines.
+    # Agile delivery: which ceremony this stage is (refine/plan/build/review/retro/release) and its sprint.
+    agile_role: str | None = None
+    iteration_id: str | None = None
     custom_persona: str = ""
     custom_prompt_id: str = ""
     custom_outputs: list[str] = Field(default_factory=list)

@@ -93,6 +93,31 @@ function failingFile(text: string): string {
 
 function render(kind: string, topic: string, seed: string, userText: string): string {
   switch (kind) {
+    case 'agile_refine': {
+      // Offline Refine agent: an epic with two well-formed stories derived from the topic.
+      const t = topic.slice(0, 60);
+      return JSON.stringify({
+        summary: `Refined the backlog for ${t}.`,
+        ops: [
+          { op: 'create', ref: 'e1', type: 'epic', title: `${t} — core capability`, description: `Deliver ${t}.`, acceptanceCriteria: [], estimate: null, components: [], rationale: 'Groups the first stories.' },
+          { op: 'create', ref: 's1', type: 'story', title: `As a user I can start ${t}`, description: 'Entry point and happy path.', acceptanceCriteria: ['Given a signed-in user, when they start, then the flow opens', 'The first step is validated'], estimate: 3, components: ['web'], epic: 'e1', rationale: 'Smallest valuable slice.' },
+          { op: 'create', ref: 's2', type: 'story', title: `As a user I can complete ${t}`, description: 'Completion and confirmation.', acceptanceCriteria: ['Given a valid submission, then a confirmation is shown', 'Errors are explained inline'], estimate: 5, components: ['web', 'api'], epic: 'e1', rationale: 'Finishes the flow.' },
+        ],
+      });
+    }
+
+    case 'agile_plan': {
+      // Offline Planning agent: pick READY items in order while they fit the stated CAPACITY.
+      const cap = Number(/CAPACITY:\s*([\d.]+)/.exec(userText)?.[1] ?? '0');
+      const picks: Array<{ key: string; reason: string }> = [];
+      let used = 0;
+      for (const m of userText.matchAll(/READY:\s*(DM-\d+)\s*\|\s*([\d.]+)\s*pts/g)) {
+        const pts = Number(m[2]);
+        if (used + pts <= cap) { picks.push({ key: m[1] ?? '', reason: 'next in priority order' }); used += pts; }
+      }
+      return JSON.stringify({ goal: `Deliver ${topic.slice(0, 80)}`, picks, risks: ['Mock plan — review before committing.'] });
+    }
+
     case 'plan':
       return JSON.stringify({
         steps: [

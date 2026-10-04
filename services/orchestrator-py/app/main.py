@@ -125,7 +125,15 @@ async def lifespan(app: FastAPI):
 
     from .agile.service import AgileLifecycle, AgileService
 
+    from .agile.backlog import BacklogService
+    from .agile.proposal_service import ProposalService
+
     agile = AgileService(db, dynamo, workflow, audit, authz)
+    backlog = BacklogService(db, audit, authz, agile)
+    proposals = ProposalService(db, audit, authz, agile)
+    agent_deps.proposals = proposals                      # Refine/Plan agents persist their proposals through it
+    agile.on_approved("refine", proposals.apply_refine_hook)
+    agile.on_approved("plan", proposals.apply_plan_hook)
     gates = GateService(db, dynamo, audit, authz, workflow, regenerate, publisher, agile)
     chat.lifecycle = AgileLifecycle(agile, gates)
     flow = FlowService(db, dynamo, audit, authz, content, workflow, regenerate)
@@ -140,6 +148,7 @@ async def lifespan(app: FastAPI):
     container.skills = SkillService(db, authz, agent_deps, workflow)
     container.workflow = workflow
     container.agile = agile
+    container.extras.update(backlog=backlog, proposals=proposals)
     container.telemetry = telemetry
     container.extras["publisher"] = publisher
     container.canon, container.formworks = canon, formworks

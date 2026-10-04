@@ -191,26 +191,73 @@ class AgileRepo:
         return await self.pool.fetchrow(
             "SELECT * FROM backlog_items WHERE project_id=$1 AND jira_key=$2", project_id, jira_key)
 
-    async def insert_backlog_item(self, *, project_id: str, created_by: str | None, **f: Any) -> asyncpg.Record:
+    @staticmethod
+    async def _insert_item(conn: asyncpg.Connection, project_id: str, created_by: str | None, f: dict[str, Any]) -> asyncpg.Record:
         """Allocates the per-project key (DM-n) atomically and appends to the end of the ranking by default."""
-        assert self.pool
         bad = set(f) - BACKLOG_FIELDS
         if bad:
             raise ValueError(f"not settable: {sorted(bad)}")
+        n = await conn.fetchval(
+            "INSERT INTO backlog_counters (project_id, next_item) VALUES ($1, 2) "
+            "ON CONFLICT (project_id) DO UPDATE SET next_item = backlog_counters.next_item + 1 "
+            "RETURNING next_item - 1", project_id)
+        if "rank" not in f:
+            top = await conn.fetchval("SELECT COALESCE(MAX(rank),0) FROM backlog_items WHERE project_id=$1", project_id)
+            f = {**f, "rank": float(top) + RANK_STEP}
+        cols = ["id", "project_id", "item_key", "created_by", *f]
+        vals = [_id(), project_id, f"DM-{n}", created_by, *f.values()]
+        ph = ", ".join(f"${i + 1}" for i in range(len(cols)))
+        return await conn.fetchrow(f"INSERT INTO backlog_items ({', '.join(cols)}) VALUES ({ph}) RETURNING *", *vals)
+
+    async def insert_backlog_item(self, *, project_id: str, created_by: str | None, **f: Any) -> asyncpg.Record:
+        assert self.pool
         async with self.pool.acquire() as conn, conn.transaction():
-            n = await conn.fetchval(
-                "INSERT INTO backlog_counters (project_id, next_item) VALUES ($1, 2) "
-                "ON CONFLICT (project_id) DO UPDATE SET next_item = backlog_counters.next_item + 1 "
-                "RETURNING next_item - 1", project_id)
-            if "rank" not in f:
-                top = await conn.fetchval(
-                    "SELECT COALESCE(MAX(rank),0) FROM backlog_items WHERE project_id=$1", project_id)
-                f["rank"] = float(top) + RANK_STEP
-            cols = ["id", "project_id", "item_key", "created_by", *f]
-            vals = [_id(), project_id, f"DM-{n}", created_by, *f.values()]
-            ph = ", ".join(f"${i + 1}" for i in range(len(cols)))
-            return await conn.fetchrow(
-                f"INSERT INTO backlog_items ({', '.join(cols)}) VALUES ({ph}) RETURNING *", *vals)
+            return await self._insert_item(conn, project_id, created_by, dict(f))
+
+    async def move_backlog_item(
+        self, project_id: str, item_id: str, *, before_id: str | None = None, after_id: str | None = None,
+    ) -> asyncpg.Record | None:
+        """Re-rank one item next to a neighbour. Rebalances the whole ranking when the gap gets too small."""
+        assert self.pool
+        async with self.pool.acquire() as conn, conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"rank:{project_id}")
+            item = await conn.fetchrow("SELECT * FROM backlog_items WHERE project_id=$1 AND id=$2", project_id, item_id)
+            if item is None:
+                return None
+            ref_id = before_id or after_id
+            ref = await conn.fetchrow(
+                "SELECT rank FROM backlog_items WHERE project_id=$1 AND id=$2 AND id<>$3", project_id, ref_id, item_id
+            ) if ref_id else None
+            if ref_id and ref is None:
+                raise LookupError("reference item not found")
+            if ref is None:   # no neighbour: move to the very top
+                low = await conn.fetchval("SELECT COALESCE(MIN(rank),0) FROM backlog_items WHERE project_id=$1 AND id<>$2",
+                                          project_id, item_id)
+                new_rank = float(low) - RANK_STEP
+            elif before_id:   # directly ABOVE ref → between the previous item and ref
+                prev = await conn.fetchval(
+                    "SELECT MAX(rank) FROM backlog_items WHERE project_id=$1 AND id<>$2 AND rank < $3",
+                    project_id, item_id, ref["rank"])
+                new_rank = (float(prev) + ref["rank"]) / 2 if prev is not None else ref["rank"] - RANK_STEP
+            else:             # directly BELOW ref
+                nxt = await conn.fetchval(
+                    "SELECT MIN(rank) FROM backlog_items WHERE project_id=$1 AND id<>$2 AND rank > $3",
+                    project_id, item_id, ref["rank"])
+                new_rank = (ref["rank"] + float(nxt)) / 2 if nxt is not None else ref["rank"] + RANK_STEP
+            row = await conn.fetchrow(
+                "UPDATE backlog_items SET rank=$3, version=version+1, updated_at=now() "
+                "WHERE project_id=$1 AND id=$2 RETURNING *", project_id, item_id, new_rank)
+            # too close to a neighbour → renumber everything with even spacing (order preserved)
+            tight = await conn.fetchval(
+                "SELECT COUNT(*) FROM (SELECT rank - LAG(rank) OVER (ORDER BY rank) AS gap FROM backlog_items "
+                "WHERE project_id=$1) g WHERE gap IS NOT NULL AND gap < 0.001", project_id)
+            if tight:
+                await conn.execute(
+                    "UPDATE backlog_items b SET rank = r.n * $2 FROM (SELECT id, ROW_NUMBER() OVER "
+                    "(ORDER BY rank, created_at) AS n FROM backlog_items WHERE project_id=$1) r WHERE b.id=r.id",
+                    project_id, RANK_STEP)
+                row = await conn.fetchrow("SELECT * FROM backlog_items WHERE id=$1", item_id)
+            return row
 
     async def update_backlog_item(
         self, project_id: str, item_id: str, *, expected_version: int | None, **f: Any,
@@ -311,3 +358,102 @@ class AgileRepo:
             "watermark=COALESCE(EXCLUDED.watermark, agile_sync_state.watermark), last_run_at=now(), "
             "last_status=EXCLUDED.last_status, last_error=EXCLUDED.last_error, stats=EXCLUDED.stats",
             project_id, watermark, status, error, stats)
+
+    # ------------------------------------------------------------------ applying proposals (atomic, once)
+    @staticmethod
+    async def _claim_proposal(conn: asyncpg.Connection, proposal_id: str, actor_id: str | None) -> bool:
+        got = await conn.fetchval(
+            "UPDATE agile_proposals SET status='applied', decided_at=now(), decided_by=$2 "
+            "WHERE id=$1 AND status='proposed' RETURNING id", proposal_id, actor_id)
+        return got is not None
+
+    async def apply_refine(
+        self, *, project_id: str, proposal_id: str, ops: list[dict[str, Any]], actor_id: str | None,
+    ) -> dict[str, Any] | None:
+        """Apply a refinement proposal in ONE transaction. Returns None when it was already decided
+        (so a replay or a race can never apply it twice)."""
+        from ..agile.rules import COMMITTED
+
+        assert self.pool
+        async with self.pool.acquire() as conn, conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"rank:{project_id}")
+            if not await self._claim_proposal(conn, proposal_id, actor_id):
+                return None
+            out: dict[str, Any] = {"created": [], "updated": [], "dropped": [], "skipped": []}
+            ref_ids: dict[str, str] = {}
+
+            async def epic_id(ref: str | None) -> str | None:
+                if not ref:
+                    return None
+                if ref in ref_ids:
+                    return ref_ids[ref]
+                return await conn.fetchval(
+                    "SELECT id FROM backlog_items WHERE project_id=$1 AND item_key=$2 AND type='epic'", project_id, ref)
+
+            for op in ops:
+                if op["op"] == "create":
+                    f: dict[str, Any] = {
+                        "type": op["type"], "title": op["title"], "description": op["description"],
+                        "acceptance_criteria": op["acceptanceCriteria"], "estimate": op["estimate"],
+                        "components": op["components"], "epic_id": await epic_id(op.get("epic")),
+                    }
+                    # 'refined' = has real content; work items without acceptance criteria stay 'new'.
+                    f["status"] = "refined" if op["type"] == "epic" or op["acceptanceCriteria"] else "new"
+                    row = await self._insert_item(conn, project_id, actor_id, f)
+                    ref_ids[op["ref"]] = row["id"]
+                    out["created"].append(row["item_key"])
+                    continue
+                item = await conn.fetchrow(
+                    "SELECT * FROM backlog_items WHERE project_id=$1 AND item_key=$2 FOR UPDATE", project_id, op["target"])
+                if item is None or item["status"] in COMMITTED or item["status"] == "dropped":
+                    out["skipped"].append({"ref": op["ref"], "reason": "item changed since the proposal"})
+                    continue
+                if op["op"] == "drop":
+                    if item["status"] in ("new", "refined", "ready"):
+                        await conn.execute(
+                            "UPDATE backlog_items SET status='dropped', version=version+1, updated_at=now() WHERE id=$1",
+                            item["id"])
+                        out["dropped"].append(item["item_key"])
+                    else:
+                        out["skipped"].append({"ref": op["ref"], "reason": f"item is {item['status']}"})
+                    continue
+                sets: dict[str, Any] = {}
+                if op.get("title"):
+                    sets["title"] = op["title"]
+                if op.get("description"):
+                    sets["description"] = op["description"]
+                if op.get("acceptanceCriteria"):
+                    sets["acceptance_criteria"] = op["acceptanceCriteria"]
+                if op.get("estimate") is not None and item["type"] != "epic":
+                    sets["estimate"] = op["estimate"]
+                if op.get("components"):
+                    sets["components"] = op["components"]
+                if op.get("epic"):
+                    sets["epic_id"] = await epic_id(op["epic"])
+                if not sets:
+                    out["skipped"].append({"ref": op["ref"], "reason": "nothing to change"})
+                    continue
+                cols = ", ".join(f"{k}=${i + 2}" for i, k in enumerate(sets))
+                await conn.execute(
+                    f"UPDATE backlog_items SET {cols}, version=version+1, updated_at=now() WHERE id=$1",
+                    item["id"], *sets.values())
+                out["updated"].append(item["item_key"])
+            return out
+
+    async def apply_plan(
+        self, *, project_id: str, proposal_id: str, iteration_id: str, keys: list[str], goal: str,
+        actor_id: str | None,
+    ) -> dict[str, Any] | None:
+        """Commit the planned items to the sprint atomically; items that stopped being 'ready' are skipped."""
+        assert self.pool
+        async with self.pool.acquire() as conn, conn.transaction():
+            if not await self._claim_proposal(conn, proposal_id, actor_id):
+                return None
+            rows = await conn.fetch(
+                "UPDATE backlog_items SET status='in_sprint', iteration_id=$3, version=version+1, updated_at=now() "
+                "WHERE project_id=$1 AND item_key = ANY($2) AND status='ready' AND iteration_id IS NULL "
+                "RETURNING item_key", project_id, keys, iteration_id)
+            assigned = sorted(r["item_key"] for r in rows)
+            if goal:
+                await conn.execute("UPDATE iterations SET goal=$2 WHERE id=$1 AND goal=''", iteration_id, goal)
+            return {"assigned": assigned, "skipped": sorted(set(keys) - set(assigned))}

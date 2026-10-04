@@ -571,6 +571,7 @@ class AgentDeps:
     telemetry: Any = None  # TelemetryService (D-35); optional so tests stay lean
     canon: Any = None      # CanonService (D-38) — binding project rules
     formworks: Any = None  # FormworkService (D-38) — output templates
+    proposals: Any = None  # ProposalService — Refine/Plan proposals (Agile delivery)
 
 
 @dataclass
@@ -2254,6 +2255,10 @@ async def run_phase_agent(deps: AgentDeps, state: AgentState, emit: Emit) -> Pha
     # The stage's TEMPLATE picks the generation engine (D-30); the runtime slot
     # (current_phase = workflow seq) only labels where results are recorded.
     runner = _RUNNERS.get(state.stage_template)
+    if state.agile_role in ("refine", "plan") and deps.proposals is not None:
+        from ..agile.agents import AGILE_RUNNERS   # lazy: avoids an import cycle with this module
+
+        runner = AGILE_RUNNERS[state.agile_role]
     if not runner:
         raise SdlcError("VALIDATION_FAILED", f"No generation engine for template {state.stage_template}")
 
@@ -2264,7 +2269,7 @@ async def run_phase_agent(deps: AgentDeps, state: AgentState, emit: Emit) -> Pha
     # D-112: when the requester explicitly asked to follow an attached document's
     # format, generate a single document mirroring it instead of the stage's fixed
     # schema/backlog. Falls back to the normal runner if that path fails (e.g. mock).
-    if _wants_attached_format(state):
+    if _wants_attached_format(state) and state.agile_role not in ("refine", "plan"):
         try:
             return await _run_custom_format(deps, state, emit)
         except Exception as err:  # noqa: BLE001

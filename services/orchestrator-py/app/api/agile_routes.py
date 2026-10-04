@@ -103,3 +103,135 @@ async def harden_release(
     user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
 ) -> dict[str, Any]:
     return await c.agile.start_release_hardening(project_id, user, release_id)
+
+
+# ------------------------------------------------------------------ backlog
+class BacklogCreate(BaseModel):
+    type: Literal["epic", "story", "bug", "task"] = "story"
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=8000)
+    acceptanceCriteria: list[str] = Field(default_factory=list, max_length=20)
+    estimate: float | None = None
+    components: list[str] = Field(default_factory=list, max_length=10)
+    labels: list[str] = Field(default_factory=list, max_length=20)
+    epicKey: str | None = None
+
+
+class BacklogPatch(BaseModel):
+    expectedVersion: int | None = None
+    type: Literal["epic", "story", "bug", "task"] | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=8000)
+    acceptanceCriteria: list[str] | None = Field(default=None, max_length=20)
+    estimate: float | None = None
+    clearEstimate: bool = False
+    components: list[str] | None = Field(default=None, max_length=10)
+    labels: list[str] | None = Field(default=None, max_length=20)
+    epicKey: str | None = None
+    clearEpic: bool = False
+
+
+class StatusBody(BaseModel):
+    status: str
+    expectedVersion: int | None = None
+
+
+class MoveBody(BaseModel):
+    before: str | None = None
+    after: str | None = None
+
+
+class SprintAddBody(BaseModel):
+    force: bool = False
+
+
+@router.get("/api/projects/{project_id}/agile/backlog")
+async def list_backlog(
+    project_id: str, status: str | None = None, iteration: str | None = None, q: str | None = None,
+    user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    statuses = [s for s in (status or "").split(",") if s] or None
+    return await c.extras["backlog"].list(project_id, user, status=statuses, iteration_id=iteration, q=q)
+
+
+@router.post("/api/projects/{project_id}/agile/backlog")
+async def create_backlog_item(
+    project_id: str, body: BacklogCreate,
+    user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    return await c.extras["backlog"].create(project_id, user, body.model_dump(exclude_none=True))
+
+
+@router.get("/api/projects/{project_id}/agile/backlog/{ref}")
+async def get_backlog_item(
+    project_id: str, ref: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    return await c.extras["backlog"].get(project_id, user, ref)
+
+
+@router.patch("/api/projects/{project_id}/agile/backlog/{ref}")
+async def patch_backlog_item(
+    project_id: str, ref: str, body: BacklogPatch,
+    user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    raw = body.model_dump(exclude={"expectedVersion", "clearEstimate", "clearEpic"}, exclude_none=True)
+    if body.clearEstimate:
+        raw["estimate"] = None
+    if body.clearEpic:
+        raw["epicKey"] = None
+    if not raw:
+        raise SdlcError("VALIDATION_FAILED", "Nothing to change")
+    return await c.extras["backlog"].update(project_id, user, ref, raw, expected_version=body.expectedVersion)
+
+
+@router.post("/api/projects/{project_id}/agile/backlog/{ref}/status")
+async def backlog_status(
+    project_id: str, ref: str, body: StatusBody,
+    user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    return await c.extras["backlog"].set_status(project_id, user, ref, body.status, expected_version=body.expectedVersion)
+
+
+@router.post("/api/projects/{project_id}/agile/backlog/{ref}/move")
+async def backlog_move(
+    project_id: str, ref: str, body: MoveBody,
+    user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    return await c.extras["backlog"].move(project_id, user, ref, before=body.before, after=body.after)
+
+
+@router.post("/api/projects/{project_id}/agile/backlog/{ref}/sprint")
+async def backlog_add_to_sprint(
+    project_id: str, ref: str, body: SprintAddBody,
+    user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    return await c.extras["backlog"].add_to_sprint(project_id, user, ref, force=body.force)
+
+
+@router.delete("/api/projects/{project_id}/agile/backlog/{ref}/sprint")
+async def backlog_remove_from_sprint(
+    project_id: str, ref: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    return await c.extras["backlog"].remove_from_sprint(project_id, user, ref)
+
+
+# ------------------------------------------------------------------ proposals
+class ProposalPatch(BaseModel):
+    payload: dict[str, Any]
+    version: int
+
+
+@router.get("/api/projects/{project_id}/agile/proposals")
+async def latest_proposal(
+    project_id: str, phase: int, kind: Literal["refine", "plan"],
+    user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    return {"proposal": await c.extras["proposals"].latest(project_id, user, phase, kind)}
+
+
+@router.patch("/api/projects/{project_id}/agile/proposals/{proposal_id}")
+async def edit_proposal(
+    project_id: str, proposal_id: str, body: ProposalPatch,
+    user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    return await c.extras["proposals"].edit(project_id, user, proposal_id, body.payload, body.version)

@@ -57,3 +57,10 @@ async def project(pg):
     await pg.pool.execute(
         "INSERT INTO projects (id, name, created_by) VALUES ($1,'Proj',$2)", pid, uid)
     return pid, uid
+
+
+@pytest.fixture
+async def env(pg):
+    from .helpers import build_env
+
+    return await build_env(pg)

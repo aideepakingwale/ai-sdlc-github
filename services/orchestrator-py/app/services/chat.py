@@ -648,6 +648,8 @@ class ChatService:
         if stage.get("template") != 7:
             return {}
         return {
+            "agile_role": stage.get("agileRole"),
+            "iteration_id": stage.get("iterationId"),
             "custom_persona": stage.get("persona", "") or "",
             "custom_prompt_id": stage.get("promptId", "") or "",
             "custom_outputs": list(stage.get("outputs") or []),

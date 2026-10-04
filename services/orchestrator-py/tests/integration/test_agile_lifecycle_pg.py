@@ -5,71 +5,11 @@ import datetime as dt
 
 import pytest
 
-from app.agile.service import AgileService
 from app.domain.errors import SdlcError
-from app.domain.models import UserPublic
-from app.services.authz import AuthzService
-from app.services.gates import GateService
-from app.services.workflow import WorkflowService
 
-from ..conftest import FakeAudit, FakeDynamo
+from .helpers import _approve, _finish_project_stages, _stage
 
 pytestmark = pytest.mark.asyncio
-
-
-class Env:
-    pass
-
-
-async def _user(pg, role, name):
-    uid = f"u-{name}"
-    await pg.pool.execute(
-        "INSERT INTO users (id, email, display_name, role, password_hash) VALUES ($1,$2,$3,$4,'x') "
-        "ON CONFLICT (id) DO NOTHING", uid, f"{name}@t.local", name, role)
-    return UserPublic(id=uid, email=f"{name}@t.local", displayName=name, role=role)
-
-
-@pytest.fixture
-async def env(pg):
-    e = Env()
-    e.pg, e.dynamo, e.audit = pg, FakeDynamo(), FakeAudit()
-    e.pm = await _user(pg, "PROJECT_MANAGER", "pm")
-    e.po = await _user(pg, "PO", "po")
-    e.dev = await _user(pg, "DEV", "dev")
-    e.admin = await _user(pg, "SUPER_ADMIN", "admin")
-    e.pid = "proj-agile"
-    await pg.pool.execute("INSERT INTO projects (id, name, created_by) VALUES ($1,'Shop',$2)", e.pid, e.pm.id)
-    for u, role in ((e.po, "PO"), (e.dev, "DEV")):
-        await pg.add_member(project_id=e.pid, user_id=u.id, role=role, added_by=e.pm.id)
-    e.authz = AuthzService(pg)
-    e.wf = WorkflowService(pg, e.dynamo, e.audit)
-    e.agile = AgileService(pg, e.dynamo, e.wf, e.audit, e.authz)
-
-    async def regen(*_a):
-        return None
-
-    e.gates = GateService(pg, e.dynamo, e.audit, e.authz, e.wf, regen, None, e.agile)
-    await pg.pool.execute("UPDATE projects SET current_phase=1 WHERE id=$1", e.pid)
-    return e
-
-
-async def _stage(e, key_prefix):
-    wf = await e.wf.view(e.pid)
-    return next(s for s in wf["stages"] if s["key"].startswith(key_prefix))
-
-
-async def _approve(e, key, by=None):
-    """Drive one stage: generation done (PENDING_REVIEW) → approved through the REAL gate service."""
-    st = await _stage(e, key)
-    await e.dynamo.put_phase_state(project_id=e.pid, phase=st["seq"], status="PENDING_REVIEW",
-                                   reviewer_role=st["reviewerRole"])
-    return await e.gates.review(project_id=e.pid, phase=st["seq"], decision="APPROVE", comments=None,
-                                user=by or e.po)
-
-
-async def _finish_project_stages(e):
-    for key in ("vision", "runway"):
-        await _approve(e, key, by=e.admin)             # full gates: override path
 
 
 async def test_enable_scrum_replaces_the_workflow_and_creates_release_one(env):
