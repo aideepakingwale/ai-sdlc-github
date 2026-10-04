@@ -1112,6 +1112,13 @@ class ChatService:
         blocked_on = [by_key[d]["name"] for d in deps_keys
                       if (states.get(f"PHASE#{by_key[d]['seq']}") or {}).get("status") != "APPROVED" and d in by_key]
         prior_arts = [a for a in await self._db.list_artefacts(project_id) if a["phase"] < phase]
+        if stage.get("iterationId") or stage.get("releaseId"):
+            # Sprint/release stages see the foundation + their own sprint (the rest arrives as bounded project memory).
+            keep = {s["seq"] for s in wf["stages"] if s.get("scope", "project") == "project"}
+            keep |= {s["seq"] for s in wf["stages"]
+                     if (stage.get("iterationId") and s.get("iterationId") == stage["iterationId"])
+                     or (stage.get("releaseId") and s.get("releaseId") == stage["releaseId"])}
+            prior_arts = [a for a in prior_arts if a["phase"] in keep]
         formworks = await self._deps.formworks.list(project_id, user) if self._deps.formworks else []
         attachments = await self._db.list_attachments(project_id, phase)
         canon_applied = bool(await self._deps.canon.render_block(project_id, stage["template"])) if self._deps.canon else False

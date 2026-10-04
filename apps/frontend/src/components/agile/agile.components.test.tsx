@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as AgileApi from '../../api/agile';
 import type { AgileOverview, BacklogItem, Proposal } from '../../api/agile';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -14,7 +15,7 @@ const api = vi.hoisted(() => ({
     startSprint: vi.fn(), harden: vi.fn(), cancelSprint: vi.fn(), overview: vi.fn(), enable: vi.fn(), index: vi.fn(), updateSettings: vi.fn(),
   },
 }));
-vi.mock('../../api/agile', async (orig) => ({ ...(await orig<typeof import('../../api/agile')>()), agileApi: api.agileApi }));
+vi.mock('../../api/agile', async (orig) => ({ ...(await orig<typeof AgileApi>()), agileApi: api.agileApi }));
 
 import BacklogView from './BacklogView';
 import ProposalReview from './ProposalReview';
