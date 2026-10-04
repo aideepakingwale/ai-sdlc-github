@@ -457,3 +457,11 @@ class AgileRepo:
             if goal:
                 await conn.execute("UPDATE iterations SET goal=$2 WHERE id=$1 AND goal=''", iteration_id, goal)
             return {"assigned": assigned, "skipped": sorted(set(keys) - set(assigned))}
+
+    async def list_agile_project_ids(self) -> list[str]:
+        """Projects that use an Agile methodology AND have a Jira project key (the scheduled sync set)."""
+        assert self.pool
+        rows = await self.pool.fetch(
+            "SELECT a.project_id FROM project_agile a JOIN projects p ON p.id=a.project_id "
+            "WHERE COALESCE(p.jira_project_key,'') <> '' ORDER BY a.project_id")
+        return [r["project_id"] for r in rows]

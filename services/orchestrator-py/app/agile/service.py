@@ -412,13 +412,18 @@ class AgileLifecycle:
     """Glue between generation and approval: called by the chat service when a stage reaches PENDING_REVIEW,
     and when it prepares a sprint/release stage's context."""
 
-    def __init__(self, agile: AgileService, gates: Any, index: Any = None, db: Any = None) -> None:
-        self._agile, self._gates, self._index, self._db = agile, gates, index, db
+    def __init__(self, agile: AgileService, gates: Any, index: Any = None, db: Any = None, jira: Any = None) -> None:
+        self._agile, self._gates, self._index, self._db, self._jira = agile, gates, index, db, jira
 
     async def context_for(self, project_id: str, stage: dict[str, Any], context: list[Any]) -> tuple[list[Any], str]:
         """Bound what a sprint/release stage sees. Raw artifacts of EARLIER sprints are dropped from the window
         (they live in the database and the `.devmind` index); the stage instead gets the budgeted project-memory
         packet plus its own sprint scope. This is what keeps prompts a constant size however long the project runs."""
+        if self._jira is not None and stage.get("agileRole") in ("refine", "plan"):
+            try:                                   # start refinement/planning from the freshest Jira state
+                await self._jira.sync(project_id)
+            except Exception:  # noqa: BLE001 — Jira being unreachable must never block a ceremony
+                log.warning("pre-ceremony Jira sync skipped", exc_info=True)
         wf = await self._agile._workflow.view(project_id)
         keep = {s["seq"] for s in wf["stages"] if s.get("scope", "project") == "project"}
         if stage.get("iterationId"):

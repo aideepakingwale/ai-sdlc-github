@@ -235,3 +235,32 @@ async def edit_proposal(
     user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
 ) -> dict[str, Any]:
     return await c.extras["proposals"].edit(project_id, user, proposal_id, body.payload, body.version)
+
+
+# ------------------------------------------------------------------ Jira sync + project memory
+class JiraSyncBody(BaseModel):
+    full: bool = False
+
+
+@router.get("/api/projects/{project_id}/agile/jira")
+async def jira_status(
+    project_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    return await c.extras["jira"].status(project_id, user)
+
+
+@router.post("/api/projects/{project_id}/agile/jira/sync")
+async def jira_sync(
+    project_id: str, body: JiraSyncBody,
+    user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    return await c.extras["jira"].sync(project_id, user, full=body.full)
+
+
+@router.get("/api/projects/{project_id}/agile/index")
+async def index_status(
+    project_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    """State of the `.devmind/` project memory: tiers, unpublished changes, drift, specs."""
+    await c.authz.assert_project_access(project_id, user)
+    return await c.extras["index"].status(project_id)

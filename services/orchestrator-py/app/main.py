@@ -142,8 +142,12 @@ async def lifespan(app: FastAPI):
     proposals.index = index
     agent_deps.index = index
     register_index_hooks(agile, index, proposals)
+    from .agile.jira_sync import JiraSyncService
+
+    jira_sync = JiraSyncService(db, mcp, audit, agile, locks=redis_lock_factory(redis, timeout=300, blocking_timeout=30))
+    backlog.sync_hook = jira_sync.write_through            # DevMind edits flow to Jira (best-effort)
     gates = GateService(db, dynamo, audit, authz, workflow, regenerate, publisher, agile)
-    chat.lifecycle = AgileLifecycle(agile, gates, index, db)
+    chat.lifecycle = AgileLifecycle(agile, gates, index, db, jira_sync)
     flow = FlowService(db, dynamo, audit, authz, content, workflow, regenerate)
     monitor.start_polling()
 
@@ -156,7 +160,7 @@ async def lifespan(app: FastAPI):
     container.skills = SkillService(db, authz, agent_deps, workflow)
     container.workflow = workflow
     container.agile = agile
-    container.extras.update(backlog=backlog, proposals=proposals, index=index)
+    container.extras.update(backlog=backlog, proposals=proposals, index=index, jira=jira_sync)
     container.telemetry = telemetry
     container.extras["publisher"] = publisher
     container.canon, container.formworks = canon, formworks
@@ -201,8 +205,25 @@ async def lifespan(app: FastAPI):
     except Exception as err:  # table may not exist yet on a fresh DB pre-migrate
         log.warning("LLM settings mirror skipped: %s", err)
 
+    jira_task = None
+    if settings.JIRA_SYNC_INTERVAL_SECONDS > 0:
+        import asyncio
+
+        async def _jira_loop() -> None:
+            while True:
+                await asyncio.sleep(settings.JIRA_SYNC_INTERVAL_SECONDS)
+                try:
+                    await jira_sync.sync_all()
+                except Exception:  # noqa: BLE001
+                    log.warning("scheduled Jira sync tick failed", exc_info=True)
+
+        jira_task = asyncio.create_task(_jira_loop())
+        log.info("scheduled Jira sync every %ss", settings.JIRA_SYNC_INTERVAL_SECONDS)
+
     log.info("orchestrator (python/langgraph) ready on :%s", settings.ORCHESTRATOR_PORT)
     yield
+    if jira_task is not None:
+        jira_task.cancel()
 
     monitor.stop_polling()
     if container.gen_jobs is not None:

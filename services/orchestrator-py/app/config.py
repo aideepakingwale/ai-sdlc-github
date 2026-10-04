@@ -72,6 +72,8 @@ class Settings(BaseSettings):
     PUBLISH_ON_APPROVAL: bool = True
     # Base branch the .devmind index branch is cut from, and the PR target at release close.
     INDEX_DEFAULT_BRANCH: str = "main"
+    # Background Jira ⇄ backlog sync cadence for Agile projects with a Jira key (0 = only on demand / at sprint ceremonies).
+    JIRA_SYNC_INTERVAL_SECONDS: int = 0
 
     # Workflow engine (D-73 fork): v2 adds the data-driven custom phase type and
     # is a backward-compatible superset of v1; set v1 to roll back to the original.
