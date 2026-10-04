@@ -257,3 +257,54 @@ async def test_permissions_and_missing_configuration(jx):
     st = await e.sync.status(e.pid, e.dev)                                      # members can see the status
     assert st["enabled"] is False and "integrations" in st["reason"]
     assert await e.pg.list_agile_project_ids() == []
+
+
+async def test_watermark_never_advances_past_a_failed_issue(jx):
+    e = jx
+    e.jira.add("SHOP-1", "Story", "Good", ac=["a"])
+    e.jira.add("SHOP-2", "Story", "Flaky", ac=["a"])
+    e.jira.add("SHOP-3", "Story", "Later", ac=["a"])
+    real = e.sync._apply_issue
+
+    async def flaky(pid, issue, res):
+        if issue["key"] == "SHOP-2":
+            raise RuntimeError("transient db error")
+        return await real(pid, issue, res)
+    e.sync._apply_issue = flaky
+    res = await e.sync.sync(e.pid, e.po)
+    assert res["status"] == "partial" and res["created"] == 2
+    wm = dt.datetime.fromisoformat((await e.sync.status(e.pid, e.po))["watermark"])
+    assert wm < dt.datetime.fromisoformat(e.jira.issues["SHOP-2"]["updated"])          # re-reads SHOP-2 next time
+    e.sync._apply_issue = real
+    res = await e.sync.sync(e.pid, e.po)
+    assert res["created"] == 1 and "SHOP-2" in await items(e)
+
+
+async def test_unlinked_local_twin_is_adopted_instead_of_duplicated(jx):
+    e = jx
+    local = await e.backlog.create(e.pid, e.po, {"title": "Pay by  card", "estimate": 3})   # no AC → never pushed
+    e.jira.add("SHOP-9", "Story", "pay by card", ac=["accepted"], points=5)
+    res = await e.sync.sync(e.pid, e.po)
+    assert res["created"] == 0 and res["updated"] == 1
+    got = await items(e)
+    assert list(got) == ["SHOP-9"] and got["SHOP-9"]["key"] == local["key"] and got["SHOP-9"]["estimate"] == 5.0
+
+
+async def test_empty_jira_values_do_not_wipe_local_ones(jx):
+    e = jx
+    e.jira.add("SHOP-1", "Story", "S", ac=["a"], points=3)
+    await e.sync.sync(e.pid, e.po)
+    e.jira.touch("SHOP-1", acceptanceCriteria=[], storyPoints=None, summary="S2")
+    await e.sync.sync(e.pid, e.po)
+    got = (await items(e))["SHOP-1"]
+    assert got["title"] == "S2" and got["estimate"] == 3.0 and got["acceptanceCriteria"] == ["a"]
+
+
+async def test_concurrent_sync_and_create_never_duplicates(jx):
+    import asyncio
+    e = jx
+    epic = await e.backlog.create(e.pid, e.po, {"title": "Epic", "type": "epic"})
+    await asyncio.gather(e.sync.sync(e.pid, e.po), e.sync.sync(e.pid, e.po))
+    await e.sync.sync(e.pid, e.po)
+    keys = [i["title"] for i in (await e.backlog.list(e.pid, e.po))["items"]]
+    assert keys.count("Epic") == 1 and epic["key"]

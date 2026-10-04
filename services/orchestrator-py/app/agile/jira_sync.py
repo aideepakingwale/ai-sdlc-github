@@ -148,6 +148,7 @@ class JiraSyncService:
         mark: dt.datetime | None = None if full or not state else state["watermark"]
         since = (mark - OVERLAP).isoformat() if mark else None
         newest = mark
+        failed_ts: list[dt.datetime | None] = []           # `updated` of issues that failed to apply this run
         token: str | None = None
         epic_ids: dict[str, str] = {}                     # jira key -> backlog id, for epic links
         pending_links: list[tuple[str, str]] = []         # (backlog id, epic jira key) resolved after the pass
@@ -165,6 +166,7 @@ class JiraSyncService:
                         row = await self._apply_issue(project_id, issue, res)
                     except Exception as err:
                         res.errors.append(f"{issue.get('key')}: {str(err)[:160]}")
+                        failed_ts.append(parse_ts(issue.get("updated")))
                         continue
                     if row is not None:
                         if row["type"] == "epic":
@@ -178,6 +180,14 @@ class JiraSyncService:
                 if not token:
                     break
             await self._link_epics(project_id, epic_ids, pending_links)
+            if failed_ts:                                   # a failed issue must be re-read next run: never move past it
+                if any(t is None for t in failed_ts):
+                    newest = mark
+                else:
+                    cap = min(t for t in failed_ts if t is not None) - dt.timedelta(seconds=1)
+                    newest = cap if newest is None or cap < newest else newest
+                    if mark is not None and newest < mark:
+                        newest = mark
             res.watermark = newest.isoformat() if newest else None
             res.status = "partial" if res.errors else "ok"
         except Exception as err:
@@ -203,6 +213,14 @@ class JiraSyncService:
             f.pop("estimate", None)
         cat = issue.get("statusCategory", "unknown")
         if item is None:
+            item = await self._adoptable(project_id, typ, f["title"])
+            if item is not None:                           # a local item that was never pushed: link, don't duplicate
+                row = await self._db.update_backlog_item(
+                    project_id, item["id"], expected_version=None, jira_key=issue["key"], jira_updated=remote,
+                    jira_synced_at=dt.datetime.now(dt.UTC), **self._keep_local(item, f))
+                res.updated += 1
+                return row
+        if item is None:
             status = "done" if cat == "done" else ("refined" if f["acceptance_criteria"] or typ == "epic" else "new")
             row = await self._db.insert_backlog_item(
                 project_id=project_id, created_by=None, type=typ, status=status, jira_key=issue["key"],
@@ -214,7 +232,7 @@ class JiraSyncService:
             return item
         if changed_locally_since_sync(item):
             res.conflicts += 1                            # Jira wins for Jira-owned fields; audited via the run summary
-        fields = dict(f)
+        fields = self._keep_local(item, f)
         new_status = inbound_status(cat, item["status"])
         if new_status != item["status"] and item["status"] != "dropped":
             fields["status"] = new_status
@@ -225,6 +243,24 @@ class JiraSyncService:
             jira_synced_at=dt.datetime.now(dt.UTC), **fields)
         res.updated += 1
         return row
+
+    @staticmethod
+    def _keep_local(item: Any, f: dict[str, Any]) -> dict[str, Any]:
+        """Jira owns these fields, but an EMPTY Jira value must not wipe a value a person entered here."""
+        out = dict(f)
+        if not out.get("acceptance_criteria") and item["acceptance_criteria"]:
+            out.pop("acceptance_criteria", None)
+        if out.get("estimate") is None and item["estimate"] is not None:
+            out.pop("estimate", None)
+        return out
+
+    async def _adoptable(self, project_id: str, typ: str, title: str) -> Any | None:
+        want = " ".join(title.lower().split())
+        for r in await self._db.list_backlog(project_id):
+            if not r["jira_key"] and r["type"] == typ and r["status"] != "dropped" \
+                    and " ".join(r["title"].lower().split()) == want:
+                return r
+        return None
 
     async def _link_epics(self, project_id: str, epic_ids: dict[str, str], links: list[tuple[str, str]]) -> None:
         for backlog_id, epic_key in links:
@@ -247,6 +283,13 @@ class JiraSyncService:
             await self._push_create(project_id, key, row)
 
     async def _push_create(self, project_id: str, key: str, row: Any) -> None:
+        async with self._locks(project_id):               # a concurrent sync must not import our own create as a twin
+            fresh = await self._db.get_backlog_item(project_id, row["id"])
+            if fresh is None or fresh["jira_key"]:
+                return
+            await self._push_create_locked(project_id, key, fresh)
+
+    async def _push_create_locked(self, project_id: str, key: str, row: Any) -> None:
         if row["status"] == "dropped":
             return
         if row["type"] == "epic":
