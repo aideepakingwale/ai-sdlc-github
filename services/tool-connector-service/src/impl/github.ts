@@ -1,6 +1,10 @@
-import { createHash } from 'node:crypto';
 import type { Redis } from 'ioredis';
 import { SdlcError, type ToolsEnv } from '@sdlc/shared';
+import { githubClient, type GithubRequestInit } from './github-api.js';
+import { liveGitOps } from './github-live.js';
+import { mockRepoOps } from './github-mock.js';
+import type { CommitIndexInput } from './git-paths.js';
+import type { HttpPolicy } from './http.js';
 
 interface FileInput {
   path: string;
@@ -11,9 +15,11 @@ export interface GithubDeps {
   env: ToolsEnv;
   redis: Redis;
   live: boolean;
+  /** Test hook: override HTTP timeout/retry/sleep behaviour. */
+  http?: Partial<HttpPolicy>;
 }
 
-const MOCK_TTL = 604_800; // 7d
+const MOCK_TTL = 604_800; // 7d (CI run records)
 
 /**
  * GitHub connector. Live mode uses the REST v3 API (contents/refs/actions/pulls).
@@ -25,17 +31,19 @@ const MOCK_TTL = 604_800; // 7d
 export function githubImpl(deps: GithubDeps) {
   const { env, redis, live } = deps;
 
-  const gh = async (path: string, init?: RequestInit): Promise<Response> => {
-    const res = await fetch(`https://api.github.com${path}`, {
-      ...init,
-      headers: {
-        accept: 'application/vnd.github+json',
-        authorization: `Bearer ${env.GITHUB_TOKEN}`,
-        'x-github-api-version': '2022-11-28',
-        ...(init?.headers ?? {}),
-      },
-      signal: AbortSignal.timeout(30_000),
-    });
+  const client = githubClient(env, deps.http);
+  const liveGit = liveGitOps(client, env);
+  const mockRepo = mockRepoOps({ redis, repo: env.GITHUB_REPO ?? '' });
+
+  /**
+   * Legacy helper kept behaviour-compatible: returns the response for 2xx/404 and
+   * throws TOOL_ERROR otherwise. It now goes through the shared HTTP layer, which
+   * adds a timeout, rate-limit retries (429, or 403 with Retry-After) and retries
+   * of transient 5xx for GETs only - non-GET calls are never replayed after an
+   * ambiguous failure.
+   */
+  const gh = async (path: string, init?: GithubRequestInit) => {
+    const res = await client.raw(path, { ...init, idempotent: (init?.method ?? 'GET') === 'GET' });
     if (!res.ok && res.status !== 404) {
       throw new SdlcError('TOOL_ERROR', `GitHub ${res.status} ${path}: ${(await res.text()).slice(0, 300)}`);
     }
@@ -73,16 +81,10 @@ export function githubImpl(deps: GithubDeps) {
   }
 
   // ---------- mock world ----------
-  const branchKey = (b: string) => `mock:gh:branch:${b}`;
   const runKey = (r: string) => `mock:gh:run:${r}`;
 
   async function mockCommit(branch: string, files: FileInput[], message: string) {
-    const rawPrev = await redis.get(branchKey(branch));
-    const tree: Record<string, string> = rawPrev ? (JSON.parse(rawPrev) as Record<string, string>) : {};
-    for (const f of files) tree[f.path] = f.content;
-    await redis.set(branchKey(branch), JSON.stringify(tree), 'EX', MOCK_TTL);
-
-    const commitSha = createHash('sha256').update(`${branch}\0${message}\0${JSON.stringify(tree)}`).digest('hex').slice(0, 12);
+    const { commitSha, tree } = await mockRepo.commitFiles(branch, files, message);
     return { tree, commitSha };
   }
 
@@ -125,8 +127,7 @@ export function githubImpl(deps: GithubDeps) {
         });
         return { branch: input.branch, baseSha };
       }
-      const baseSha = createHash('sha256').update(input.from).digest('hex').slice(0, 12);
-      await redis.set(branchKey(input.branch), (await redis.get(branchKey(input.from))) ?? '{}', 'EX', MOCK_TTL);
+      const { baseSha } = await mockRepo.createBranch(input.branch, input.from);
       return { branch: input.branch, baseSha };
     },
 
@@ -220,6 +221,24 @@ export function githubImpl(deps: GithubDeps) {
       const n = await redis.incr('mock:gh:prseq');
       await redis.set(`mock:gh:pr:${n}`, JSON.stringify({ ...input, body: bodyWithChecklist }), 'EX', MOCK_TTL);
       return { prNumber: n, url: `https://github.mock.local/${env.GITHUB_REPO || 'org/repo'}/pull/${n}` };
+    },
+
+    // ---------- Git Data API tools ----------
+    async commitIndex(input: CommitIndexInput) {
+      return live ? liveGit.commitIndex(input) : mockRepo.commitIndex(input);
+    },
+
+    async readFiles(input: { ref: string; paths: string[] }) {
+      return { files: live ? await liveGit.readFiles(input.ref, input.paths) : await mockRepo.readFiles(input.ref, input.paths) };
+    },
+
+    async listTree(input: { ref: string; prefix: string; recursive: boolean }) {
+      return live ? liveGit.listTree(input.ref, input.prefix, input.recursive) : mockRepo.listTree(input.ref, input.prefix, input.recursive);
+    },
+
+    /** Idempotent PR creation: returns the open PR for head/base when one exists. */
+    async openPullRequest(input: { head: string; base: string; title: string; body: string; reuseExisting: boolean }) {
+      return live ? liveGit.openPullRequest(input) : mockRepo.openPullRequest(input);
     },
   };
 }

@@ -1,4 +1,5 @@
-import { GenerateRequestSchema, GenerateResponseSchema, SdlcError } from '@sdlc/shared';
+import { GenerateResponseSchema, SdlcError } from '@sdlc/shared';
+import type { GenerateRequestSchema } from '@sdlc/shared';
 import type { z } from 'zod';
 export { parseJsonLoose } from '@sdlc/shared';
 

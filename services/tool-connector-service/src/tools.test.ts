@@ -1,34 +1,10 @@
 import { pino } from 'pino';
 import { describe, expect, it } from 'vitest';
-import type { Redis } from 'ioredis';
 import { loadEnv, ToolsEnvSchema } from '@sdlc/shared';
 import { githubImpl } from './impl/github.js';
 import { lintOpenapi } from './impl/openapi-lint.js';
 import { createToolRuntime } from './registry.js';
-
-/** Minimal in-memory Redis fake covering get/set/incr used by the mock connectors. */
-function fakeRedis(): Redis {
-  const data = new Map<string, string>();
-  let seq = 0;
-  const impl = {
-    async get(key: string) {
-      return data.get(key) ?? null;
-    },
-    async set(key: string, value: string) {
-      data.set(key, value);
-      return 'OK';
-    },
-    async incr(key: string) {
-      const raw = key.includes('seq') ? ++seq : Number(data.get(key) ?? 0) + 1;
-      data.set(key, String(raw));
-      return raw;
-    },
-    async ping() {
-      return 'PONG';
-    },
-  };
-  return impl as unknown as Redis;
-}
+import { fakeRedis } from './testing/fake-redis.js';
 
 const env = loadEnv(ToolsEnvSchema, {
   TOOLS_MODE: 'mock',

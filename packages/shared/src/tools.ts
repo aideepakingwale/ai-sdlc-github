@@ -60,6 +60,97 @@ export const jiraCreateXrayTest = tool({
   output: z.object({ xrayTestKey: z.string(), url: z.string() }),
 });
 
+// ---------- Jira: read / search / update ----------
+/** Jira issue keys are interpolated into URLs, so they are validated strictly. */
+const jiraIssueKey = z
+  .string()
+  .regex(/^[A-Z][A-Z0-9_]*-\d+$/, 'must be a Jira issue key such as PROJ-123');
+const isoDateTime = z.string().datetime({ offset: true });
+
+export const JiraIssueSchema = z.object({
+  key: z.string(),
+  id: z.string(),
+  url: z.string(),
+  summary: z.string(),
+  /** Plain text (ADF flattened); the acceptance-criteria section is NOT included. */
+  description: z.string(),
+  type: z.string(),
+  status: z.string(),
+  statusCategory: z.enum(['todo', 'inprogress', 'done', 'unknown']),
+  priority: z.string().nullable(),
+  storyPoints: z.number().nullable(),
+  labels: z.array(z.string()),
+  epicKey: z.string().nullable(),
+  sprint: z.object({ id: z.number(), name: z.string(), state: z.string() }).nullable(),
+  assignee: z.string().nullable(),
+  created: z.string(),
+  updated: z.string(),
+  acceptanceCriteria: z.array(z.string()),
+});
+export type JiraIssue = z.infer<typeof JiraIssueSchema>;
+
+export const jiraSearchIssues = tool({
+  name: 'jira_search_issues',
+  description:
+    'Search Jira issues (ordered by updated ASC) by project, update time, issue types and an optional raw JQL filter. Token-paginated.',
+  input: z.object({
+    projectKey: z.string().min(1).max(64).optional(),
+    jql: z.string().min(1).max(2000).optional(),
+    updatedSince: isoDateTime.optional(),
+    issueTypes: z.array(z.string().min(1).max(64)).max(20).optional(),
+    maxResults: z.number().int().min(1).max(100).default(50),
+    nextPageToken: z.string().min(1).max(2048).optional(),
+  }),
+  output: z.object({
+    issues: z.array(JiraIssueSchema),
+    nextPageToken: z.string().nullable(),
+    total: z.number().int().nullable(),
+  }),
+});
+
+export const jiraGetIssue = tool({
+  name: 'jira_get_issue',
+  description: 'Fetch one Jira issue by key.',
+  input: z.object({ key: jiraIssueKey }),
+  output: z.object({ issue: JiraIssueSchema }),
+});
+
+export const jiraUpdateIssue = tool({
+  name: 'jira_update_issue',
+  description:
+    'Update summary/description/priority/story points/labels/acceptance criteria. With expectedUpdated, fails with a conflict (no write) if the issue changed since.',
+  input: z.object({
+    key: jiraIssueKey,
+    fields: z
+      .object({
+        summary: z.string().min(1).max(255).optional(),
+        description: z.string().max(30_000).optional(),
+        priority: z.string().min(1).max(50).optional(),
+        storyPoints: z.number().min(0).max(1000).optional(),
+        labels: z.array(z.string().regex(/^\S{1,255}$/, 'labels cannot contain whitespace')).max(50).optional(),
+        acceptanceCriteria: z.array(z.string().min(1).max(5000)).max(100).optional(),
+      })
+      .strict()
+      .refine((f) => Object.values(f).some((v) => v !== undefined), { message: 'at least one field is required' }),
+    expectedUpdated: isoDateTime.optional(),
+  }),
+  output: z.object({ issue: JiraIssueSchema }),
+});
+
+export const jiraTransitionIssue = tool({
+  name: 'jira_transition_issue',
+  description: 'Move an issue to the workflow status named toStatus (case-insensitive).',
+  input: z.object({ key: jiraIssueKey, toStatus: z.string().min(1).max(100) }),
+  output: z.object({ issue: JiraIssueSchema }),
+});
+
+export const jiraAddComment = tool({
+  name: 'jira_add_comment',
+  description: 'Add a plain-text comment to an issue. Returns { id, url }.',
+  input: z.object({ key: jiraIssueKey, body: z.string().min(1).max(30_000) }),
+  output: z.object({ id: z.string(), url: z.string() }),
+});
+
 // ---------- Confluence ----------
 export const confluencePublishPrd = tool({
   name: 'confluence_publish_prd',
@@ -190,6 +281,80 @@ export const githubCreatePullRequest = tool({
     checklist: z.array(z.string()).default([]),
   }),
   output: z.object({ prNumber: z.number(), url: z.string() }),
+});
+
+// ---------- GitHub: atomic index commits, reads, tree listing, idempotent PRs ----------
+export const githubCommitIndex = tool({
+  name: 'github_commit_index',
+  description:
+    'Atomically commit many files (and deletions) to a branch via the Git Data API. Creates the branch from baseBranch if missing; returns noop=true (no commit) when the resulting tree is unchanged.',
+  input: z.object({
+    branch: z.string().min(1).max(255),
+    baseBranch: z.string().min(1).max(255).default('main'),
+    files: z.array(z.object({ path: z.string().min(1).max(1024), content: z.string() })).max(500),
+    deletions: z.array(z.string().min(1).max(1024)).max(500).default([]),
+    message: z.string().min(1).max(10_000),
+    createBranchIfMissing: z.boolean().default(true),
+    expectedHeadSha: z
+      .string()
+      .regex(/^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/, 'must be a full commit sha')
+      .optional(),
+    requiredPrefix: z.string().min(1).max(256).default('.devmind/'),
+  }),
+  output: z.object({
+    commitSha: z.string(),
+    parentSha: z.string().nullable(),
+    treeSha: z.string(),
+    branch: z.string(),
+    htmlUrl: z.string(),
+    noop: z.boolean(),
+  }),
+});
+
+export const githubReadFiles = tool({
+  name: 'github_read_files',
+  description: 'Read files at a ref (branch, tag or commit sha) through the Git Data API. Missing files have null content.',
+  input: z.object({
+    ref: z.string().min(1).max(255),
+    paths: z.array(z.string().min(1).max(1024)).min(1).max(200),
+  }),
+  output: z.object({
+    files: z.array(z.object({ path: z.string(), content: z.string().nullable(), sha: z.string().nullable() })),
+  }),
+});
+
+export const githubListTree = tool({
+  name: 'github_list_tree',
+  description: 'List the repository tree at a ref, optionally restricted to a path prefix. Complete even for very large trees.',
+  input: z.object({
+    ref: z.string().min(1).max(255),
+    prefix: z.string().max(1024).default(''),
+    recursive: z.boolean().default(true),
+  }),
+  output: z.object({
+    entries: z.array(
+      z.object({
+        path: z.string(),
+        type: z.enum(['blob', 'tree']),
+        sha: z.string(),
+        size: z.number().int().nullable(),
+      }),
+    ),
+    truncated: z.boolean(),
+  }),
+});
+
+export const githubOpenPullRequest = tool({
+  name: 'github_open_pull_request',
+  description: 'Open a pull request, or return the already-open one for the same head/base when reuseExisting is true.',
+  input: z.object({
+    head: z.string().min(1).max(255),
+    base: z.string().min(1).max(255).default('main'),
+    title: z.string().min(1).max(256),
+    body: z.string().max(65_536).default(''),
+    reuseExisting: z.boolean().default(true),
+  }),
+  output: z.object({ number: z.number().int(), url: z.string(), created: z.boolean() }),
 });
 
 // ---------- Validation & persona tools ----------
@@ -407,6 +572,11 @@ export const TOOL_REGISTRY = {
   [jiraCreateEpic.name]: jiraCreateEpic,
   [jiraCreateStory.name]: jiraCreateStory,
   [jiraCreateXrayTest.name]: jiraCreateXrayTest,
+  [jiraSearchIssues.name]: jiraSearchIssues,
+  [jiraGetIssue.name]: jiraGetIssue,
+  [jiraUpdateIssue.name]: jiraUpdateIssue,
+  [jiraTransitionIssue.name]: jiraTransitionIssue,
+  [jiraAddComment.name]: jiraAddComment,
   [confluencePublishPrd.name]: confluencePublishPrd,
   [confluencePublishHld.name]: confluencePublishHld,
   [confluencePublishLld.name]: confluencePublishLld,
@@ -419,6 +589,10 @@ export const TOOL_REGISTRY = {
   [githubCommitFix.name]: githubCommitFix,
   [githubPollRunStatus.name]: githubPollRunStatus,
   [githubCreatePullRequest.name]: githubCreatePullRequest,
+  [githubCommitIndex.name]: githubCommitIndex,
+  [githubReadFiles.name]: githubReadFiles,
+  [githubListTree.name]: githubListTree,
+  [githubOpenPullRequest.name]: githubOpenPullRequest,
   [spectralLintOpenapi.name]: spectralLintOpenapi,
   [amazonqGenerateCloudcraft.name]: amazonqGenerateCloudcraft,
   [amazonqAnalyseFailure.name]: amazonqAnalyseFailure,

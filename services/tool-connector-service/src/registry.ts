@@ -3,6 +3,7 @@ import type { Logger } from 'pino';
 import { getTool, SdlcError, toSdlcError, type ToolsEnv } from '@sdlc/shared';
 import { ToolCache } from './cache.js';
 import { atlassianImpl } from './impl/atlassian.js';
+import type { HttpPolicy } from './impl/http.js';
 import { githubImpl } from './impl/github.js';
 import { lintOpenapi } from './impl/openapi-lint.js';
 import { personaImpl } from './impl/personas.js';
@@ -18,7 +19,7 @@ export interface ToolRuntime {
  * live/mock selection (TOOLS_MODE=auto|mock|live), zod input/output
  * validation on both edges, and a 24h cache for cacheable deterministic tools.
  */
-export function createToolRuntime(env: ToolsEnv, redis: Redis, log: Logger): ToolRuntime {
+export function createToolRuntime(env: ToolsEnv, redis: Redis, log: Logger, opts: { http?: Partial<HttpPolicy> } = {}): ToolRuntime {
   const jiraCreds = Boolean(env.JIRA_BASE_URL && env.JIRA_EMAIL && env.JIRA_API_TOKEN);
   const confluenceCreds = Boolean(env.CONFLUENCE_BASE_URL && env.JIRA_EMAIL && env.JIRA_API_TOKEN);
   const githubCreds = Boolean(env.GITHUB_TOKEN && env.GITHUB_REPO);
@@ -39,9 +40,9 @@ export function createToolRuntime(env: ToolsEnv, redis: Redis, log: Logger): Too
     aws: decide(Boolean(env.TOOLS_AWS_S3_BUCKET), 'aws'),
   } as const;
 
-  const atlassian = atlassianImpl({ env, redis, live: modes.jira === 'live' });
+  const atlassian = atlassianImpl({ env, redis, live: modes.jira === 'live', ...(opts.http ? { http: opts.http } : {}) });
   const confluence = atlassianImpl({ env, redis, live: modes.confluence === 'live' });
-  const github = githubImpl({ env, redis, live: modes.github === 'live' });
+  const github = githubImpl({ env, redis, live: modes.github === 'live', ...(opts.http ? { http: opts.http } : {}) });
   const personas = personaImpl(env);
   const toolchain = sdlcToolchainImpl({ env, redis, awsLive: modes.aws === 'live' });
   const cache = new ToolCache(redis, env.TOOL_CACHE_TTL_SECONDS);
@@ -51,6 +52,11 @@ export function createToolRuntime(env: ToolsEnv, redis: Redis, log: Logger): Too
     jira_create_epic: (i) => atlassian.createEpic(i),
     jira_create_story: (i) => atlassian.createStory(i),
     jira_create_xray_test: (i) => atlassian.createXrayTest(i),
+    jira_search_issues: (i) => atlassian.searchIssues(i),
+    jira_get_issue: (i) => atlassian.getIssue(i),
+    jira_update_issue: (i) => atlassian.updateIssue(i),
+    jira_transition_issue: (i) => atlassian.transitionIssue(i),
+    jira_add_comment: (i) => atlassian.addComment(i),
     confluence_publish_prd: async (i: { title: string; content: string; jiraLinks: string[] }) =>
       confluence.publishPage({
         title: i.title,
@@ -84,6 +90,10 @@ export function createToolRuntime(env: ToolsEnv, redis: Redis, log: Logger): Too
     github_fetch_build_logs: (i) => github.fetchBuildLogs(i),
     github_poll_run_status: (i) => github.pollRunStatus(i),
     github_create_pull_request: (i) => github.createPullRequest(i),
+    github_commit_index: (i) => github.commitIndex(i),
+    github_read_files: (i) => github.readFiles(i),
+    github_list_tree: (i) => github.listTree(i),
+    github_open_pull_request: (i) => github.openPullRequest(i),
     spectral_lint_openapi: async (i: { openapiYaml: string }) => lintOpenapi(i.openapiYaml),
     amazonq_generate_cloudcraft: (i) => personas.generateCloudcraft(i),
     amazonq_analyse_failure: async (i: { rawLogText: string; failedStep: string }) => {

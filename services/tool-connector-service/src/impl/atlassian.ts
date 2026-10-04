@@ -2,11 +2,16 @@ import { createHash } from 'node:crypto';
 import type { Redis } from 'ioredis';
 import { SdlcError } from '@sdlc/shared';
 import type { ToolsEnv } from '@sdlc/shared';
+import type { HttpPolicy } from './http.js';
+import { liveJiraOps, mockJiraOps, type JiraIssueOps } from './jira.js';
 
 export interface AtlassianDeps {
   env: ToolsEnv;
   redis: Redis;
   live: boolean;
+  /** Test hooks: HTTP retry/timeout policy overrides and a wall clock for the mock. */
+  http?: Partial<HttpPolicy>;
+  now?: () => number;
 }
 
 /** Sequential mock issue/page counters persisted in Redis so keys look real. */
@@ -53,8 +58,19 @@ function projectKeyOf(supplied: string | undefined, fallback: string): string {
 export function atlassianImpl(deps: AtlassianDeps) {
   const { env, redis, live } = deps;
   const defaultKey = env.JIRA_PROJECT_KEY;
+  const opsDeps = { env, redis, ...(deps.http ? { http: deps.http } : {}), ...(deps.now ? { now: deps.now } : {}) };
+  const mockJira = mockJiraOps(opsDeps);
+  // Live reads/writes go to Jira's REST API; mock mode keeps issues in Redis.
+  const jira: JiraIssueOps = live ? liveJiraOps(opsDeps) : mockJira;
 
   return {
+    searchIssues: (input: Parameters<JiraIssueOps['search']>[0]) => jira.search(input),
+    getIssue: (input: { key: string }) => jira.get(input.key).then((issue) => ({ issue })),
+    updateIssue: (input: { key: string; fields: Parameters<JiraIssueOps['update']>[1]; expectedUpdated?: string }) =>
+      jira.update(input.key, input.fields, input.expectedUpdated).then((issue) => ({ issue })),
+    transitionIssue: (input: { key: string; toStatus: string }) => jira.transition(input.key, input.toStatus).then((issue) => ({ issue })),
+    addComment: (input: { key: string; body: string }) => jira.comment(input.key, input.body),
+
     async createEpic(input: { title: string; description: string; priority: string; projectKey?: string }) {
       const projectKey = projectKeyOf(input.projectKey, defaultKey);
       if (live) {
@@ -69,6 +85,7 @@ export function atlassianImpl(deps: AtlassianDeps) {
       }
       const n = await nextSeq(redis, 'issue');
       const key = `${projectKey}-${n}`;
+      await mockJira.create({ key, id: String(10_000 + n), summary: input.title, description: input.description, type: 'Epic', priority: input.priority });
       return { epicId: String(10_000 + n), epicKey: key, url: `https://jira.mock.local/browse/${key}` };
     },
 
@@ -88,6 +105,17 @@ export function atlassianImpl(deps: AtlassianDeps) {
       }
       const n = await nextSeq(redis, 'issue');
       const key = `${projectKey}-${n}`;
+      await mockJira.create({
+        key,
+        id: String(10_000 + n),
+        summary: input.storyText.slice(0, 250),
+        description: input.storyText,
+        type: 'Story',
+        priority: 'Medium',
+        storyPoints: input.storyPoints ?? null,
+        epicKey: input.epicKey,
+        acceptanceCriteria: input.gherkinCriteria,
+      });
       return { storyId: String(10_000 + n), storyKey: key, url: `https://jira.mock.local/browse/${key}` };
     },
 
@@ -107,6 +135,14 @@ export function atlassianImpl(deps: AtlassianDeps) {
       }
       const n = await nextSeq(redis, 'issue');
       const key = `${projectKey}-${n}`;
+      await mockJira.create({
+        key,
+        id: String(10_000 + n),
+        summary: input.title,
+        description: input.steps.map((s, i) => `Step ${i + 1}: ${s.action}\nExpected: ${s.expectedResult}`).join('\n\n'),
+        type: 'Test',
+        epicKey: null,
+      });
       return { xrayTestKey: key, url: `https://jira.mock.local/browse/${key}` };
     },
 

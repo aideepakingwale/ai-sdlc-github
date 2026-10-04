@@ -97,10 +97,25 @@ export const ToolsEnvSchema = z.object({
   JIRA_EMAIL: z.string().optional(),
   JIRA_API_TOKEN: z.string().optional(),
   JIRA_PROJECT_KEY: z.string().default('SDLC'),
+  /** Custom-field ids differ per Jira site; the defaults match Jira Cloud's usual layout. */
+  JIRA_STORY_POINTS_FIELD: z.string().regex(/^customfield_\d+$/, 'must look like customfield_12345').default('customfield_10016'),
+  JIRA_SPRINT_FIELD: z.string().regex(/^customfield_\d+$/, 'must look like customfield_12345').default('customfield_10020'),
+  /** Optional dedicated acceptance-criteria field; when unset AC lives in the description. */
+  JIRA_AC_FIELD: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.trim() !== '' ? v.trim() : undefined))
+    .pipe(z.string().regex(/^customfield_\d+$/, 'must look like customfield_12345').optional()),
+  /** Max retries (after the first attempt) for retryable Jira failures. */
+  JIRA_MAX_RETRIES: z.coerce.number().int().min(0).max(10).default(4),
   CONFLUENCE_BASE_URL: z.string().optional(),
   CONFLUENCE_SPACE_KEY: z.string().default('SDLC'),
   GITHUB_TOKEN: z.string().optional(),
   GITHUB_REPO: z.string().optional(),
+  /** Overridable so tests (and GitHub Enterprise Server) can point at another API root. */
+  GITHUB_API_URL: z.string().url().default('https://api.github.com'),
+  GITHUB_COMMIT_AUTHOR_NAME: z.string().min(1).default('DevMind'),
+  GITHUB_COMMIT_AUTHOR_EMAIL: z.string().min(3).default('devmind@users.noreply.github.com'),
   // D-36: opt-in switch for LIVE AWS tools (S3 store + Secrets Manager check);
   // unset = deterministic simulated engines. Auth via the AWS credential chain.
   TOOLS_AWS_S3_BUCKET: z.string().optional(),
