@@ -208,6 +208,7 @@ class AgileService:
     ) -> dict[str, Any]:
         await self.assert_can_run(project_id, user)
         cfg = await self._settings(project_id)
+        await self.reconcile(project_id)       # a stuck close must not block starting the next sprint
         goal = (goal or "").strip()
         if len(goal) > 240:
             raise SdlcError("VALIDATION_FAILED", "The sprint goal must be 240 characters or fewer")
@@ -227,6 +228,8 @@ class AgileService:
         if block is None:
             raise SdlcError("VALIDATION_FAILED", "The workflow has no iteration-scoped stages")
         starts = starts_on or dt.date.today()
+        if not dt.date(2000, 1, 1) <= starts <= dt.date(2100, 12, 31):
+            raise SdlcError("VALIDATION_FAILED", "startsOn must be a date between 2000 and 2100")
         ends = starts + dt.timedelta(days=int(cfg["sprint_days"]))
         status = "active" if cfg["methodology"] == "kanban" else "planned"
 
@@ -242,6 +245,8 @@ class AgileService:
                 starts_on=starts, ends_on=ends, slots_for=slots_for)
         except asyncpg.UniqueViolationError as err:
             raise SdlcError("GATE_CONFLICT", "A sprint is already open. Close it before starting the next one.") from err
+        except ValueError as err:
+            raise SdlcError("GATE_CONFLICT", f"Cannot start a sprint: {err}") from err
         wf = await self._workflow.view(project_id)
         entry = next((s for s in wf["stages"] if s.get("iterationLabel") == it["label"]
                       and s.get("baseKey") == block.entry), None)
@@ -267,7 +272,13 @@ class AgileService:
         if progressed:
             raise SdlcError("GATE_CONFLICT",
                             f"Sprint {it['label']} has started work ({', '.join(progressed)}) and cannot be cancelled")
-        await self._db.release_unfinished_items(iteration_id, to_status="ready")
+        items = await self._db.list_backlog(project_id, iteration_id=iteration_id)
+        started = [i["item_key"] for i in items if i["status"] in ("in_progress", "done")]
+        if started:
+            raise SdlcError("GATE_CONFLICT",
+                            f"Sprint {it['label']} already has started or finished items ({', '.join(started[:5])}); "
+                            "close it instead so that work is kept")
+        await self._db.detach_items_from_iteration(iteration_id)
         row = await self._db.update_iteration(iteration_id, status="cancelled", closed_at=dt.datetime.now(dt.UTC))
         self._audit.record(project_id=project_id, agent_role="Agile", event="sprint.cancelled",
                            human_reviewer=user.email, detail={"sprint": it["label"]})
@@ -277,9 +288,13 @@ class AgileService:
     async def start_release_hardening(self, project_id: str, user: UserPublic, release_id: str | None = None) -> dict[str, Any]:
         await self.assert_can_run(project_id, user)
         await self._settings(project_id)
+        await self.reconcile(project_id)
         releases = await self._db.list_releases(project_id)
         rel = next((r for r in releases if (r["id"] == release_id if release_id else r["status"] == "open")), None)
         if rel is None:
+            hardening = next((r for r in releases if r["status"] == "hardening"), None)
+            if release_id is None and hardening:
+                raise SdlcError("GATE_CONFLICT", f"Release {hardening['code']} is already in hardening")
             raise SdlcError("NOT_FOUND", "Release not found")
         if rel["status"] != "open":
             raise SdlcError("GATE_CONFLICT", f"Release {rel['code']} is already {rel['status']}")
@@ -316,19 +331,65 @@ class AgileService:
         await self._run_hooks(self._on_generated, project_id, phase, actor, "generated")
 
     async def on_stage_approved(self, project_id: str, phase: int, actor: str) -> None:
-        """A gate was approved. Idempotent: safe to call again (reconcile)."""
+        """A gate was approved. Idempotent: safe to call again (see `reconcile`). Each step has its own failure
+        boundary: a failing hook never prevents the lifecycle from advancing, and nothing here can undo the approval."""
         ctx = await self._ctx(project_id, phase, actor)
         if ctx is None:
             return
-        try:
-            for name in ctx.hook_names:
-                for fn in self._on_approved.get(name, []):
+        for name in ctx.hook_names:
+            for fn in self._on_approved.get(name, []):
+                try:
                     await fn(ctx)
+                except Exception as err:  # noqa: BLE001
+                    log.exception("agile approval hook failed project=%s phase=%s", project_id, phase)
+                    self._audit.record(project_id=project_id, phase=phase, agent_role="Agile", event="agile.hook_failed",
+                                       detail={"stage": ctx.stage["key"], "hook": name, "error": str(err)[:300]})
+        try:
             await self._advance_lifecycle(ctx)
-        except Exception as err:
-            log.exception("agile approval hook failed project=%s phase=%s", project_id, phase)
+        except Exception as err:  # noqa: BLE001
+            log.exception("agile lifecycle advance failed project=%s phase=%s", project_id, phase)
             self._audit.record(project_id=project_id, phase=phase, agent_role="Agile", event="agile.hook_failed",
-                               detail={"stage": ctx.stage["key"], "error": str(err)[:300]})
+                               detail={"stage": ctx.stage["key"], "hook": "lifecycle", "error": str(err)[:300]})
+
+    async def reconcile(self, project_id: str) -> int:
+        """Re-run the (idempotent) approval bookkeeping for every APPROVED stage of the open sprint and of a
+        hardening release. Repairs anything a crash or a transient failure left half-done: an unapplied proposal,
+        a planned sprint that should be active, a finished sprint that was never closed, a release left open.
+        Returns how many stages were revisited."""
+        if not await self._db.get_project_agile(project_id):
+            return 0
+        wf = await self._workflow.view(project_id)
+        states = {s["SK"]: s for s in await self._dynamo.list_phase_states(project_id)}
+        open_it = await self._db.get_open_iteration(project_id)
+        hardening = [r["id"] for r in await self._db.list_releases(project_id) if r["status"] == "hardening"]
+        n = 0
+        for st in wf["stages"]:
+            if (states.get(f"PHASE#{st['seq']}") or {}).get("status") != "APPROVED":
+                continue
+            mine = (open_it is not None and st.get("iterationId") == open_it["id"]) or st.get("releaseId") in hardening
+            if mine:
+                await self.on_stage_approved(project_id, st["seq"], "reconcile")
+                n += 1
+        return n
+
+    async def reconcile_all(self) -> int:
+        total = 0
+        for pid in await self._db.list_agile_project_ids(any_project=True):
+            try:
+                total += await self.reconcile(pid)
+            except Exception:  # noqa: BLE001
+                log.warning("reconcile failed project=%s", pid, exc_info=True)
+        return total
+
+    async def assert_stage_mutable(self, project_id: str, stage: dict[str, Any]) -> None:
+        """Stages of a closed or cancelled sprint are history: re-running them would rewrite what was delivered."""
+        iid = stage.get("iterationId")
+        if not iid:
+            return
+        it = await self._db.get_iteration(iid)
+        if it is not None and it["status"] in ("closed", "cancelled"):
+            raise SdlcError("GATE_CONFLICT",
+                            f"Sprint {it['label']} is {it['status']}; its stages are read-only history")
 
     async def _run_hooks(self, table: dict[str, list[Hook]], project_id: str, phase: int, actor: str, label: str) -> None:
         ctx = await self._ctx(project_id, phase, actor)
@@ -364,10 +425,10 @@ class AgileService:
         if it and role == "retro" and it["status"] in ("planned", "active"):
             await self.close_sprint(ctx.project_id, it["id"], ctx.actor)
         if rel and role == "release" and rel["status"] == "hardening":
-            await self._db.set_release_status(rel["id"], "closed")
-            nxt = await self._db.insert_release(project_id=ctx.project_id, name=f"Release {rel['number'] + 1}")
-            self._audit.record(project_id=ctx.project_id, agent_role="Agile", event="release.closed",
-                               detail={"release": rel["code"], "next": nxt["code"]})
+            nxt = await self._db.close_release_and_open_next(ctx.project_id, rel["id"])   # one transaction
+            if nxt is not None:
+                self._audit.record(project_id=ctx.project_id, agent_role="Agile", event="release.closed",
+                                   detail={"release": rel["code"], "next": nxt["code"]})
 
     async def close_sprint(self, project_id: str, iteration_id: str, actor: str) -> dict[str, Any]:
         """Idempotent. Done work stays; everything else returns to the backlog; velocity is recorded."""

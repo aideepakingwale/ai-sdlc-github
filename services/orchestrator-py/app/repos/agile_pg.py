@@ -67,16 +67,32 @@ class AgileRepo:
         assert self.pool
         return await self.pool.fetchrow("SELECT * FROM releases WHERE id=$1", release_id)
 
+    @staticmethod
+    async def _insert_release(conn: asyncpg.Connection, project_id: str, name: str, goal: str = "") -> asyncpg.Record:
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"rel:{project_id}")
+        n = await conn.fetchval("SELECT COALESCE(MAX(number),0)+1 FROM releases WHERE project_id=$1", project_id)
+        return await conn.fetchrow(
+            "INSERT INTO releases (id, project_id, number, code, name, goal) VALUES ($1,$2,$3,$4,$5,$6) "
+            "RETURNING *", _id(), project_id, n, f"R-{n:03d}", name, goal,
+        )
+
     async def insert_release(self, *, project_id: str, name: str, goal: str = "") -> asyncpg.Record:
         """Next release number for the project (allocated atomically)."""
         assert self.pool
         async with self.pool.acquire() as conn, conn.transaction():
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"rel:{project_id}")
-            n = await conn.fetchval("SELECT COALESCE(MAX(number),0)+1 FROM releases WHERE project_id=$1", project_id)
-            return await conn.fetchrow(
-                "INSERT INTO releases (id, project_id, number, code, name, goal) VALUES ($1,$2,$3,$4,$5,$6) "
-                "RETURNING *", _id(), project_id, n, f"R-{n:03d}", name, goal,
-            )
+            return await self._insert_release(conn, project_id, name, goal)
+
+    async def close_release_and_open_next(self, project_id: str, release_id: str) -> asyncpg.Record | None:
+        """Close a HARDENING release and open the next one in ONE transaction, so the project can never be left
+        without a live release, and a replay or a concurrent call opens at most one. None = nothing to do."""
+        assert self.pool
+        async with self.pool.acquire() as conn, conn.transaction():
+            closed = await conn.fetchrow(
+                "UPDATE releases SET status='closed', closed_at=now() WHERE id=$1 AND project_id=$2 AND status='hardening' "
+                "RETURNING *", release_id, project_id)
+            if closed is None:
+                return None
+            return await self._insert_release(conn, project_id, f"Release {closed['number'] + 1}")
 
     async def set_release_status(self, release_id: str, status: str) -> None:
         assert self.pool
@@ -114,6 +130,9 @@ class AgileRepo:
         assert self.pool
         async with self.pool.acquire() as conn, conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"iter:{project_id}")
+            rel_status = await conn.fetchval("SELECT status FROM releases WHERE id=$1 FOR UPDATE", release_id)
+            if rel_status != "open":          # a concurrent hardening may have started since the caller looked
+                raise ValueError(f"the release is {rel_status or 'missing'}, not open")
             n = await conn.fetchval("SELECT COALESCE(MAX(number),0)+1 FROM iterations WHERE project_id=$1", project_id)
             label = f"S-{n:03d}"
             existing = await conn.fetch("SELECT * FROM stage_instances WHERE project_id=$1", project_id)
@@ -293,6 +312,42 @@ class AgileRepo:
             "WHERE iteration_id=$1 AND status IN ('in_sprint','in_progress') RETURNING id", iteration_id, to_status)
         return [r["id"] for r in rows]
 
+    async def detach_items_from_iteration(self, iteration_id: str) -> int:
+        """Cancelled sprint: committed-but-unstarted items go back to ready; nothing stays attached."""
+        assert self.pool
+        r = await self.pool.execute(
+            "UPDATE backlog_items SET iteration_id=NULL, version=version+1, updated_at=now(), "
+            "status = CASE WHEN status IN ('in_sprint','in_progress') THEN 'ready' ELSE status END "
+            "WHERE iteration_id=$1", iteration_id)
+        return int(r.split()[-1])
+
+    async def add_item_to_sprint(
+        self, project_id: str, item_id: str, iteration_id: str, *, force: bool,
+    ) -> tuple[str, float, float]:
+        """Capacity check + assignment in ONE transaction (the sprint row is locked), so two concurrent adds cannot
+        both squeeze past the capacity. Returns (outcome, points_after, capacity); outcome is 'added', 'over'
+        (needs force), 'not_ready' or 'closed'."""
+        assert self.pool
+        async with self.pool.acquire() as conn, conn.transaction():
+            it = await conn.fetchrow("SELECT status, capacity FROM iterations WHERE id=$1 FOR UPDATE", iteration_id)
+            if it is None or it["status"] not in ("planned", "active"):
+                return "closed", 0.0, 0.0
+            item = await conn.fetchrow(
+                "SELECT status, estimate, iteration_id FROM backlog_items WHERE project_id=$1 AND id=$2 FOR UPDATE",
+                project_id, item_id)
+            cap = float(it["capacity"])
+            if item is None or item["status"] != "ready" or item["iteration_id"] is not None or item["estimate"] is None:
+                return "not_ready", 0.0, cap
+            current = float(await conn.fetchval(
+                "SELECT COALESCE(SUM(estimate),0) FROM backlog_items WHERE iteration_id=$1", iteration_id))
+            after = current + float(item["estimate"])
+            if after > cap and not force:
+                return "over", after, cap
+            await conn.execute(
+                "UPDATE backlog_items SET status='in_sprint', iteration_id=$2, version=version+1, updated_at=now() "
+                "WHERE id=$1", item_id, iteration_id)
+            return ("added" if after <= cap else "added_over"), after, cap
+
     async def count_backlog_by_status(self, project_id: str) -> dict[str, int]:
         assert self.pool
         rows = await self.pool.fetch(
@@ -447,6 +502,12 @@ class AgileRepo:
         """Commit the planned items to the sprint atomically; items that stopped being 'ready' are skipped."""
         assert self.pool
         async with self.pool.acquire() as conn, conn.transaction():
+            status = await conn.fetchval("SELECT status FROM iterations WHERE id=$1 FOR UPDATE", iteration_id)
+            if status not in ("planned", "active"):
+                # A settled (closed/cancelled) sprint must never receive work, e.g. when its Plan stage is re-run.
+                await conn.execute("UPDATE agile_proposals SET status='superseded', decided_at=now() "
+                                   "WHERE id=$1 AND status='proposed'", proposal_id)
+                return {"assigned": [], "skipped": sorted(set(keys)), "reason": f"the sprint is {status or 'missing'}"}
             if not await self._claim_proposal(conn, proposal_id, actor_id):
                 return None
             rows = await conn.fetch(
@@ -458,9 +519,12 @@ class AgileRepo:
                 await conn.execute("UPDATE iterations SET goal=$2 WHERE id=$1 AND goal=''", iteration_id, goal)
             return {"assigned": assigned, "skipped": sorted(set(keys) - set(assigned))}
 
-    async def list_agile_project_ids(self) -> list[str]:
-        """Projects that use an Agile methodology AND have a Jira project key (the scheduled sync set)."""
+    async def list_agile_project_ids(self, *, any_project: bool = False) -> list[str]:
+        """Projects that use an Agile methodology AND have a Jira project key (the scheduled sync set), or with
+        `any_project=True` every Agile project (the reconcile set)."""
         assert self.pool
+        if any_project:
+            return [r["project_id"] for r in await self.pool.fetch("SELECT project_id FROM project_agile ORDER BY project_id")]
         rows = await self.pool.fetch(
             "SELECT a.project_id FROM project_agile a JOIN projects p ON p.id=a.project_id "
             "WHERE COALESCE(p.jira_project_key,'') <> '' ORDER BY a.project_id")

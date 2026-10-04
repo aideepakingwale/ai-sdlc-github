@@ -165,6 +165,7 @@ class BacklogService:
         if target not in STATUSES:
             raise SdlcError("VALIDATION_FAILED", f"unknown status '{target}'")
         row = await self._row(project_id, ref)
+        await self._assert_sprint_open(row)
         why = check_transition(row["status"], target)
         if why:
             raise SdlcError("GATE_CONFLICT", why)
@@ -175,11 +176,11 @@ class BacklogService:
             await self._assert_member(project_id, user)
         else:
             await self._assert_edit(project_id, user)
-        if target in ("ready", "in_sprint"):
+        if target in ("ready", "in_sprint") and row["status"] != "in_progress":
             problems = ready_problems(row)
             if problems:
                 raise SdlcError("VALIDATION_FAILED", f"{row['item_key']} is not ready: {'; '.join(problems)}")
-        if target == "in_sprint":
+        if target == "in_sprint" and row["status"] != "in_progress":
             raise SdlcError("GATE_CONFLICT", "Use 'add to sprint' to commit an item (it checks capacity)")
         if target == "in_progress":
             cfg = await self._db.get_project_agile(project_id)
@@ -200,6 +201,14 @@ class BacklogService:
                            human_reviewer=user.email, detail={"key": row["item_key"], "from": row["status"], "to": target})
         await self._after_write(project_id, new, "status")
         return item_view(new, await self._epic_key(project_id, new))
+
+    async def _assert_sprint_open(self, row: Any) -> None:
+        """Items of a closed or cancelled sprint are history; a done item cannot be quietly reopened."""
+        if row["iteration_id"]:
+            it = await self._db.get_iteration(row["iteration_id"])
+            if it is not None and it["status"] in ("closed", "cancelled"):
+                raise SdlcError("GATE_CONFLICT",
+                                f"{row['item_key']} belongs to {it['label']}, which is {it['status']}. Create a new item instead.")
 
     async def move(self, project_id: str, user: UserPublic, ref: str, *, before: str | None = None,
                    after: str | None = None) -> dict[str, Any]:
@@ -231,16 +240,14 @@ class BacklogService:
         problems = ready_problems(row)
         if problems:
             raise SdlcError("VALIDATION_FAILED", f"{row['item_key']} is not ready: {'; '.join(problems)}")
-        current = points(await self._db.list_backlog(project_id, iteration_id=it["id"]))
-        total = current + float(row["estimate"])
-        over = total > float(it["capacity"])
-        if over and not force:
+        outcome, total, cap = await self._db.add_item_to_sprint(project_id, row["id"], it["id"], force=force)
+        if outcome == "over":
             raise SdlcError("GATE_CONFLICT",
                             f"Adding {row['item_key']} ({float(row['estimate']):g} pts) would put the sprint at {total:g} of "
-                            f"{float(it['capacity']):g} points. Confirm to overcommit.")
-        n = await self._db.assign_items_to_iteration(project_id, [row["id"]], it["id"], "in_sprint")
-        if not n:
-            raise SdlcError("GATE_CONFLICT", "The item could not be added")
+                            f"{cap:g} points. Confirm to overcommit.")
+        if outcome in ("closed", "not_ready"):
+            raise SdlcError("GATE_CONFLICT", "The item could not be added (it changed, or the sprint is no longer open)")
+        over = outcome == "added_over"
         self._audit.record(project_id=project_id, agent_role="Backlog", event="sprint.item_added",
                            human_reviewer=user.email, detail={"key": row["item_key"], "sprint": it["label"],
                                                               "overcommit": over, "points": total})
