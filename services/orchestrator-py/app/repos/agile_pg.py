@@ -17,6 +17,7 @@ BACKLOG_FIELDS = {
     "components", "labels", "iteration_id", "jira_key", "jira_updated", "jira_synced_at",
 }
 ITERATION_FIELDS = {"goal", "status", "capacity", "starts_on", "ends_on", "started_at", "closed_at", "summary"}
+RELEASE_FIELDS = {"name", "goal", "intake_rule", "use_pool", "setup"}
 AGILE_FIELDS = {"sprint_days", "default_capacity", "wip_limit", "index_strategy", "auto_min_score"}
 RANK_STEP = 1024.0
 
@@ -68,31 +69,56 @@ class AgileRepo:
         return await self.pool.fetchrow("SELECT * FROM releases WHERE id=$1", release_id)
 
     @staticmethod
-    async def _insert_release(conn: asyncpg.Connection, project_id: str, name: str, goal: str = "") -> asyncpg.Record:
+    async def _insert_release(
+        conn: asyncpg.Connection, project_id: str, name: str, goal: str = "", *, forked_from: str | None = None,
+        fork_baseline: dict[str, Any] | None = None, setup: dict[str, Any] | None = None,
+        intake_rule: str = "pool", use_pool: bool = True, created_by: str | None = None,
+    ) -> asyncpg.Record:
         await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"rel:{project_id}")
         n = await conn.fetchval("SELECT COALESCE(MAX(number),0)+1 FROM releases WHERE project_id=$1", project_id)
         return await conn.fetchrow(
-            "INSERT INTO releases (id, project_id, number, code, name, goal) VALUES ($1,$2,$3,$4,$5,$6) "
-            "RETURNING *", _id(), project_id, n, f"R-{n:03d}", name, goal,
+            "INSERT INTO releases (id, project_id, number, code, name, goal, forked_from, fork_baseline, setup, "
+            "intake_rule, use_pool, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *",
+            _id(), project_id, n, f"R-{n:03d}", name, goal, forked_from, fork_baseline or {}, setup or {},
+            intake_rule, use_pool, created_by,
         )
 
-    async def insert_release(self, *, project_id: str, name: str, goal: str = "") -> asyncpg.Record:
+    async def insert_release(self, *, project_id: str, name: str, goal: str = "", **kw: Any) -> asyncpg.Record:
         """Next release number for the project (allocated atomically)."""
         assert self.pool
         async with self.pool.acquire() as conn, conn.transaction():
-            return await self._insert_release(conn, project_id, name, goal)
+            return await self._insert_release(conn, project_id, name, goal, **kw)
 
-    async def close_release_and_open_next(self, project_id: str, release_id: str) -> asyncpg.Record | None:
-        """Close a HARDENING release and open the next one in ONE transaction, so the project can never be left
-        without a live release, and a replay or a concurrent call opens at most one. None = nothing to do."""
+    async def close_release_and_open_next(
+        self, project_id: str, release_id: str,
+    ) -> tuple[asyncpg.Record | None, asyncpg.Record | None]:
+        """Close a HARDENING release in ONE transaction. When no other release is live (open/hardening) the next
+        one is opened in the same transaction, so a project is never left without a live release; when a parallel
+        release is live, nothing is opened. A replay or a concurrent call closes at most once.
+        Returns (closed, opened); closed is None when there was nothing to do."""
         assert self.pool
         async with self.pool.acquire() as conn, conn.transaction():
             closed = await conn.fetchrow(
                 "UPDATE releases SET status='closed', closed_at=now() WHERE id=$1 AND project_id=$2 AND status='hardening' "
                 "RETURNING *", release_id, project_id)
             if closed is None:
-                return None
-            return await self._insert_release(conn, project_id, f"Release {closed['number'] + 1}")
+                return None, None
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"rel:{project_id}")
+            live = await conn.fetchval(
+                "SELECT COUNT(*) FROM releases WHERE project_id=$1 AND status IN ('open','hardening')", project_id)
+            if live:
+                return closed, None
+            return closed, await self._insert_release(conn, project_id, f"Release {closed['number'] + 1}")
+
+    async def update_release(self, release_id: str, **fields: Any) -> asyncpg.Record | None:
+        assert self.pool
+        bad = set(fields) - RELEASE_FIELDS
+        if bad:
+            raise ValueError(f"not updatable: {sorted(bad)}")
+        if not fields:
+            return await self.get_release(release_id)
+        sets = ", ".join(f"{k}=${i + 2}" for i, k in enumerate(fields))
+        return await self.pool.fetchrow(f"UPDATE releases SET {sets} WHERE id=$1 RETURNING *", release_id, *fields.values())
 
     async def set_release_status(self, release_id: str, status: str) -> None:
         assert self.pool
@@ -110,10 +136,22 @@ class AgileRepo:
         assert self.pool
         return await self.pool.fetchrow("SELECT * FROM iterations WHERE id=$1", iteration_id)
 
-    async def get_open_iteration(self, project_id: str) -> asyncpg.Record | None:
+    async def get_open_iteration(self, project_id: str, release_id: str | None = None) -> asyncpg.Record | None:
+        """The open (planned/active) sprint of a release. Without a release: the project's only open sprint, or the
+        earliest one when several releases run in parallel."""
         assert self.pool
+        if release_id:
+            return await self.pool.fetchrow(
+                "SELECT * FROM iterations WHERE project_id=$1 AND release_id=$2 AND status IN ('planned','active')",
+                project_id, release_id)
         return await self.pool.fetchrow(
-            "SELECT * FROM iterations WHERE project_id=$1 AND status IN ('planned','active')", project_id)
+            "SELECT * FROM iterations WHERE project_id=$1 AND status IN ('planned','active') ORDER BY number LIMIT 1",
+            project_id)
+
+    async def list_open_iterations(self, project_id: str) -> list[asyncpg.Record]:
+        assert self.pool
+        return await self.pool.fetch(
+            "SELECT * FROM iterations WHERE project_id=$1 AND status IN ('planned','active') ORDER BY number", project_id)
 
     async def list_stage_instances(self, project_id: str) -> list[asyncpg.Record]:
         assert self.pool

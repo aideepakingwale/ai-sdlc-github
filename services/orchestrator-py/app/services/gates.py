@@ -405,26 +405,37 @@ class GateService:
         """Parallel-group semantics (D-30): advance only when every stage gate
         in the current level is APPROVED; then move to the next level's first
         seq, or complete the project after the last level."""
-        levels: list[list[int]] = wf["levels"]
-        level_idx = next((i for i, seqs in enumerate(levels) if phase in seqs), None)
-        if level_idx is None:
+        # Releases run in parallel, so a stage only waits for (and unlocks) the stages of ITS OWN lane: the stages of
+        # the same release. Project-wide stages and waterfall projects have a single lane, which is the old behaviour.
+        by_seq = {s["seq"]: s for s in wf["stages"]}
+        me = by_seq.get(phase)
+        if me is None:
             return None
+        def lane_of(st: dict) -> Any:
+            return st.get("releaseId") or st.get("parentReleaseId")
+
+        lane = lane_of(me)
+        lane_stages = [s for s in wf["stages"] if lane_of(s) == lane]
+        by_level: dict[int, list[int]] = {}
+        for s in lane_stages:
+            by_level.setdefault(s["level"], []).append(s["seq"])
+        order = sorted(by_level)
+        level_idx = order.index(me["level"])
         states = {s["SK"]: s for s in await self._dynamo.list_phase_states(project_id)}
         level_done = all(
             (states.get(f"PHASE#{seq}") or {}).get("status") == "APPROVED"
-            for seq in levels[level_idx]
+            for seq in by_level[order[level_idx]]
         )
         if not level_done:
-            return None  # siblings still open — project stays at this level
-        if level_idx + 1 < len(levels):
-            next_seq = levels[level_idx + 1][0]
+            return None  # siblings still open — the lane stays at this level
+        if level_idx + 1 < len(order):
+            next_seqs = sorted(by_level[order[level_idx + 1]])
+            next_seq = next_seqs[0]
             await self._db.set_project_phase(project_id, next_seq, "ACTIVE")
             # D-53: gate approval is pull-based (nothing runs until a human
             # triggers it), so give the next stages' teams push-based awareness —
             # one durable notification per newly-ready stage, targeted at its team.
-            await self._notify_stages_ready(
-                project_id, [s for s in wf["stages"] if s["seq"] in levels[level_idx + 1]]
-            )
+            await self._notify_stages_ready(project_id, [by_seq[q] for q in next_seqs])
             return next_seq
         if wf.get("iterative"):
             # Iterative delivery has no "last stage": sprints keep coming. The project stays ACTIVE until

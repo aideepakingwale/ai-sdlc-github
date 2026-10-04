@@ -49,7 +49,7 @@ async def test_full_scrum_cycle_two_sprints_and_a_release(env):
     assert s1["label"] == "S-001" and s1["status"] == "planned" and s1["endsOn"] == "2026-01-19"
     with pytest.raises(SdlcError) as err:                                        # sprints are sequential
         await e.agile.start_sprint(e.pid, e.po)
-    assert "already open" in err.value.message
+    assert "already has an open sprint" in err.value.message
     wf = await e.wf.view(e.pid)
     sprint_keys = [s["key"] for s in wf["stages"] if s.get("iterationLabel") == "S-001"]
     assert sprint_keys == ["refine@S-001", "plan@S-001", "build@S-001", "review@S-001", "retro@S-001"]

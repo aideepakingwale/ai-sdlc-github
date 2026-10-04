@@ -165,7 +165,7 @@ async def test_closing_a_sprint_records_velocity_and_returns_unfinished_work(env
     again = await e.agile.close_sprint(e.pid, s["id"], "po@t.local")                  # idempotent
     assert again["summary"] == summary["summary"]
     ov = await e.agile.overview(e.pid, e.po)
-    assert ov["velocity"] == [{"sprint": "S-001", "points": 5.0, "completed": 1}] and ov["averageVelocity"] == 5.0
+    assert ov["velocity"] == [{"sprint": "S-001", "points": 5.0, "completed": 1, "release": "R-001"}] and ov["averageVelocity"] == 5.0
 
 
 # ------------------------------------------------------------------ agents + proposals through real gates

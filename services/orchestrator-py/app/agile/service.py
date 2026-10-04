@@ -153,7 +153,9 @@ class AgileService:
         return await self.overview(project_id, user)
 
     # ------------------------------------------------------------------ read model
-    async def overview(self, project_id: str, user: UserPublic) -> dict[str, Any]:
+    async def overview(self, project_id: str, user: UserPublic, release_id: str | None = None) -> dict[str, Any]:
+        """The read model. Releases run in parallel, so `currentRelease`/`currentIteration` describe the FOCUS release:
+        the one asked for, else the earliest live release that has an open sprint, else the earliest live one."""
         await self._authz.assert_project_access(project_id, user)
         cfg = await self._db.get_project_agile(project_id)
         manager = await self._is_manager(project_id, user)
@@ -162,10 +164,14 @@ class AgileService:
         releases = await self._db.list_releases(project_id)
         iterations = await self._db.list_iterations(project_id)
         counts = await self._db.count_backlog_by_status(project_id)
-        open_it = next((i for i in iterations if i["status"] in ("planned", "active")), None)
-        open_rel = next((r for r in releases if r["status"] in ("open", "hardening")), None)
+        open_by_release = {i["release_id"]: i for i in iterations if i["status"] in ("planned", "active")}
+        live = [r for r in releases if r["status"] in ("open", "hardening")]
+        focus = next((r for r in releases if r["id"] == release_id), None) if release_id else None
+        focus = focus or next((r for r in live if r["id"] in open_by_release), None) or (live[0] if live else None)
+        open_it = open_by_release.get(focus["id"]) if focus else None
+        by_id = {r["id"]: r for r in releases}
         velocity = [{"sprint": i["label"], "points": (i["summary"] or {}).get("velocity", 0),
-                     "completed": (i["summary"] or {}).get("completed", 0)}
+                     "completed": (i["summary"] or {}).get("completed", 0), "release": by_id[i["release_id"]]["code"]}
                     for i in iterations if i["status"] == "closed"]
         can_run = manager
         if not can_run:
@@ -178,10 +184,11 @@ class AgileService:
                 "wipLimit": cfg["wip_limit"], "indexStrategy": cfg["index_strategy"],
                 "autoMinScore": cfg["auto_min_score"],
             },
-            "releases": [self._release_view(r) for r in releases],
+            "releases": [self._release_view(r, by_id, open_by_release.get(r["id"])) for r in releases],
             "iterations": [self._iteration_view(i) for i in iterations],
             "currentIteration": self._iteration_view(open_it) if open_it else None,
-            "currentRelease": self._release_view(open_rel) if open_rel else None,
+            "currentRelease": self._release_view(focus, by_id, open_it) if focus else None,
+            "openIterations": [self._iteration_view(i) for i in open_by_release.values()],
             "backlog": counts,
             "velocity": velocity,
             "averageVelocity": round(sum(v["points"] for v in velocity[-3:]) / max(len(velocity[-3:]), 1), 1),
@@ -198,14 +205,18 @@ class AgileService:
         }
 
     @staticmethod
-    def _release_view(r: Any) -> dict[str, Any]:
+    def _release_view(r: Any, by_id: dict[str, Any] | None = None, open_it: Any = None) -> dict[str, Any]:
+        src = (by_id or {}).get(r["forked_from"]) if r["forked_from"] else None
         return {"id": r["id"], "number": r["number"], "code": r["code"], "name": r["name"],
-                "goal": r["goal"], "status": r["status"]}
+                "goal": r["goal"], "status": r["status"],
+                "forkedFrom": src["code"] if src else None, "forkedFromId": r["forked_from"],
+                "forkBaseline": r["fork_baseline"] or {}, "intakeRule": r["intake_rule"], "usePool": r["use_pool"],
+                "openIterationId": open_it["id"] if open_it else None}
 
     # ------------------------------------------------------------------ sprints
     async def start_sprint(
         self, project_id: str, user: UserPublic, *, goal: str = "", capacity: float | None = None,
-        starts_on: dt.date | None = None,
+        starts_on: dt.date | None = None, release_id: str | None = None,
     ) -> dict[str, Any]:
         await self.assert_can_run(project_id, user)
         cfg = await self._settings(project_id)
@@ -216,14 +227,7 @@ class AgileService:
         cap = float(cfg["default_capacity"] if capacity is None else capacity)
         if cap < 0:
             raise SdlcError("VALIDATION_FAILED", "capacity cannot be negative")
-        releases = await self._db.list_releases(project_id)
-        release = next((r for r in releases if r["status"] == "open"), None)
-        if release is None:
-            hardening = next((r for r in releases if r["status"] == "hardening"), None)
-            raise SdlcError(
-                "GATE_CONFLICT",
-                f"Release {hardening['code']} is in hardening; close it before starting another sprint"
-                if hardening else "There is no open release to add a sprint to")
+        release = await self._release_for_sprint(project_id, release_id)
         base = await self._base_view(project_id)
         block = iteration_block(base["stages"])
         if block is None:
@@ -245,7 +249,8 @@ class AgileService:
                 project_id=project_id, release_id=release["id"], goal=goal, capacity=cap, status=status,
                 starts_on=starts, ends_on=ends, slots_for=slots_for)
         except asyncpg.UniqueViolationError as err:
-            raise SdlcError("GATE_CONFLICT", "A sprint is already open. Close it before starting the next one.") from err
+            raise SdlcError("GATE_CONFLICT",
+                            f"Release {release['code']} already has an open sprint. Close it before starting the next one.") from err
         except ValueError as err:
             raise SdlcError("GATE_CONFLICT", f"Cannot start a sprint: {err}") from err
         wf = await self._workflow.view(project_id)
@@ -258,6 +263,27 @@ class AgileService:
             project_id=project_id, agent_role="Agile", event="sprint.started", human_reviewer=user.email,
             detail={"sprint": it["label"], "release": release["code"], "capacity": cap, "goal": goal})
         return self._iteration_view(it)
+
+    async def _release_for_sprint(self, project_id: str, release_id: str | None) -> Any:
+        """The release a new sprint belongs to: the one named, else the only open release."""
+        releases = await self._db.list_releases(project_id)
+        if release_id:
+            rel = next((r for r in releases if r["id"] == release_id), None)
+            if rel is None:
+                raise SdlcError("NOT_FOUND", "Release not found")
+            if rel["status"] != "open":
+                raise SdlcError("GATE_CONFLICT", f"Release {rel['code']} is {rel['status']}; sprints can only be added to an open release")
+            return rel
+        open_rels = [r for r in releases if r["status"] == "open"]
+        if len(open_rels) == 1:
+            return open_rels[0]
+        if not open_rels:
+            hardening = next((r for r in releases if r["status"] == "hardening"), None)
+            raise SdlcError(
+                "GATE_CONFLICT",
+                f"Release {hardening['code']} is in hardening; close it before starting another sprint"
+                if hardening else "There is no open release to add a sprint to")
+        raise SdlcError("VALIDATION_FAILED", "Several releases are open: say which release the sprint belongs to (releaseId)")
 
     async def cancel_sprint(self, project_id: str, user: UserPublic, iteration_id: str) -> dict[str, Any]:
         await self.assert_can_run(project_id, user)
@@ -291,7 +317,13 @@ class AgileService:
         await self._settings(project_id)
         await self.reconcile(project_id)
         releases = await self._db.list_releases(project_id)
-        rel = next((r for r in releases if (r["id"] == release_id if release_id else r["status"] == "open")), None)
+        if release_id is None:
+            open_rels = [r for r in releases if r["status"] == "open"]
+            if len(open_rels) > 1:
+                raise SdlcError("VALIDATION_FAILED", "Several releases are open: say which release to harden (releaseId)")
+            rel = open_rels[0] if open_rels else None
+        else:
+            rel = next((r for r in releases if r["id"] == release_id), None)
         if rel is None:
             hardening = next((r for r in releases if r["status"] == "hardening"), None)
             if release_id is None and hardening:
@@ -300,7 +332,7 @@ class AgileService:
         if rel["status"] != "open":
             raise SdlcError("GATE_CONFLICT", f"Release {rel['code']} is already {rel['status']}")
         iterations = await self._db.list_iterations(project_id)
-        if any(i["status"] in ("planned", "active") for i in iterations):
+        if any(i["release_id"] == rel["id"] and i["status"] in ("planned", "active") for i in iterations):
             raise SdlcError("GATE_CONFLICT", "Close the current sprint before starting release hardening")
         if not any(i["release_id"] == rel["id"] and i["status"] == "closed" for i in iterations):
             raise SdlcError("GATE_CONFLICT", f"Release {rel['code']} has no completed sprint yet")
@@ -361,13 +393,13 @@ class AgileService:
             return 0
         wf = await self._workflow.view(project_id)
         states = {s["SK"]: s for s in await self._dynamo.list_phase_states(project_id)}
-        open_it = await self._db.get_open_iteration(project_id)
+        open_its = {i["id"] for i in await self._db.list_open_iterations(project_id)}
         hardening = [r["id"] for r in await self._db.list_releases(project_id) if r["status"] == "hardening"]
         n = 0
         for st in wf["stages"]:
             if (states.get(f"PHASE#{st['seq']}") or {}).get("status") != "APPROVED":
                 continue
-            mine = (open_it is not None and st.get("iterationId") == open_it["id"]) or st.get("releaseId") in hardening
+            mine = st.get("iterationId") in open_its or st.get("releaseId") in hardening
             if mine:
                 await self.on_stage_approved(project_id, st["seq"], "reconcile")
                 n += 1
@@ -419,10 +451,10 @@ class AgileService:
         if it and role == "retro" and it["status"] in ("planned", "active"):
             await self.close_sprint(ctx.project_id, it["id"], ctx.actor)
         if rel and role == "release" and rel["status"] == "hardening":
-            nxt = await self._db.close_release_and_open_next(ctx.project_id, rel["id"])   # one transaction
-            if nxt is not None:
+            closed, nxt = await self._db.close_release_and_open_next(ctx.project_id, rel["id"])   # one transaction
+            if closed is not None:
                 self._audit.record(project_id=ctx.project_id, agent_role="Agile", event="release.closed",
-                                   detail={"release": rel["code"], "next": nxt["code"]})
+                                   detail={"release": rel["code"], "next": nxt["code"] if nxt else None})
 
     async def close_sprint(self, project_id: str, iteration_id: str, actor: str) -> dict[str, Any]:
         """Idempotent. Done work stays; everything else returns to the backlog; velocity is recorded."""

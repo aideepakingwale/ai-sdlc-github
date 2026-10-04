@@ -7,7 +7,8 @@ worth (scope "release") next to the one-off project stages. This module material
   and sign-offs work unchanged;
 * sprint 1 / release 1 reuse the base slot numbers (so numbering matches the template); later sprints and
   releases get fresh slots above everything allocated so far;
-* sprint N's entry stage depends on sprint N-1's closing stage, which makes sprints strictly sequential;
+* sprint N's entry stage depends on the previous sprint's closing stage IN THE SAME RELEASE, which makes the
+  sprints of one release strictly sequential while different releases run in parallel;
 * a release-scoped stage depends on the closing stage of the release's last sprint.
 
 Everything is deterministic: the same inputs always give the same expanded view.
@@ -125,9 +126,10 @@ def expand(
             out.append({**s, "baseKey": s["key"], "iteration": None, "iterationLabel": None, "release": None})
 
     sink_of: dict[str, str] = {}  # iteration id -> its closing stage's instance key
-    prev: IterationRef | None = None
+    prev_in_release: dict[str, IterationRef] = {}   # releases run in parallel: sprints are sequential WITHIN one
     for it in iters:
         rel = rel_by_id.get(it.release_id)
+        prev = prev_in_release.get(it.release_id)
         for s in sorted((x for x in base_stages if x.get("scope") == "iteration"), key=lambda x: x["seq"]):
             inst = inst_by.get((s["key"], it.id))
             if inst is None:
@@ -144,11 +146,11 @@ def expand(
             out.append({
                 **s, "key": inst.key, "baseKey": s["key"], "seq": inst.seq, "dependsOn": deps,
                 "name": f"{s['name']} · {it.label}", "iteration": it.number, "iterationLabel": it.label,
-                "iterationId": it.id, "release": rel.code if rel else None,
+                "iterationId": it.id, "release": rel.code if rel else None, "parentReleaseId": it.release_id,
             })
             if block and s["key"] == block.sink:
                 sink_of[it.id] = inst.key
-        prev = it
+        prev_in_release[it.release_id] = it
 
     for rel in sorted(releases, key=lambda r: r.number):
         last_it = max((i for i in iters if i.release_id == rel.id), key=lambda i: i.number, default=None)

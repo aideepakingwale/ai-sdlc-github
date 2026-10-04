@@ -36,7 +36,7 @@ async def pg():
     await db.connect()
     try:
         applied = await db.run_migrations(MIGRATIONS)
-        assert "0028_agile.sql" in applied
+        assert "0029_release_lineages.sql" in applied
         yield db
     finally:
         await db.close()
