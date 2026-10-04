@@ -277,12 +277,9 @@ class IndexService:
             "publishedCommit": m.publishedCommit,
             "unpublished": {"added": len(diff.added), "modified": len(diff.modified), "deleted": len(diff.deleted)},
             "drift": [{"path": d.path, "kind": d.kind} for d in drift][:20],
-            "specs": sorted(e.path.rsplit("/", 1)[-1][:-3] for e in m.files.values() if e.kind == "spec"),
+            "specs": sorted(f"{e.release}/{e.path.rsplit('/', 1)[-1][:-3]}" for e in m.files.values() if e.kind == "spec"),
             "strategy": await self._strategy(project_id),
         }
-
-    async def reader(self, project_id: str) -> IndexReader:
-        return IndexReader(self.workspace(project_id))
 
 
 __all__ = ["IndexService", "redis_lock_factory", "DEFAULT_DOD", "Tier"]

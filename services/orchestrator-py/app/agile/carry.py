@@ -162,7 +162,8 @@ class CarryService:
                                           if r["acceptance_criteria"] else ""]))[:2000]
             out.append(CarriedItem(
                 id=f"req:{r['item_key']}", kind="requirement", title=f"{r['item_key']} {r['title']}"[:200], text=body,
-                carriedFrom=CarriedFrom(release=code, path="backlog", ref=r["item_key"], hash=section_hash(r["title"] + body))))
+                carriedFrom=CarriedFrom(release=code, path="backlog/epic" if r["type"] == "epic" else "backlog/story",
+                                        ref=r["item_key"], hash=section_hash(r["title"] + body))))
         rel_idx = await self._index.reader(project_id).release(code)
         for d in (rel_idx.decisions if rel_idx else []):
             out.append(CarriedItem(

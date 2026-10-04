@@ -36,3 +36,8 @@ CREATE TABLE IF NOT EXISTS release_epics (
   mapped_at   timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS release_epics_release_idx ON release_epics (release_id);
+
+-- Project-admin policy for the start-release questionnaire: pre-filled answers and the questions whose answer is
+-- locked (always the default, whatever a person picks).
+ALTER TABLE project_agile ADD COLUMN IF NOT EXISTS release_defaults jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE project_agile ADD COLUMN IF NOT EXISTS release_locks    jsonb NOT NULL DEFAULT '[]'::jsonb;

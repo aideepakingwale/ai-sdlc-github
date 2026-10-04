@@ -163,7 +163,13 @@ async def lifespan(app: FastAPI):
     container.skills = SkillService(db, authz, agent_deps, workflow)
     container.workflow = workflow
     container.agile = agile
-    container.extras.update(backlog=backlog, proposals=proposals, index=index, jira=jira_sync)
+    from .agile.carry import CarryService
+    from .agile.release_setup import ReleaseSetupService
+
+    carry = CarryService(db, index, audit, llm, settings)
+    release_setup = ReleaseSetupService(db, audit, agile, backlog, carry, index)
+    container.extras.update(backlog=backlog, proposals=proposals, index=index, jira=jira_sync, carry=carry,
+                            release_setup=release_setup)
     container.telemetry = telemetry
     container.extras["publisher"] = publisher
     container.canon, container.formworks = canon, formworks

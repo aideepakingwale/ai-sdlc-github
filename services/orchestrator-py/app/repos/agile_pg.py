@@ -18,7 +18,8 @@ BACKLOG_FIELDS = {
 }
 ITERATION_FIELDS = {"goal", "status", "capacity", "starts_on", "ends_on", "started_at", "closed_at", "summary"}
 RELEASE_FIELDS = {"name", "goal", "intake_rule", "use_pool", "setup", "workflow"}
-AGILE_FIELDS = {"sprint_days", "default_capacity", "wip_limit", "index_strategy", "auto_min_score"}
+AGILE_FIELDS = {"sprint_days", "default_capacity", "wip_limit", "index_strategy", "auto_min_score",
+                "release_defaults", "release_locks"}
 RANK_STEP = 1024.0
 
 

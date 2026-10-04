@@ -31,6 +31,8 @@ class AgileSettingsRequest(BaseModel):
     clearWipLimit: bool = False
     indexStrategy: Literal["index-branch", "default-branch"] | None = None
     autoMinScore: int | None = Field(default=None, ge=0, le=100)
+    releaseDefaults: dict[str, Any] | None = None
+    releaseLocks: list[str] | None = Field(default=None, max_length=20)
 
 
 class StartSprintRequest(BaseModel):
@@ -48,6 +50,38 @@ class CreateReleaseRequest(BaseModel):
     stages: list[dict[str, Any]] | None = Field(default=None, max_length=30)
     intakeRule: Literal["pool", "epic"] = "pool"
     usePool: bool = True
+
+
+class ReleaseSetupRequest(BaseModel):
+    """Answers to the start-release questionnaire (see `agile/release_setup.question_list`)."""
+    name: str = Field(default="", max_length=120)
+    goal: str = Field(default="", max_length=400)
+    startFrom: Literal["blank", "fork"] | None = None
+    sourceRelease: str | None = None
+    carry: list[str] | None = Field(default=None, max_length=40)
+    unfinishedItems: Literal["none", "all", "selected"] | None = None
+    items: list[str] | None = Field(default=None, max_length=200)
+    doneItems: Literal["context", "none"] | None = None
+    stagePreset: str | None = None
+    stages: list[dict[str, Any]] | None = Field(default=None, max_length=30)
+    intakeRule: Literal["pool", "epic"] | None = None
+    epics: list[str] | None = Field(default=None, max_length=50)
+    adoptExistingEpicItems: bool | None = None
+    usePool: bool | None = None
+    jiraLabel: str | None = Field(default=None, max_length=40)
+    firstSprint: Literal["later", "now"] | None = None
+    resumeReleaseId: str | None = None
+
+
+class CarrySuggestRequest(BaseModel):
+    scopeText: str = Field(default="", max_length=4000)
+    components: list[str] = Field(default_factory=list, max_length=20)
+    limit: int = Field(default=15, ge=1, le=40)
+    useAi: bool = True
+
+
+class CarryExtendRequest(BaseModel):
+    items: list[str] = Field(min_length=1, max_length=40)
 
 
 class ReleaseStagesRequest(BaseModel):
@@ -92,6 +126,10 @@ async def agile_settings(
         changes["index_strategy"] = body.indexStrategy
     if body.autoMinScore is not None:
         changes["auto_min_score"] = body.autoMinScore
+    if body.releaseDefaults is not None:
+        changes["release_defaults"] = body.releaseDefaults
+    if body.releaseLocks is not None:
+        changes["release_locks"] = body.releaseLocks
     if not changes:
         raise SdlcError("VALIDATION_FAILED", "Nothing to change")
     return await c.agile.update_settings(project_id, user, changes)
@@ -378,3 +416,72 @@ async def unmap_epic(
 ) -> dict[str, Any]:
     await c.extras["backlog"].unmap_epic(project_id, user, epic)
     return {"ok": True}
+
+
+# ------------------------------------------------------------------ start-release questionnaire + carried context
+def _answers(body: ReleaseSetupRequest) -> dict[str, Any]:
+    return body.model_dump(exclude_none=True, exclude={"resumeReleaseId"})
+
+
+@router.get("/api/projects/{project_id}/agile/release-setup/questions")
+async def release_questions(
+    project_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    return await c.extras["release_setup"].questions(project_id, user)
+
+
+@router.post("/api/projects/{project_id}/agile/release-setup/preview")
+async def release_preview(
+    project_id: str, body: ReleaseSetupRequest,
+    user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    """Validate the answers and say exactly what starting the release would do. Changes nothing."""
+    return await c.extras["release_setup"].preview(project_id, user, _answers(body))
+
+
+@router.post("/api/projects/{project_id}/agile/release-setup/start")
+async def release_start(
+    project_id: str, body: ReleaseSetupRequest,
+    user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    return await c.extras["release_setup"].start(project_id, user, _answers(body), resume_release_id=body.resumeReleaseId)
+
+
+@router.post("/api/projects/{project_id}/agile/releases/{release_id}/carry/suggest")
+async def carry_suggest(
+    project_id: str, release_id: str, body: CarrySuggestRequest,
+    user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    """Suggest what to carry over from `release_id` (the source) for a new scope. Ranking only; a person decides."""
+    await c.agile.assert_can_run(project_id, user)
+    src = await c.db.get_release(release_id)
+    if not src or src["project_id"] != project_id:
+        raise SdlcError("NOT_FOUND", "Release not found")
+    return await c.extras["carry"].suggest(project_id, src, body.scopeText, components=body.components,
+                                           limit=body.limit, use_ai=body.useAi)
+
+
+@router.get("/api/projects/{project_id}/agile/releases/{release_id}/carry")
+async def carry_view(
+    project_id: str, release_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    """What a release carried over, and what has become modified / new / retired since (derived live)."""
+    await c.authz.assert_project_access(project_id, user)
+    rel = await c.db.get_release(release_id)
+    if not rel or rel["project_id"] != project_id:
+        raise SdlcError("NOT_FOUND", "Release not found")
+    return await c.extras["carry"].view(project_id, rel)
+
+
+@router.post("/api/projects/{project_id}/agile/releases/{release_id}/carry")
+async def carry_extend(
+    project_id: str, release_id: str, body: CarryExtendRequest,
+    user: UserPublic = Depends(current_user), c: Container = Depends(get_container),
+) -> dict[str, Any]:
+    """Add more of the source release's context to a forked release (audited; already carried entries are skipped)."""
+    await c.agile.assert_can_run(project_id, user)
+    rel = await c.db.get_release(release_id)
+    if not rel or rel["project_id"] != project_id or not rel["forked_from"]:
+        raise SdlcError("NOT_FOUND", "Release not found, or it was not forked from another release")
+    src = await c.db.get_release(rel["forked_from"])
+    return await c.extras["carry"].apply(project_id, rel, src, body.items, actor=user.email)

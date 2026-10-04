@@ -139,6 +139,12 @@ class AgileService:
                 if v not in ("index-branch", "default-branch"):
                     raise SdlcError("VALIDATION_FAILED", "indexStrategy must be 'index-branch' or 'default-branch'")
                 clean[k] = v
+            elif k == "release_defaults":
+                clean[k] = self._clean_release_defaults(v)
+            elif k == "release_locks":
+                if not isinstance(v, list) or any(not isinstance(q, str) for q in v):
+                    raise SdlcError("VALIDATION_FAILED", "releaseLocks must be a list of question ids")
+                clean[k] = sorted(set(v))
             elif k in allowed:
                 if v is None and k == "wip_limit":
                     clean[k] = None
@@ -149,10 +155,34 @@ class AgileService:
                 clean[k] = v
             else:
                 raise SdlcError("VALIDATION_FAILED", f"'{k}' cannot be changed")
+        if "release_locks" in clean or "release_defaults" in clean:
+            cur = await self._settings(project_id)
+            defaults = clean.get("release_defaults", cur["release_defaults"] or {})
+            locks = clean.get("release_locks", list(cur["release_locks"] or []))
+            missing = [q for q in locks if q not in defaults]
+            if missing:
+                raise SdlcError("VALIDATION_FAILED",
+                                f"A locked question needs a default answer: {', '.join(missing)}")
         await self._db.update_project_agile(project_id, **clean)
         self._audit.record(project_id=project_id, agent_role="Agile", event="agile.settings_updated",
                            human_reviewer=user.email, detail=clean)
         return await self.overview(project_id, user)
+
+    @staticmethod
+    def _clean_release_defaults(v: Any) -> dict[str, Any]:
+        """Pre-filled answers of the start-release questionnaire: only known, simple questions, each validated."""
+        from .release_setup import normalise, question_list, validate
+
+        if not isinstance(v, dict):
+            raise SdlcError("VALIDATION_FAILED", "releaseDefaults must be an object")
+        simple = {q["id"] for q in question_list() if q["type"] in ("choice", "bool", "text") and q["id"] not in ("name", "sourceRelease")}
+        bad = sorted(set(v) - simple)
+        if bad:
+            raise SdlcError("VALIDATION_FAILED", f"These questions cannot have a default: {', '.join(bad)}")
+        errors = [e for e in validate({**normalise({"name": "x", **v}, {}, [])}) if not e.startswith(("name", "sourceRelease"))]
+        if errors:
+            raise SdlcError("VALIDATION_FAILED", " | ".join(errors[:5]))
+        return dict(v)
 
     # ------------------------------------------------------------------ read model
     async def overview(self, project_id: str, user: UserPublic, release_id: str | None = None) -> dict[str, Any]:
@@ -185,6 +215,7 @@ class AgileService:
                 "sprintDays": cfg["sprint_days"], "defaultCapacity": float(cfg["default_capacity"]),
                 "wipLimit": cfg["wip_limit"], "indexStrategy": cfg["index_strategy"],
                 "autoMinScore": cfg["auto_min_score"],
+                "releaseDefaults": cfg["release_defaults"] or {}, "releaseLocks": list(cfg["release_locks"] or []),
             },
             "releases": [self._release_view(r, by_id, open_by_release.get(r["id"])) for r in releases],
             "iterations": [self._iteration_view(i) for i in iterations],

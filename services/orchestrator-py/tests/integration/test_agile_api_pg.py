@@ -35,8 +35,12 @@ async def client(env, tmp_path):
     content = FilesystemContentStore(str(tmp_path))
     index = IndexService(e.pg, content, e.audit, None, e.wf)
     jira = JiraSyncService(e.pg, FakeJira(), e.audit, e.agile)
+    from app.agile.carry import CarryService
+    from app.agile.release_setup import ReleaseSetupService
+    carry = CarryService(e.pg, index, e.audit)
     e.container = Container(settings=None, db=e.pg, authz=e.authz, agile=e.agile,
-                            extras={"backlog": e.backlog, "proposals": e.proposals, "index": index, "jira": jira})
+                            extras={"backlog": e.backlog, "proposals": e.proposals, "index": index, "jira": jira,
+                                    "carry": carry, "release_setup": ReleaseSetupService(e.pg, e.audit, e.agile, e.backlog, carry, index)})
     app.state.container = e.container
     app.include_router(agile_routes.router)
     e.who = {"user": e.pm}
@@ -170,3 +174,54 @@ async def test_reconcile_endpoint_and_out_of_range_start_date(client):
     assert r.status_code == 400 and r.json()["error"]["code"] == "VALIDATION_FAILED"
     e.who["user"] = e.stranger
     assert (await e.http.post(url(e, "/reconcile"))).status_code == 403
+
+
+async def test_release_questionnaire_over_http(client):
+    e = client
+    await e.http.post(url(e, "/enable"), json={"methodology": "scrum"})
+    q = await e.http.get(url(e, "/release-setup/questions"))
+    assert q.status_code == 200 and {x["id"] for x in q.json()["questions"]} >= {"name", "startFrom", "carry", "intakeRule"}
+    pre = await e.http.post(url(e, "/release-setup/preview"), json={"name": "Mobile", "stagePreset": "hotfix"})
+    assert pre.status_code == 200 and pre.json()["valid"] and any("Stage set" in s for s in pre.json()["steps"])
+    bad = await e.http.post(url(e, "/release-setup/start"), json={"name": "x", "stagePreset": "bogus"})
+    assert bad.status_code == 400 and bad.json()["error"]["code"] == "VALIDATION_FAILED"
+    junk = await e.http.post(url(e, "/release-setup/start"), json={"name": "x", "intakeRule": "fix-version"})
+    assert junk.status_code == 400
+    ok = await e.http.post(url(e, "/release-setup/start"), json={"name": "Mobile", "stagePreset": "hotfix", "usePool": False})
+    assert ok.status_code == 200 and ok.json()["release"]["code"] == "R-002" and ok.json()["release"]["usePool"] is False
+    presets = await e.http.get(url(e, "/stage-presets"))
+    assert {p["id"] for p in presets.json()["presets"]} >= {"inherit", "hotfix", "custom"}
+    ov = await e.http.get(url(e) + "?release=" + ok.json()["release"]["id"])
+    assert ov.json()["currentRelease"]["code"] == "R-002" and len(ov.json()["releases"]) == 2
+    rid = ok.json()["release"]["id"]
+    sp = await e.http.post(url(e, "/sprints"), json={})                        # two open releases: must say which
+    assert sp.status_code == 400
+    sp = await e.http.post(url(e, "/sprints"), json={"releaseId": rid})
+    assert sp.status_code == 200 and sp.json()["status"] == "active"           # hotfix set has no planning stage
+    e.who["user"] = e.dev
+    assert (await e.http.post(url(e, "/release-setup/preview"), json={"name": "x"})).status_code == 403
+    e.who["user"] = e.po
+
+
+async def test_release_scoping_endpoints_over_http(client):
+    e = client
+    await e.http.post(url(e, "/enable"), json={"methodology": "scrum", "wipLimit": None})
+    r2 = (await e.http.post(url(e, "/releases"), json={"name": "Second", "intakeRule": "epic"})).json()
+    r1 = (await e.http.get(url(e))).json()["releases"][0]
+    epic = (await e.http.post(url(e, "/backlog"), json={"type": "epic", "title": "Payments"})).json()
+    item = (await e.http.post(url(e, "/backlog"), json={"title": "Pay", "epicKey": epic["key"]})).json()
+    pool = await e.http.get(url(e, "/backlog?scope=pool"))
+    assert {i["key"] for i in pool.json()["items"]} == {epic["key"], item["key"]}
+    assert (await e.http.get(url(e, "/backlog?scope=release"))).status_code == 400            # needs a release
+    prev = await e.http.post(url(e, f"/releases/{r2['id']}/epics"), json={"epic": epic["key"], "preview": True})
+    assert prev.json()["poolItems"] == [item["key"]]
+    mapped = await e.http.post(url(e, f"/releases/{r2['id']}/epics"), json={"epic": epic["key"], "adoptExisting": True})
+    assert mapped.status_code == 200 and mapped.json()["adopted"] == [item["key"]]
+    assert (await e.http.get(url(e, f"/releases/{r2['id']}/epics"))).json()["epics"][0]["epicKey"] == epic["key"]
+    clash = await e.http.post(url(e, f"/releases/{r1['id']}/epics"), json={"epic": epic["key"]})
+    assert clash.status_code == 409                                                           # R-001 takes from the pool
+    claim = await e.http.post(url(e, f"/releases/{r1['id']}/claim"), json={"items": [item["key"]]})
+    assert claim.json() == {"claimed": [], "skipped": [item["key"]]}                          # already in R-002
+    moved = await e.http.post(url(e, f"/releases/{r2['id']}/move-unfinished"), json={"toRelease": r2["id"]})
+    assert moved.status_code == 400
+    assert (await e.http.delete(url(e, f"/epics/{epic['key']}/release"))).json() == {"ok": True}
