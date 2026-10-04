@@ -225,10 +225,12 @@ async def test_an_interrupted_start_resumes_without_repeating_steps(fk):
         calls["n"] += 1
         raise RuntimeError("database hiccup")
     e.backlog.move_unfinished = flaky
-    with pytest.raises(RuntimeError):
+    with pytest.raises(SdlcError) as err:
         await e.setup.start(e.pid, e.po, answers)
+    assert err.value.details["resumable"] and err.value.details["progress"].get("carry")
     e.backlog.move_unfinished = real
     rel = (await e.pg.list_releases(e.pid))[-1]
+    assert err.value.details["releaseId"] == rel["id"]
     assert rel["setup"]["progress"].get("carry") and not rel["setup"]["progress"].get("moved")
     assert "release.setup_incomplete" in e.audit.events
     done = await e.setup.start(e.pid, e.po, answers, resume_release_id=rel["id"])

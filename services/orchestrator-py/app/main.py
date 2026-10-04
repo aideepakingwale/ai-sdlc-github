@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -265,7 +266,10 @@ app = FastAPI(title="DevMind Orchestrator", lifespan=lifespan, docs_url="/api/do
 
 @app.exception_handler(SdlcError)
 async def sdlc_error_handler(_request: Request, err: SdlcError) -> JSONResponse:
-    return JSONResponse(status_code=err.http_status, content={"error": {"code": err.code, "message": err.message}})
+    body: dict[str, Any] = {"code": err.code, "message": err.message}
+    if err.details:
+        body["details"] = err.details     # additive: e.g. how to resume a part-way release setup
+    return JSONResponse(status_code=err.http_status, content={"error": body})
 
 
 @app.exception_handler(RequestValidationError)

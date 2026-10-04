@@ -1,10 +1,11 @@
 import type { StreamEvent } from './types';
 
-class ApiError extends Error {
+export class ApiError extends Error {
   constructor(
     readonly code: string,
     message: string,
     readonly status: number,
+    readonly details?: Record<string, unknown>,
   ) {
     super(message);
   }
@@ -20,8 +21,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: { code?: string; message?: string } } | null;
-    throw new ApiError(body?.error?.code ?? 'HTTP_ERROR', body?.error?.message ?? `Request failed (${res.status})`, res.status);
+    const body = (await res.json().catch(() => null)) as { error?: { code?: string; message?: string; details?: Record<string, unknown> } } | null;
+    throw new ApiError(body?.error?.code ?? 'HTTP_ERROR', body?.error?.message ?? `Request failed (${res.status})`, res.status, body?.error?.details);
   }
   return (await res.json()) as T;
 }

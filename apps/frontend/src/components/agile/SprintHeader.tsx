@@ -21,7 +21,7 @@ export default function SprintHeader({ projectId, overview, stages, onOpenStage 
   const items = useBacklog(projectId, it?.id);
   const committed = (items.data?.items ?? []).reduce((n, i) => n + (i.estimate ?? 0), 0);
   const meter = capacityMeter(committed, it?.capacity ?? 0);
-  const start = useAgileMutation(projectId, () => agileApi.startSprint(projectId, { goal, capacity: cap === '' ? undefined : cap }));
+  const start = useAgileMutation(projectId, () => agileApi.startSprint(projectId, { goal, capacity: cap === '' ? undefined : cap, releaseId: rel?.id }));
   const harden = useAgileMutation(projectId, () => agileApi.harden(projectId, rel!.id));
   const cancel = useAgileMutation(projectId, () => agileApi.cancelSprint(projectId, it!.id));
   const step = nextStep(overview, stages);

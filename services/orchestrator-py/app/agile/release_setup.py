@@ -271,10 +271,14 @@ class ReleaseSetupService:
             if a["firstSprint"] == "now" and not progress.get("sprint"):
                 await self._agile.start_sprint(project_id, user, release_id=rel["id"])
                 await done("sprint")
-        except Exception:
+        except Exception as err:
             self._audit.record(project_id=project_id, agent_role="Agile", event="release.setup_incomplete",
                                human_reviewer=user.email, detail={"release": rel["code"], "progress": progress})
-            raise
+            # The release exists and is part-way set up: tell the caller how to resume instead of leaving it guessing.
+            code = err.code if isinstance(err, SdlcError) else "INTERNAL"
+            msg = err.message if isinstance(err, SdlcError) else f"Starting the release stopped part-way: {str(err)[:200]}"
+            raise SdlcError(code, msg, {**(err.details if isinstance(err, SdlcError) else {}),
+                                        "releaseId": rel["id"], "progress": progress, "resumable": True}) from err
         setup["status"] = "complete"
         await self._db.update_release(rel["id"], setup=setup)
         self._audit.record(project_id=project_id, agent_role="Agile", event="release.setup_complete",

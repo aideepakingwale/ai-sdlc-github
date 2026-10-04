@@ -244,6 +244,8 @@ class AgileService:
                 "goal": r["goal"], "status": r["status"],
                 "forkedFrom": src["code"] if src else None, "forkedFromId": r["forked_from"],
                 "forkBaseline": r["fork_baseline"] or {}, "intakeRule": r["intake_rule"], "usePool": r["use_pool"],
+                "stagePreset": (r["workflow"] or {}).get("preset", "inherit") if r["workflow"] else "inherit",
+                "setupComplete": (r["setup"] or {}).get("status") == "complete" if r["setup"] else True,
                 "openIterationId": open_it["id"] if open_it else None}
 
     # ------------------------------------------------------------------ sprints

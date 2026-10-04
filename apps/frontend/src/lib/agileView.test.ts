@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FlowStage } from '../api/flow';
-import type { AgileOverview, BacklogItem, Iteration } from '../api/agile';
-import { applyFilter, capacityMeter, daysLeft, filterCounts, groupStages, nextStep } from './agileView';
+import type { AgileOverview, BacklogItem, Iteration, Release } from '../api/agile';
+import { applyFilter, capacityMeter, carryBudgetUsed, countByStatus, daysLeft, filterCounts, groupStages, nextStep, releaseTree, stepProblem, wizardSteps } from './agileView';
 
 const st = (o: Partial<FlowStage>): FlowStage => ({
   phase: 1, key: 'k', name: 'N', persona: 'p', template: 7, reviewerRole: 'PO', team: [], teamMembers: [], inputs: [], outputs: [],
@@ -94,5 +94,52 @@ describe('daysLeft', () => {
     expect(daysLeft('2026-03-10', new Date('2026-03-07T10:00:00'))).toBe(4);
     expect(daysLeft('2026-03-01', new Date('2026-03-07T10:00:00'))).toBeLessThanOrEqual(0);
     expect(daysLeft(null)).toBeNull();
+  });
+});
+
+
+describe('releases as a lineage', () => {
+  const rel = (o: Partial<Release>): Release => ({ id: 'r', number: 1, code: 'R-001', name: 'n', goal: '', status: 'open', ...o });
+  it('nests every fork under the release it came from, in creation order', () => {
+    const t = releaseTree([rel({ id: 'c', number: 3, code: 'R-003', forkedFromId: 'a' }), rel({ id: 'b', number: 2, code: 'R-002' }),
+      rel({ id: 'a', number: 1, code: 'R-001' }), rel({ id: 'd', number: 4, code: 'R-004', forkedFromId: 'c' })]);
+    expect(t.map((n) => [n.release.code, n.depth])).toEqual([['R-001', 0], ['R-003', 1], ['R-004', 2], ['R-002', 0]]);
+  });
+  it('treats a fork of an unknown release as a root', () => {
+    expect(releaseTree([rel({ id: 'x', forkedFromId: 'gone' })])[0]?.depth).toBe(0);
+  });
+  it('labels sprints with their release only when several releases run', () => {
+    const one = groupStages([st({ phase: 3, key: 'a@S-001', iterationLabel: 'S-001', iteration: 1, release: 'R-001' })]);
+    expect(one.find((g) => g.key === 'S-001')?.label).toBe('S-001');
+    const two = groupStages([st({ phase: 3, key: 'a@S-001', iterationLabel: 'S-001', iteration: 1, release: 'R-001' }),
+      st({ phase: 9, key: 'a@S-002', iterationLabel: 'S-002', iteration: 2, release: 'R-002' })]);
+    expect(two.map((g) => g.label)).toEqual(['S-001 · R-001', 'S-002 · R-002']);
+  });
+  it('counts a scoped list itself instead of using the project-wide numbers', () => {
+    expect(countByStatus([item({ status: 'ready' }), item({ status: 'ready' }), item({ status: 'done' })])).toEqual({ ready: 2, done: 1 });
+  });
+});
+
+describe('start-release wizard rules', () => {
+  const canFork = (id: string): boolean => id === 'closed';
+  it('only a fork has context and items to carry', () => {
+    expect(wizardSteps({ startFrom: 'blank' })).toEqual(['basics', 'source', 'stages', 'intake', 'review']);
+    expect(wizardSteps({ startFrom: 'fork' })).toEqual(['basics', 'source', 'carry', 'items', 'stages', 'intake', 'review']);
+  });
+  it('says why the person cannot go on', () => {
+    expect(stepProblem('basics', { name: '  ' }, canFork)).toMatch(/name/);
+    expect(stepProblem('basics', { name: 'x' }, canFork)).toBeNull();
+    expect(stepProblem('source', { startFrom: 'fork' }, canFork)).toMatch(/Choose/);
+    expect(stepProblem('source', { startFrom: 'fork', sourceRelease: 'open' }, canFork)).toMatch(/closed sprint/);
+    expect(stepProblem('source', { startFrom: 'fork', sourceRelease: 'closed' }, canFork)).toBeNull();
+    expect(stepProblem('items', { unfinishedItems: 'selected', items: [] }, canFork)).toMatch(/Pick at least one/);
+    expect(stepProblem('items', { unfinishedItems: 'all' }, canFork)).toBeNull();
+  });
+  it('stops a selection before it exceeds the carry budget', () => {
+    const cands = [{ id: 'a', kind: 'spec-section' as const, title: 'a', bytes: 600, tooLarge: false }, { id: 'b', kind: 'decision' as const, title: 'b', bytes: 600, tooLarge: false }];
+    expect(carryBudgetUsed(['a'], cands, { maxItems: 2, maxBytes: 1000 })).toMatchObject({ items: 1, bytes: 600, over: null });
+    expect(carryBudgetUsed(['a', 'b'], cands, { maxItems: 2, maxBytes: 1000 }).over).toMatch(/KB/);
+    expect(carryBudgetUsed(['a', 'b'], cands, { maxItems: 1, maxBytes: 5000 }).over).toMatch(/At most 1/);
+    expect(carryBudgetUsed(['ghost'], cands, { maxItems: 2, maxBytes: 1000 })).toMatchObject({ items: 0 });
   });
 });

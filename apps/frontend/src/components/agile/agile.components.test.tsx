@@ -13,6 +13,8 @@ const api = vi.hoisted(() => ({
     backlog: vi.fn(), proposal: vi.fn(), editProposal: vi.fn(), setStatus: vi.fn(), addToSprint: vi.fn(),
     removeFromSprint: vi.fn(), move: vi.fn(), createItem: vi.fn(), patchItem: vi.fn(), jira: vi.fn(), jiraSync: vi.fn(),
     startSprint: vi.fn(), harden: vi.fn(), cancelSprint: vi.fn(), overview: vi.fn(), enable: vi.fn(), index: vi.fn(), updateSettings: vi.fn(),
+    questions: vi.fn(), previewRelease: vi.fn(), startRelease: vi.fn(), suggestCarry: vi.fn(), carry: vi.fn(), extendCarry: vi.fn(),
+    claim: vi.fn(), releaseEpics: vi.fn(), mapEpic: vi.fn(), unmapEpic: vi.fn(), reconcile: vi.fn(),
   },
 }));
 vi.mock('../../api/agile', async (orig) => ({ ...(await orig<typeof AgileApi>()), agileApi: api.agileApi }));
@@ -80,7 +82,7 @@ describe('BacklogView', () => {
     await click(byText('button', /Ready/));
     await click(byText('button', 'Add to sprint'));
     expect(confirm).toHaveBeenCalledTimes(1);
-    expect(api.agileApi.addToSprint.mock.calls).toEqual([['p', 'DM-5', false], ['p', 'DM-5', true]]);
+    expect(api.agileApi.addToSprint.mock.calls).toEqual([['p', 'DM-5', false, 'i1'], ['p', 'DM-5', true, 'i1']]);
   });
 
   it('does not force the commitment when the person declines', async () => {

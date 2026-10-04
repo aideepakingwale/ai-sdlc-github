@@ -1,16 +1,33 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
 import { agileApi, type AgileOverview, type BacklogList } from '../../api/agile';
 
-export function useOverview(projectId: string) {
-  return useQuery({ queryKey: ['agile', projectId], queryFn: () => agileApi.overview(projectId), refetchInterval: 8_000, enabled: Boolean(projectId) });
+/** `release` = the release in focus (several run in parallel); omitted = the server picks the busiest one. */
+export function useOverview(projectId: string, release?: string | null) {
+  return useQuery({ queryKey: ['agile', projectId, release ?? 'auto'], queryFn: () => agileApi.overview(projectId, release ?? undefined), refetchInterval: 8_000, enabled: Boolean(projectId) });
 }
 
-export function useBacklog(projectId: string, iteration?: string) {
+export type BacklogScope = 'all' | 'pool' | 'release' | 'eligible';
+export function useBacklog(projectId: string, iteration?: string, scope?: { release?: string | null; scope: BacklogScope }) {
   return useQuery<BacklogList>({
-    queryKey: ['agile-backlog', projectId, iteration ?? 'all'],
-    queryFn: () => agileApi.backlog(projectId, iteration ? { iteration } : undefined),
+    queryKey: ['agile-backlog', projectId, iteration ?? 'all', scope?.scope ?? 'all', scope?.release ?? ''],
+    queryFn: () => agileApi.backlog(projectId, {
+      ...(iteration ? { iteration } : {}), ...(scope && scope.scope !== 'all' ? { scope: scope.scope, release: scope.release ?? undefined } : {}),
+    }),
     refetchInterval: 8_000,
   });
+}
+
+/** Remember which release the person was looking at (a per-viewer convenience; works without storage). */
+export function usePersistedRelease(projectId: string): [string | null, (id: string | null) => void] {
+  const key = `devmind:release:${projectId}`;
+  const read = (): string | null => { try { return window.localStorage.getItem(key); } catch { return null; } };
+  const [id, setId] = useState<string | null>(read);
+  const set = (v: string | null): void => {
+    setId(v);
+    try { if (v) window.localStorage.setItem(key, v); else window.localStorage.removeItem(key); } catch { /* storage unavailable */ }
+  };
+  return [id, set];
 }
 
 /** A mutation that refreshes every Agile view (and the pipeline) when it succeeds. */

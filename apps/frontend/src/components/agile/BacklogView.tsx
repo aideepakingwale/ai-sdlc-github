@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { agileApi, type AgileOverview, type BacklogItem } from '../../api/agile';
-import { applyFilter, FILTERS, filterCounts, STATUS_LABEL, STATUS_TONE, type BacklogFilter } from '../../lib/agileView';
+import { applyFilter, countByStatus, FILTERS, filterCounts, STATUS_LABEL, STATUS_TONE, type BacklogFilter } from '../../lib/agileView';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { Callout } from '../ui/Callout';
 import { Icon, type IconName } from '../ui/Icon';
 import JiraBar from './JiraBar';
-import { errorText, useAgileMutation, useBacklog } from './hooks';
+import { errorText, useAgileMutation, useBacklog, type BacklogScope } from './hooks';
 
 const TYPE_ICON: Record<string, IconName> = { epic: 'layers', story: 'file', bug: 'warning', task: 'tasks' };
 const SCALE = [0.5, 1, 2, 3, 5, 8, 13, 21];
@@ -16,18 +16,30 @@ export default function BacklogView({ projectId, overview }: { projectId: string
   const [query, setQuery] = useState('');
   const [title, setTitle] = useState('');
   const [open, setOpen] = useState<string | null>(null);
-  const list = useBacklog(projectId);
+  const rel = overview.currentRelease ?? null;
+  const [view, setView] = useState<'release' | 'pool' | 'all'>(rel ? 'release' : 'all');
+  const scope: BacklogScope = view === 'all' || !rel ? 'all' : view === 'pool' ? 'pool' : rel.usePool === false ? 'release' : 'eligible';
+  const list = useBacklog(projectId, undefined, { release: rel?.id, scope });
   const canEdit = overview.permissions.canRun;
   const sprintOpen = Boolean(overview.currentIteration);
-  const counts = filterCounts(overview.backlog);
+  const sprintId = overview.currentIteration?.id;
+  const counts = filterCounts(scope === 'all' ? overview.backlog : countByStatus(list.data?.items ?? []));
   const all = list.data?.items ?? [];
   const items = applyFilter(all, filter).filter((i) => !query || `${i.key} ${i.title}`.toLowerCase().includes(query.toLowerCase()));
-  const create = useAgileMutation(projectId, (t: string) => agileApi.createItem(projectId, { title: t }));
+  const create = useAgileMutation(projectId, (t: string) => agileApi.createItem(projectId, { title: t, ...(rel && view === 'release' ? { releaseId: rel.id } : {}) }));
   const act = useAgileMutation(projectId, (fn: () => Promise<unknown>) => fn());
 
   return (
     <div className="space-y-3 p-5">
       <JiraBar projectId={projectId} canSync={canEdit} />
+      {rel && (
+        <div className="flex flex-wrap items-center gap-1.5" role="tablist" aria-label="Backlog scope">
+          {([['release', `${rel.code} backlog`], ['pool', 'Shared pool'], ['all', 'Everything']] as const).map(([id, label]) => (
+            <button key={id} role="tab" aria-selected={view === id} onClick={() => setView(id)}
+              className={`rounded-lg border px-3 py-1 text-xs font-semibold ${view === id ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-slate-200 text-slate-600 hover:border-slate-300'}`}>{label}</button>))}
+          <span className="text-xs text-slate-400">{view === 'pool' ? 'Issues that belong to no release yet. Claim them into a release to plan them.'
+            : view === 'release' ? (rel.usePool === false ? 'Only this release\'s items.' : 'This release\'s items, plus the shared pool.') : 'Every item of the project.'}</span>
+        </div>)}
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Backlog filter">
           {FILTERS.map((f) => (
@@ -62,7 +74,7 @@ export default function BacklogView({ projectId, overview }: { projectId: string
         ) : (
           <ul className="divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200 bg-white">
             {items.map((i, n) => (
-              <Row key={i.id} item={i} canEdit={canEdit} sprintOpen={sprintOpen} isOpen={open === i.id} first={n === 0} last={n === items.length - 1}
+              <Row key={i.id} item={i} canEdit={canEdit} sprintOpen={sprintOpen} sprintId={sprintId} claimInto={rel && rel.status !== 'closed' ? rel.id : null} isOpen={open === i.id} first={n === 0} last={n === items.length - 1}
                 neighbours={{ prev: items[n - 1], next: items[n + 1] }}
                 onToggle={() => setOpen(open === i.id ? null : i.id)}
                 run={(fn) => act.mutate(fn)} projectId={projectId} />
@@ -73,8 +85,8 @@ export default function BacklogView({ projectId, overview }: { projectId: string
   );
 }
 
-function Row({ item: i, canEdit, sprintOpen, isOpen, first, last, neighbours, onToggle, run, projectId }: {
-  item: BacklogItem; canEdit: boolean; sprintOpen: boolean; isOpen: boolean; first: boolean; last: boolean;
+function Row({ item: i, canEdit, sprintOpen, sprintId, claimInto, isOpen, first, last, neighbours, onToggle, run, projectId }: {
+  item: BacklogItem; canEdit: boolean; sprintOpen: boolean; sprintId?: string; claimInto: string | null; isOpen: boolean; first: boolean; last: boolean;
   neighbours: { prev?: BacklogItem; next?: BacklogItem }; onToggle: () => void; run: (fn: () => Promise<unknown>) => void; projectId: string;
 }) {
   const movable = canEdit && ['new', 'refined', 'ready'].includes(i.status);
@@ -96,11 +108,12 @@ function Row({ item: i, canEdit, sprintOpen, isOpen, first, last, neighbours, on
             <span className="truncate text-sm font-medium text-slate-800">{i.title}</span>
             {i.epicKey && <Badge icon="layers" title="Epic">{i.epicKey}</Badge>}
             {i.jiraKey && <Badge tone="info" icon="external-link" title="Linked Jira issue">{i.jiraKey}</Badge>}
+            {i.releaseId === null && <Badge title="Not assigned to a release yet">Pool</Badge>}
           </div>
         </button>
         <Badge title="Story points">{i.estimate !== null ? `${i.estimate} pts` : 'no estimate'}</Badge>
         <Badge tone={STATUS_TONE[i.status]}>{STATUS_LABEL[i.status]}</Badge>
-        {canEdit && <Actions item={i} sprintOpen={sprintOpen} run={run} projectId={projectId} onEdit={onToggle} />}
+        {canEdit && <Actions item={i} sprintOpen={sprintOpen} sprintId={sprintId} claimInto={claimInto} run={run} projectId={projectId} onEdit={onToggle} />}
       </div>
       {i.problems.length > 0 && !isOpen && i.status !== 'new' && (
         <div className="ml-8 mt-1 flex items-start gap-1.5 text-xs text-amber-800"><Icon name="warning" size={13} className="mt-0.5 text-amber-600" />Not ready to plan: {i.problems.join('; ')}</div>
@@ -110,10 +123,12 @@ function Row({ item: i, canEdit, sprintOpen, isOpen, first, last, neighbours, on
   );
 }
 
-function Actions({ item: i, sprintOpen, run, projectId, onEdit }: {
-  item: BacklogItem; sprintOpen: boolean; run: (fn: () => Promise<unknown>) => void; projectId: string; onEdit: () => void;
+function Actions({ item: i, sprintOpen, sprintId, claimInto, run, projectId, onEdit }: {
+  item: BacklogItem; sprintOpen: boolean; sprintId?: string; claimInto: string | null; run: (fn: () => Promise<unknown>) => void; projectId: string; onEdit: () => void;
 }) {
   const ready = i.problems.length === 0;
+  const claim = i.releaseId === null && claimInto && !['done', 'dropped', 'in_sprint', 'in_progress'].includes(i.status)
+    ? <Button size="sm" variant="ghost" icon="gitbranch" title="Move this item from the shared pool into the release" onClick={() => run(() => agileApi.claim(projectId, claimInto, [i.key]))}>Claim</Button> : null;
   if (i.status === 'dropped') return <Button size="sm" variant="ghost" onClick={() => run(() => agileApi.setStatus(projectId, i.key, 'new', i.version))}>Restore</Button>;
   if (i.status === 'done') return null;
   if (i.status === 'in_sprint') return <Button size="sm" variant="ghost" onClick={() => run(() => agileApi.removeFromSprint(projectId, i.key))}>Remove</Button>;
@@ -122,11 +137,12 @@ function Actions({ item: i, sprintOpen, run, projectId, onEdit }: {
     return (
       <div className="flex gap-1">
         {sprintOpen ? <Button size="sm" variant="primary" icon="plus" onClick={() => {
-          run(() => agileApi.addToSprint(projectId, i.key, false).catch(async (e: Error) => {
-            if (/overcommit/i.test(e.message) && window.confirm(`${e.message}\n\nAdd it anyway?`)) return agileApi.addToSprint(projectId, i.key, true);
+          run(() => agileApi.addToSprint(projectId, i.key, false, sprintId).catch(async (e: Error) => {
+            if (/overcommit/i.test(e.message) && window.confirm(`${e.message}\n\nAdd it anyway?`)) return agileApi.addToSprint(projectId, i.key, true, sprintId);
             throw e;
           }));
         }}>Add to sprint</Button> : null}
+        {claim}
         <Button size="sm" variant="ghost" title="Drop from the backlog" onClick={() => run(() => agileApi.setStatus(projectId, i.key, 'dropped', i.version))}>Drop</Button>
       </div>
     );
@@ -135,6 +151,7 @@ function Actions({ item: i, sprintOpen, run, projectId, onEdit }: {
     <div className="flex gap-1">
       {ready ? <Button size="sm" variant="secondary" icon="check" onClick={() => run(() => agileApi.setStatus(projectId, i.key, 'ready', i.version))}>Mark ready</Button>
         : <Button size="sm" variant="warning" icon="pencil" onClick={onEdit} title={i.problems.join('; ')}>Fix to make ready</Button>}
+      {claim}
       <Button size="sm" variant="ghost" title="Drop from the backlog" onClick={() => run(() => agileApi.setStatus(projectId, i.key, 'dropped', i.version))}>Drop</Button>
     </div>
   );

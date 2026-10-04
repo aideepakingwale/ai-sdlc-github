@@ -1,6 +1,6 @@
 /** Pure view logic for the Agile screens — no React, no network, fully unit-tested. */
 import type { FlowStage } from '../api/flow';
-import type { AgileOverview, BacklogItem, ItemStatus, Iteration } from '../api/agile';
+import type { AgileOverview, BacklogItem, CarryCandidate, CarryKind, CarryState, ItemStatus, Iteration, Release, ReleaseAnswers } from '../api/agile';
 import type { Tone } from '../components/ui/Callout';
 
 export interface CapacityMeter { percent: number; tone: Tone; label: string; over: number }
@@ -36,6 +36,12 @@ export function applyFilter(items: BacklogItem[], filter: BacklogFilter): Backlo
   const f = FILTERS.find((x) => x.id === filter);
   return !f || !f.statuses ? items.filter((i) => filter === 'all' ? i.status !== 'dropped' : true) : items.filter((i) => f.statuses!.includes(i.status));
 }
+/** Status counts of a loaded list (when the list is scoped to a release, the project-wide counts would mislead). */
+export function countByStatus(items: BacklogItem[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const i of items) out[i.status] = (out[i.status] ?? 0) + 1;
+  return out;
+}
 export function filterCounts(counts: Record<string, number> | undefined): Record<BacklogFilter, number> {
   const c = counts ?? {};
   const sum = (...k: string[]) => k.reduce((n, s) => n + (c[s] ?? 0), 0);
@@ -53,13 +59,15 @@ export interface SprintGroup { key: string; label: string; status: string; stage
 /** The pipeline rail for an iterative project: one-off project stages, then each sprint, then releases. */
 export function groupStages(stages: FlowStage[], iterations: Iteration[] = []): SprintGroup[] {
   const groups: SprintGroup[] = [];
+  const multi = new Set(stages.filter((s) => s.iterationLabel && s.release).map((s) => s.release)).size > 1;
   const project = stages.filter(isFoundation);
   if (project.length) groups.push({ key: 'project', label: 'Foundation', status: 'project', stages: project });
   const byIter = new Map<string, FlowStage[]>();
   for (const s of stages) if (s.iterationLabel) byIter.set(s.iterationLabel, [...(byIter.get(s.iterationLabel) ?? []), s]);
   for (const [label, list] of [...byIter.entries()].sort((a, b) => (a[1][0]?.iteration ?? 0) - (b[1][0]?.iteration ?? 0))) {
     const it = iterations.find((i) => i.label === label);
-    groups.push({ key: label, label, status: it?.status ?? 'active', stages: list });
+    const rel = list[0]?.release;
+    groups.push({ key: label, label: multi && rel ? `${label} · ${rel}` : label, status: it?.status ?? 'active', stages: list });
   }
   const releases = new Map<string, FlowStage[]>();
   for (const s of stages) if (s.scope === 'release' && s.release) releases.set(s.release, [...(releases.get(s.release) ?? []), s]);
@@ -98,4 +106,62 @@ export function daysLeft(endsOn: string | null, today = new Date()): number | nu
   if (!endsOn) return null;
   const end = new Date(`${endsOn}T23:59:59`);
   return Math.ceil((end.getTime() - today.getTime()) / 86_400_000);
+}
+
+
+// ------------------------------------------------------------------ parallel releases
+export interface ReleaseNode { release: Release; depth: number }
+
+/** Releases ordered as a lineage: every fork sits under the release it was forked from (provenance only). */
+export function releaseTree(releases: Release[]): ReleaseNode[] {
+  const byId = new Map(releases.map((r) => [r.id, r]));
+  const kids = new Map<string, Release[]>();
+  const roots: Release[] = [];
+  for (const r of [...releases].sort((a, b) => a.number - b.number)) {
+    const parent = r.forkedFromId && byId.has(r.forkedFromId) ? r.forkedFromId : null;
+    if (parent) kids.set(parent, [...(kids.get(parent) ?? []), r]); else roots.push(r);
+  }
+  const out: ReleaseNode[] = [];
+  const walk = (r: Release, depth: number): void => { out.push({ release: r, depth }); for (const k of kids.get(r.id) ?? []) walk(k, depth + 1); };
+  roots.forEach((r) => walk(r, 0));
+  return out;
+}
+
+export const KIND_LABEL: Record<CarryKind, string> = {
+  'spec-section': 'Design', requirement: 'Requirement', decision: 'Decision', learning: 'Learning',
+};
+export const CARRY_STATE_LABEL: Record<CarryState, string> = {
+  carried: 'Carried as is', modified: 'Modified here', new: 'New here', retired: 'Retired',
+};
+export const CARRY_STATE_TONE: Record<CarryState, Tone> = { carried: 'neutral', modified: 'warning', new: 'success', retired: 'error' };
+
+/** How much of the carry budget a selection uses (so the wizard can stop before the server refuses). */
+export function carryBudgetUsed(selected: string[], candidates: CarryCandidate[], budget: { maxItems: number; maxBytes: number }): { items: number; bytes: number; over: string | null } {
+  const by = new Map(candidates.map((c) => [c.id, c]));
+  const chosen = selected.map((id) => by.get(id)).filter((c): c is CarryCandidate => Boolean(c));
+  const bytes = chosen.reduce((n, c) => n + c.bytes, 0);
+  const over = chosen.length > budget.maxItems ? `At most ${budget.maxItems} entries can be carried`
+    : bytes > budget.maxBytes ? `The carried text may be at most ${Math.round(budget.maxBytes / 1000)} KB` : null;
+  return { items: chosen.length, bytes, over };
+}
+
+export type WizardStepId = 'basics' | 'source' | 'carry' | 'items' | 'stages' | 'intake' | 'review';
+export const WIZARD_LABEL: Record<WizardStepId, string> = {
+  basics: 'Basics', source: 'Start from', carry: 'Context', items: 'Backlog', stages: 'Stages', intake: 'Jira & pool', review: 'Review',
+};
+/** The steps that apply to these answers: only a fork has a source release, context and items to move. */
+export function wizardSteps(a: ReleaseAnswers): WizardStepId[] {
+  return a.startFrom === 'fork' ? ['basics', 'source', 'carry', 'items', 'stages', 'intake', 'review'] : ['basics', 'source', 'stages', 'intake', 'review'];
+}
+/** Why the person cannot go on from this step yet (null = they can). */
+export function stepProblem(step: WizardStepId, a: ReleaseAnswers, canFork: (id: string) => boolean): string | null {
+  switch (step) {
+    case 'basics': return (a.name ?? '').trim() ? null : 'Give the release a name';
+    case 'source':
+      if (a.startFrom !== 'fork') return null;
+      if (!a.sourceRelease) return 'Choose the release to fork';
+      return canFork(a.sourceRelease) ? null : 'That release has no closed sprint yet, so there is nothing stable to fork from';
+    case 'items': return a.unfinishedItems === 'selected' && !(a.items ?? []).length ? 'Pick at least one item, or choose another option' : null;
+    default: return null;
+  }
 }
