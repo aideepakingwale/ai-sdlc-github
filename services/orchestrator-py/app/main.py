@@ -146,7 +146,10 @@ async def lifespan(app: FastAPI):
 
     jira_sync = JiraSyncService(db, mcp, audit, agile, locks=redis_lock_factory(redis, timeout=300, blocking_timeout=30))
     backlog.sync_hook = jira_sync.write_through            # DevMind edits flow to Jira (best-effort)
-    gates = GateService(db, dynamo, audit, authz, workflow, regenerate, publisher, agile)
+    from .agile.index_service import redis_lock_factory as _gate_locks
+    gates = GateService(db, dynamo, audit, authz, workflow, regenerate, publisher, agile,
+                        locks=_gate_locks(redis, prefix="gate", timeout=120, blocking_timeout=60),
+                        quality_floor=settings.QUALITY_MIN_SCORE)
     chat.lifecycle = AgileLifecycle(agile, gates, index, db, jira_sync)
     flow = FlowService(db, dynamo, audit, authz, content, workflow, regenerate)
     monitor.start_polling()

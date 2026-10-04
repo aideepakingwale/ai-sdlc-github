@@ -42,9 +42,9 @@ class _LocalLocks:
         return self._locks.setdefault(project_id, asyncio.Lock())
 
 
-def redis_lock_factory(redis: Any, *, timeout: int = 120, blocking_timeout: int = 60) -> LockFactory:
+def redis_lock_factory(redis: Any, *, timeout: int = 120, blocking_timeout: int = 60, prefix: str = "index") -> LockFactory:
     """Cross-instance single-writer lock (redis-py's Lock: token-owned, auto-expiring)."""
-    return lambda project_id: redis.lock(f"devmind:index:{project_id}", timeout=timeout, blocking_timeout=blocking_timeout)
+    return lambda key: redis.lock(f"devmind:{prefix}:{key}", timeout=timeout, blocking_timeout=blocking_timeout)
 
 
 class IndexService:

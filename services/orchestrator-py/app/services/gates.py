@@ -22,11 +22,22 @@ log = logging.getLogger("gates")
 Regenerate = Callable[[str, int, UserPublic], Awaitable[None]]
 
 
+class _LocalLocks:
+    """One asyncio lock per key (single orchestrator instance). Production wires a Redis lock factory."""
+
+    def __init__(self) -> None:
+        self._locks: dict[str, Any] = {}
+
+    def __call__(self, key: str) -> Any:
+        import asyncio
+        return self._locks.setdefault(key, asyncio.Lock())
+
+
 class GateService:
     def __init__(
         self, db: Database, dynamo: DynamoStore, audit: AuditService,
         authz: AuthzService, workflow: Any, regenerate: Regenerate, publisher: Any = None,
-        agile: Any = None,
+        agile: Any = None, locks: Any = None, quality_floor: int = 0,
     ) -> None:
         self._db = db
         self._dynamo = dynamo
@@ -35,6 +46,8 @@ class GateService:
         self._workflow = workflow
         self._regenerate = regenerate
         self._publisher = publisher  # PublishService (D-67); None disables deferred publish
+        self._locks = locks or _LocalLocks()   # per-stage single-writer lock around finalisation
+        self._quality_floor = quality_floor    # auto-gate can never be configured below the platform's quality bar
         self._agile = agile  # AgileService: sprint/release bookkeeping after an approval; None for waterfall-only
 
     async def list_states(self, project_id: str, viewer: UserPublic | None = None) -> list[PhaseStateView]:
@@ -168,7 +181,7 @@ class GateService:
         if not current or current["status"] != "PENDING_REVIEW":
             return None
         cfg = await self._db.get_project_agile(project_id)
-        min_score = int(cfg["auto_min_score"]) if cfg else 80
+        min_score = max(int(cfg["auto_min_score"]) if cfg else 80, self._quality_floor)
         pending_publish = bool(self._publisher is not None and await self._publisher.has_pending(project_id, phase))
         decision = decide_auto(
             list(await self._db.list_feedback(project_id, phase)), min_score=min_score, provider=provider,
@@ -356,16 +369,22 @@ class GateService:
     ) -> dict[str, Any]:
         """All required reviewers have signed (or an admin override, a lightweight approval or the
         platform's auto-gate) — publish the queued external writes, transition the gate to APPROVED and advance."""
-        if self._publisher is not None:
-            published = await self._publisher.publish(
-                project_id=project_id, phase=phase, approver_email=user.email,
+        # One finaliser per stage at a time: two concurrent approvals (or a human racing the auto-gate) must not
+        # both publish the queued external writes. The loser re-reads the state and backs off.
+        async with self._locks(f"{project_id}:{phase}"):
+            current = await self._dynamo.get_phase_state(project_id, phase)
+            if not current or current["status"] != "PENDING_REVIEW":
+                raise SdlcError("GATE_CONFLICT", f"Stage {phase} is no longer awaiting review")
+            if self._publisher is not None:
+                published = await self._publisher.publish(
+                    project_id=project_id, phase=phase, approver_email=user.email,
+                )
+            else:
+                published = {"published": 0}
+            await self._dynamo.transition_phase_state(
+                project_id=project_id, phase=phase,
+                expected="PENDING_REVIEW", next_status="APPROVED", reviewed_by=user.email,
             )
-        else:
-            published = {"published": 0}
-        await self._dynamo.transition_phase_state(
-            project_id=project_id, phase=phase,
-            expected="PENDING_REVIEW", next_status="APPROVED", reviewed_by=user.email,
-        )
         await self._dynamo.clear_phase_stale(project_id=project_id, phase=phase)
         next_phase = await self._advance_if_level_done(project_id, phase, wf)
         self._audit.record(

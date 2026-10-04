@@ -137,3 +137,86 @@ async def test_add_to_sprint_is_capacity_checked_atomically(env):
     res = await e.backlog.add_to_sprint(e.pid, e.po, b["key"], force=True)
     assert res["status"] == "in_sprint"
     assert any(r["detail"].get("overcommit") for r in e.audit.records if r["event"] == "sprint.item_added")
+
+
+async def test_auto_gate_bar_cannot_be_configured_below_the_platform_floor(env):
+    from app.services.gates import GateService
+    e = env
+    await e.agile.enable(e.pid, e.pm, methodology="scrum", auto_min_score=10)
+    await _finish_project_stages(e)
+    await e.agile.start_sprint(e.pid, e.pm)
+    await _approve(e, "refine@S-001"); await _approve(e, "plan@S-001")
+    st = await _stage(e, "build@S-001")
+    await e.dynamo.put_phase_state(project_id=e.pid, phase=st["seq"], status="PENDING_REVIEW", reviewer_role="TA")
+    await e.pg.replace_validation_feedback(project_id=e.pid, phase=st["seq"], issues=[
+        {"category": "quality-score", "severity": "warning", "comment": "Quality score 60/100"}])
+
+    async def regen(*_a):
+        return None
+    gates = GateService(e.pg, e.dynamo, e.audit, e.authz, e.wf, regen, None, e.agile, quality_floor=70)
+    assert await gates.try_auto_approve(e.pid, st["seq"], provider="bedrock", model="s") is None
+
+
+async def test_only_an_admin_can_turn_auto_approval_on_after_creation(env):
+    e = env
+    await e.agile.enable(e.pid, e.pm, methodology="scrum")
+    cfg = (await e.wf.view(e.pid))["config"]
+    on = {**cfg, "stages": [{**s, "gateMode": "auto"} if s["key"] == "review" else s for s in cfg["stages"]]}
+    with pytest.raises(SdlcError) as err:
+        await e.wf.save(e.pid, on, e.pm)
+    assert err.value.code == "FORBIDDEN"
+    await e.wf.save(e.pid, on, e.admin)
+    off = {**cfg, "stages": [{**s, "gateMode": "full"} if s["key"] == "build" else s for s in cfg["stages"]]}
+    await e.wf.save(e.pid, off, e.pm)                          # turning it OFF stays a PM decision
+
+
+async def test_waterfall_cannot_carry_agile_gate_modes(env):
+    e = env
+    cfg = (await e.wf.view(e.pid))["config"]
+    bad = {**cfg, "stages": [{**cfg["stages"][0], "gateMode": "lightweight"}, *cfg["stages"][1:]]}
+    with pytest.raises(SdlcError) as err:
+        await e.wf.save(e.pid, bad, e.admin)
+    assert err.value.code == "VALIDATION_FAILED"
+
+
+async def test_concurrent_finalisation_publishes_once(env):
+    import asyncio
+
+    from app.services.gates import GateService
+    e = env
+    await e.agile.enable(e.pid, e.pm, methodology="scrum")
+    await _finish_project_stages(e)
+    await e.agile.start_sprint(e.pid, e.pm)
+    st = await _stage(e, "refine@S-001")
+    await e.dynamo.put_phase_state(project_id=e.pid, phase=st["seq"], status="PENDING_REVIEW", reviewer_role="PO")
+
+    class Pub:
+        calls = 0
+
+        async def publish(self, **_k):
+            Pub.calls += 1
+            await asyncio.sleep(0.05)
+            return {"published": 1}
+
+        async def has_pending(self, *_a):
+            return False
+
+    async def regen(*_a):
+        return None
+    gates = GateService(e.pg, e.dynamo, e.audit, e.authz, e.wf, regen, Pub(), e.agile)
+    results = await asyncio.gather(
+        *[gates.review(project_id=e.pid, phase=st["seq"], decision="APPROVE", comments=None, user=e.po) for _ in range(3)],
+        return_exceptions=True)
+    assert Pub.calls == 1, results
+    assert sum(1 for r in results if isinstance(r, dict)) == 1
+
+
+async def test_plan_revalidation_counts_points_already_committed(env):
+    from app.agile.proposals import LlmPlan, LlmPlanPick, sanitise_plan
+    e = env
+    await _sprint(e, capacity=8)
+    a, b = await _ready(e, "A", 5), await _ready(e, "B", 5)
+    await e.backlog.add_to_sprint(e.pid, e.po, a["key"])
+    backlog = await e.pg.list_backlog(e.pid)
+    payload, warns = sanitise_plan(LlmPlan(picks=[LlmPlanPick(key=b["key"], reason="")]), backlog, capacity=8, committed=5)
+    assert payload["items"] == [] and any("already committed" in w for w in warns)

@@ -114,7 +114,7 @@ class AgileService:
             raise SdlcError(
                 "GATE_CONFLICT",
                 "This project has already started a waterfall workflow; create a new project for Agile delivery")
-        await self._workflow.save(project_id, template_for(methodology).model_dump(), user)
+        await self._workflow.save(project_id, template_for(methodology).model_dump(), user, allow_auto=True)
         await self._db.insert_project_agile(
             project_id=project_id, methodology=methodology, sprint_days=sprint_days,
             default_capacity=default_capacity, wip_limit=wip_limit, index_strategy=index_strategy,

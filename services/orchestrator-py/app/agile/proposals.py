@@ -145,14 +145,14 @@ def sanitise_refine(llm: LlmRefine, existing: list[Any]) -> tuple[dict[str, Any]
 
 # ------------------------------------------------------------------ Plan
 def sanitise_plan(
-    llm: LlmPlan, backlog: list[Any], *, capacity: float, wip_limit: int | None = None,
+    llm: LlmPlan, backlog: list[Any], *, capacity: float, wip_limit: int | None = None, committed: float = 0.0,
 ) -> tuple[dict[str, Any], list[str]]:
     """Choose sprint scope from READY items only, in the model's order, never exceeding capacity.
     Items that fail the Definition of Ready, are duplicated, unknown or do not fit are dropped with a warning."""
     warnings: list[str] = []
     by_key = {b["item_key"]: b for b in backlog}
     picked: list[dict[str, Any]] = []
-    total = 0.0
+    total = 0.0                                   # points picked by THIS plan
     seen: set[str] = set()
     for pick in llm.picks:
         key = pick.key.strip()
@@ -172,8 +172,9 @@ def sanitise_plan(
             warnings.append(f"{key}: not ready ({'; '.join(problems)}) — ignored")
             continue
         est = float(item["estimate"])
-        if total + est > capacity:
-            warnings.append(f"{key}: {est:g} points would exceed the capacity of {capacity:g} — left in the backlog")
+        if committed + total + est > capacity:
+            warnings.append(f"{key}: {est:g} points would exceed the capacity of {capacity:g}"
+                            f"{f' ({committed:g} already committed)' if committed else ''} — left in the backlog")
             continue
         picked.append({"key": key, "title": item["title"], "estimate": est, "reason": pick.reason[:300]})
         total += est
@@ -196,11 +197,12 @@ def greedy_plan(backlog: list[Any], *, capacity: float, wip_limit: int | None = 
         risks=[])
 
 
-def revalidate_plan(payload: dict[str, Any], backlog: list[Any], *, capacity: float) -> tuple[dict[str, Any], list[str]]:
+def revalidate_plan(payload: dict[str, Any], backlog: list[Any], *, capacity: float,
+                    wip_limit: int | None = None, committed: float = 0.0) -> tuple[dict[str, Any], list[str]]:
     """Re-run enforcement over a (possibly human-edited, possibly stale) plan payload."""
     llm = LlmPlan(goal=payload.get("goal", ""), risks=payload.get("risks", []),
                   picks=[LlmPlanPick(key=i["key"], reason=i.get("reason", "")) for i in payload.get("items", [])])
-    return sanitise_plan(llm, backlog, capacity=capacity)
+    return sanitise_plan(llm, backlog, capacity=capacity, wip_limit=wip_limit, committed=committed)
 
 
 def plan_points(items: list[dict[str, Any]]) -> float:

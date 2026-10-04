@@ -7,6 +7,7 @@ from typing import Any
 
 from ..domain.errors import SdlcError
 from ..domain.models import UserPublic
+from .rules import points
 from .specs import DesignDelta, sanitise_delta
 from .proposals import (
     LlmPlan, LlmRefine, greedy_plan, refine_to_llm, revalidate_plan, sanitise_plan, sanitise_refine,
@@ -44,11 +45,13 @@ class ProposalService:
         cfg = await self._db.get_project_agile(project_id)
         cap = float(iteration["capacity"])
         wip = cfg["wip_limit"] if cfg else None
-        payload, warnings = sanitise_plan(llm or LlmPlan(), backlog, capacity=cap, wip_limit=wip)
+        committed = points([b for b in backlog if b["iteration_id"] == iteration["id"]])
+        payload, warnings = sanitise_plan(llm or LlmPlan(), backlog, capacity=cap, wip_limit=wip, committed=committed)
         warnings = [*(extra_warnings or []), *warnings]
         if not payload["items"]:
             # The model gave nothing usable → deterministic plan by rank, so a sprint can always be planned.
-            fb, more = sanitise_plan(greedy_plan(backlog, capacity=cap), backlog, capacity=cap, wip_limit=wip)
+            fb, more = sanitise_plan(greedy_plan(backlog, capacity=max(cap - committed, 0.0)), backlog,
+                                     capacity=cap, wip_limit=wip, committed=committed)
             if fb["items"]:
                 warnings += ["The AI plan had no valid items — filled by backlog rank instead"] + more[:3]
                 payload = {**fb, "goal": payload["goal"] or fb["goal"], "risks": payload["risks"]}
@@ -115,8 +118,11 @@ class ProposalService:
         row = await self._db.latest_proposal(ctx.project_id, ctx.phase, "plan")
         if not row or row["status"] != "proposed" or ctx.iteration is None:
             return
-        payload, warnings = revalidate_plan(row["payload"], await self._db.list_backlog(ctx.project_id),
-                                            capacity=float(ctx.iteration["capacity"]))
+        backlog = await self._db.list_backlog(ctx.project_id)
+        committed = points([b for b in backlog if b["iteration_id"] == ctx.iteration["id"]])
+        cfg = await self._db.get_project_agile(ctx.project_id)
+        payload, warnings = revalidate_plan(row["payload"], backlog, capacity=float(ctx.iteration["capacity"]),
+                                            wip_limit=(cfg or {}).get("wip_limit") or None, committed=committed)
         res = await self._db.apply_plan(
             project_id=ctx.project_id, proposal_id=row["id"], iteration_id=ctx.iteration["id"],
             keys=[i["key"] for i in payload["items"]], goal=payload.get("goal", ""), actor_id=None)

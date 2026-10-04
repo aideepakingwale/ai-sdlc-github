@@ -293,6 +293,8 @@ def _validate_agile(config: WorkflowConfig, by_key: dict[str, StageConfig]) -> l
                 errors.append(f"Stage '{s.key}': scope '{s.scope}' needs a Scrum or Kanban methodology")
             if s.agileRole:
                 errors.append(f"Stage '{s.key}': agile role '{s.agileRole}' needs a Scrum or Kanban methodology")
+            if s.gateMode != "full":
+                errors.append(f"Stage '{s.key}': gate mode '{s.gateMode}' needs a Scrum or Kanban methodology")
         return errors
     if not any(s.scope == "iteration" for s in config.stages):
         errors.append("An iterative workflow needs at least one iteration-scoped stage")
@@ -489,7 +491,21 @@ class WorkflowService:
             raise SdlcError("NOT_FOUND", f"No stage at position {seq} in this workflow")
         return stage
 
-    async def save(self, project_id: str, raw_config: dict, user: UserPublic) -> dict[str, Any]:
+    async def _current_config(self, project_id: str) -> WorkflowConfig:
+        row = await self._db.get_workflow(project_id)
+        return WorkflowConfig.model_validate(row["config"]) if row else default_workflow()
+
+    async def _guard_auto_gate(self, project_id: str, config: WorkflowConfig, user: UserPublic) -> None:
+        """Auto-approval removes the human from a gate, so turning it ON for a stage is a platform-admin decision
+        (a PM may pick it when first enabling Agile; see AgileService.enable, which writes the config directly)."""
+        if user.role == "SUPER_ADMIN":
+            return
+        was_auto = {s.key.split("@")[0] for s in (await self._current_config(project_id)).stages if s.gateMode == "auto"}
+        for s in config.stages:
+            if s.gateMode == "auto" and s.key.split("@")[0] not in was_auto:
+                raise SdlcError("FORBIDDEN", f"Only a platform administrator can switch stage '{s.key}' to auto-approval")
+
+    async def save(self, project_id: str, raw_config: dict, user: UserPublic, *, allow_auto: bool = False) -> dict[str, Any]:
         try:
             config = WorkflowConfig.model_validate(raw_config)
         except ValidationError as err:
@@ -501,6 +517,8 @@ class WorkflowService:
         if errors:
             raise SdlcError("VALIDATION_FAILED", " | ".join(errors[:6]), {"errors": errors})
 
+        if not allow_auto:
+            await self._guard_auto_gate(project_id, config, user)
         # Guard running work: a stage slot that already progressed cannot vanish.
         states = await self._dynamo.list_phase_states(project_id)
         await self._guard_agile_structure(project_id, config, states)
