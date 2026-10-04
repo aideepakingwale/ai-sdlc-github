@@ -47,6 +47,15 @@ scale, delta sections validated), renders the stage document *from the sanitised
 atomically, only after the stage gate is approved**, re-validated against the then-current backlog. If the model fails,
 Plan falls back to rank order and Refine records "no AI changes" — the stage still completes.
 
+### Resilience and history
+
+Approval bookkeeping (apply the proposal, activate the sprint, close the sprint, close the release) is idempotent and
+each step has its own failure boundary: a failing hook never undoes an approval or blocks the lifecycle. Anything a
+crash left half-done is repaired by **reconcile** (`POST …/agile/reconcile`, run automatically before starting a sprint
+or hardening and every 5 minutes in the background). Stages and items of a **closed or cancelled sprint are read-only
+history**: they cannot be re-triggered, regenerated or reopened. A sprint can only be cancelled before any of its
+items has been started; its items go back to the backlog.
+
 ## 5. Project memory (`.devmind/`)
 
 Generated, read-only files: charter, sprint digests, release indexes, living specs, a lookup and a hash manifest.
@@ -55,7 +64,8 @@ They are **staged in a workspace** (filesystem in dev, S3 in production) when a 
 (default), or directly to the default branch (`indexStrategy: default-branch`). A failed commit keeps the gate pending
 and is retried on the next approval; regeneration never queues it twice. Sprint/release stages receive a **bounded**
 context (budgeted memory packet + sprint scope) instead of every earlier artifact. Design deltas merge into the living
-specs section by section; a delta written against an older section is a **conflict**, never an overwrite.
+specs section by section; a delta written against an older section — or a replace/remove that quotes no `baseHash` —
+is a **conflict**, never an overwrite, and delta text that would break the spec's structure is rejected.
 
 ## 6. Jira
 
@@ -63,7 +73,9 @@ Set the project's Jira key in its integrations. Inbound sync is incremental with
 de-duplication; Jira owns summary, description, acceptance criteria, points, labels, epic link and done/in-progress;
 DevMind owns its key, rank, components and the sprint commitment. DevMind-created epics/stories are pushed once; later
 edits are written through with optimistic concurrency (a lost race means Jira wins and the item is re-pulled). Sync runs
-on demand, before Refine/Plan, and optionally on a schedule.
+on demand, before Refine/Plan, and optionally on a schedule. The watermark never moves past an issue that failed to
+apply (it is retried next run); a local item that was never pushed is **adopted** when an identical Jira issue appears
+(no duplicates); an empty Jira value never wipes acceptance criteria or an estimate entered in DevMind.
 
 ## 7. Configuration
 
