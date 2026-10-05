@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { streamChat } from '../api/client';
 import type { ChatMessage } from '../api/types';
-import { useApp, type ActivityItem } from '../store';
+import { streamKey, useApp, useStream, type ActivityItem } from '../store';
 
 const ACTIVITY_ICON: Record<ActivityItem['kind'], string> = {
   node: '⚙️',
@@ -52,7 +52,11 @@ interface Props {
 
 export default function Chat({ messages, locked, lockedReason }: Props) {
   const qc = useQueryClient();
-  const { activeProjectId, streaming, activity, liveResponse, beginStream, pushEvent, endStream } = useApp();
+  const { activeProjectId, beginStream, pushEvent, endStream } = useApp();
+  // The chat turn of THIS project. The key is pinned when a turn starts: the first turn of a new project learns the
+  // project id from the stream, and the reply must keep showing under the key it started with.
+  const [runKey, setRunKey] = useState<string | null>(null);
+  const { active: streaming, activity, liveResponse } = useStream(runKey ?? streamKey(activeProjectId, 'chat'));
   const [input, setInput] = useState('');
   const [localTurns, setLocalTurns] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -68,11 +72,13 @@ export default function Chat({ messages, locked, lockedReason }: Props) {
     if (!message || streaming || locked) return;
     setInput('');
     setLocalTurns((t) => [...t, { role: 'user', content: message }]);
-    beginStream();
+    const key = streamKey(activeProjectId, 'chat');
+    setRunKey(key);
+    beginStream(key);
     try {
-      await streamChat({ projectId: activeProjectId ?? undefined, message }, pushEvent);
+      await streamChat({ projectId: activeProjectId ?? undefined, message }, (ev) => pushEvent(key, ev));
     } finally {
-      endStream();
+      endStream(key);
       void qc.invalidateQueries({ queryKey: ['project'] });
       void qc.invalidateQueries({ queryKey: ['projects'] });
       void qc.invalidateQueries({ queryKey: ['artefacts'] });

@@ -14,7 +14,7 @@ import { deriveGuide } from '../lib/stageGuide';
 import { useStickToBottom } from '../hooks/useStickToBottom';
 import type { ProjectFlow } from '../api/flow';
 import type { ChatMessage, PhaseStateView, User } from '../api/types';
-import { useApp, type ActivityItem } from '../store';
+import { streamKey, useApp, useStream, type ActivityItem } from '../store';
 import ArtifactViewer from './ArtifactViewer';
 import FeedbackPanel from './FeedbackPanel';
 import GatePanel from './GatePanel';
@@ -141,7 +141,10 @@ export default function StageWorkspace({
   artefacts: Array<{ id: string; phase: number; type: string; title: string; url: string | null }>;
 }) {
   const qc = useQueryClient();
-  const { streaming, activity, liveResponse, liveParts, beginStream, pushEvent, endStream } = useApp();
+  const { beginStream, pushEvent, endStream } = useApp();
+  // Only THIS project's stage: a run elsewhere (another project, another stage) never shows up here.
+  const runKey = streamKey(projectId, selectedSeq);
+  const { active: streaming, activity, liveResponse, liveParts } = useStream(runKey);
   const [prompt, setPrompt] = useState('');
   const [viewArtefactId, setViewArtefactId] = useState<string | null>(null);
   const [refIds, setRefIds] = useState<string[]>([]);
@@ -324,7 +327,7 @@ export default function StageWorkspace({
     () => messages.filter((m) => m.phase === selectedSeq),
     [messages, selectedSeq],
   );
-  const streamingHere = streaming && stage?.phase === flow.currentPhase;
+  const streamingHere = streaming;          // the run of the stage on screen (keyed by project + stage)
 
   // Follow new output only while the user is already at the bottom — never yank them down
   // while they are reading a tab/log higher up (this used to scroll on every streamed update).
@@ -467,8 +470,8 @@ export default function StageWorkspace({
     // below (save overlay + enqueue) leave the plan sitting unchanged for a beat,
     // then a flash of the empty "not started" composer — which reads as "nothing
     // happened / no artifacts". beginStream() also guards re-clicks (streaming=true).
-    beginStream();
-    pushEvent({ type: 'node', node: 'queue', label: 'Starting the run…' } as never);
+    beginStream(runKey);
+    pushEvent(runKey, { type: 'node', node: 'queue', label: 'Starting the run…' } as never);
     // persist the latest overlay (with the reviewer's production-scope decision) first,
     // then enqueue the reviewed run.
     try {
@@ -478,18 +481,18 @@ export default function StageWorkspace({
     try {
       await api.post(`/api/projects/${projectId}/phase/${selectedSeq}/plan/trigger`, {});
     } catch (err) {
-      endStream();
+      endStream(runKey);
       window.alert(err instanceof Error ? err.message : 'Could not start generation');
       return;
     }
     resetComposer(); // the run is queued; clear the composer
     try {
-      await streamStageProgress(projectId, selectedSeq, pushEvent);
+      await streamStageProgress(projectId, selectedSeq, (ev) => pushEvent(runKey, ev));
     } finally {
       // Refresh the stage status BEFORE dropping the streaming view, so it flips
       // straight from "Generating…" to "pending review" with no not-started flash.
       try { await qc.refetchQueries({ queryKey: ['flow', projectId] }); } catch { /* ignore */ }
-      endStream();
+      endStream(runKey);
       void qc.invalidateQueries({ queryKey: ['project', projectId] });
       void qc.invalidateQueries({ queryKey: ['artefacts', projectId] });
       void qc.invalidateQueries({ queryKey: ['flow', projectId] });
@@ -503,20 +506,20 @@ export default function StageWorkspace({
   // watch its progress. Only the chosen parts are regenerated; the rest are reused.
   async function runPartsJob(label: string, url: string, body: unknown) {
     if (streaming) return;
-    beginStream();
-    pushEvent({ type: 'node', node: 'queue', label } as never);
+    beginStream(runKey);
+    pushEvent(runKey, { type: 'node', node: 'queue', label } as never);
     try {
       await api.post(url, body);
     } catch (err) {
-      endStream();
+      endStream(runKey);
       window.alert(err instanceof Error ? err.message : 'Could not start generation');
       return;
     }
     try {
-      await streamStageProgress(projectId, selectedSeq, pushEvent);
+      await streamStageProgress(projectId, selectedSeq, (ev) => pushEvent(runKey, ev));
     } finally {
       try { await qc.refetchQueries({ queryKey: ['flow', projectId] }); } catch { /* ignore */ }
-      endStream();
+      endStream(runKey);
       void qc.invalidateQueries({ queryKey: ['parts', projectId, selectedSeq] });
       void qc.invalidateQueries({ queryKey: ['artefacts', projectId] });
       void qc.invalidateQueries({ queryKey: ['project', projectId] });
@@ -550,21 +553,21 @@ export default function StageWorkspace({
       if (a.other.trim()) parts_.push(a.other.trim());
       return { question: q.question, answer: parts_.join('; ') };
     });
-    beginStream();
-    pushEvent({ type: 'node', node: 'queue', label: 'Applying your answers…' } as never);
+    beginStream(runKey);
+    pushEvent(runKey, { type: 'node', node: 'queue', label: 'Applying your answers…' } as never);
     try {
       await api.post(`/api/projects/${projectId}/phase/${selectedSeq}/clarify`, { answers });
     } catch (err) {
-      endStream();
+      endStream(runKey);
       window.alert(err instanceof Error ? err.message : 'Could not submit answers');
       return;
     }
     setClarifyAns({});
     try {
-      await streamStageProgress(projectId, selectedSeq, pushEvent);
+      await streamStageProgress(projectId, selectedSeq, (ev) => pushEvent(runKey, ev));
     } finally {
       try { await qc.refetchQueries({ queryKey: ['flow', projectId] }); } catch { /* ignore */ }
-      endStream();
+      endStream(runKey);
       void qc.invalidateQueries({ queryKey: ['clarification', projectId, selectedSeq] });
       void qc.invalidateQueries({ queryKey: ['project', projectId] });
       void qc.invalidateQueries({ queryKey: ['artefacts', projectId] });
@@ -588,11 +591,11 @@ export default function StageWorkspace({
         const job = await api.get<{ running: boolean }>(`/api/projects/${projectId}/phase/${selectedSeq}/job`);
         if (cancelled || !job.running || streaming) return;
         reconnectKeyRef.current = attachKey;
-        beginStream();
+        beginStream(runKey);
         try {
-          await streamStageProgress(projectId, selectedSeq, pushEvent, ctrl.signal);
+          await streamStageProgress(projectId, selectedSeq, (ev) => pushEvent(runKey, ev), ctrl.signal);
         } finally {
-          endStream();
+          endStream(runKey);
           reconnectKeyRef.current = null;
           void qc.invalidateQueries({ queryKey: ['flow', projectId] });
           void qc.invalidateQueries({ queryKey: ['artefacts', projectId] });
