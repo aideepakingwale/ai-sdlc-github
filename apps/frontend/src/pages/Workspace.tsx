@@ -99,7 +99,7 @@ export default function Workspace() {
   const agile = useOverview(activeProjectId ?? '');
   const agileOn = Boolean(activeProjectId && agile.data?.enabled);
   const startedAny = (flow.data?.stages ?? []).some((s) => s.status !== 'NOT_STARTED');
-  const canChooseMethod = Boolean(activeProjectId && agile.data && !agile.data.enabled && agile.data.permissions.canManage && !startedAny);
+  const canChooseMethod = Boolean(activeProjectId && agile.data && !agile.data.enabled && agile.data.permissions?.canManage && !startedAny);
 
   // Selecting a project focuses its current stage; keep the selection valid.
   useEffect(() => {
