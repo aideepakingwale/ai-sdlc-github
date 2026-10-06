@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { COLOR_CLASSES, type FlowStage, type ProjectFlow } from '../api/flow';
 import WorkflowDesigner from './WorkflowDesigner';
+import ContextStrip from './ContextStrip';
 
 /**
  * Visual, color-coded pipeline flow: six stages left→right with state
@@ -98,6 +99,7 @@ export default function PipelineFlow({
           </div>
         ))}
       </div>
+      <ContextStrip projectId={projectId} stages={flow.data.stages} focusedPhase={focusedPhase} onFocusPhase={onFocusPhase} />
       {retrigger.isError && (
         <div className="mt-1 rounded bg-red-50 px-2 py-1 text-[11px] text-red-700">
           {retrigger.error instanceof Error ? retrigger.error.message : 'Retrigger failed'}
