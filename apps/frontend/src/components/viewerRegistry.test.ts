@@ -97,3 +97,18 @@ describe('draw.io preview of generated (provider-icon) diagrams', () => {
     expect(renderDrawioSvg(azure).svg).toContain('#0078D4');
   });
 });
+
+describe('markdown stored as plain text', () => {
+  const md = '# Code structure\n\n- src/app.py\n- src/db.py\n\n**Entry point:** app.py';
+  it('renders a .txt markdown document as a document, not as code', async () => {
+    const { resolveViewer } = await import('./viewerRegistry');
+    expect(resolveViewer({ content: md, ext: '.txt', type: 'SOMETHING_NEW', filename: 'x.txt' }).id).toBe('markdown');
+    expect(resolveViewer({ content: 'plain', ext: '.txt', type: 'CODE_STRUCTURE', filename: 'x.txt' }).id).toBe('markdown');
+  });
+  it('leaves real code and plain text alone', async () => {
+    const { resolveViewer } = await import('./viewerRegistry');
+    expect(resolveViewer({ content: '# a comment\nprint(1)\n', ext: '.txt', type: 'APP_CODE', filename: 'a.txt' }).id).toBe('code');
+    expect(resolveViewer({ content: md, ext: '.txt', type: 'APP_CODE', filename: 'a.txt' }).id).toBe('code');
+    expect(resolveViewer({ content: '# only a heading-like line\nsome words', ext: '.txt', type: 'X', filename: 'a.txt' }).id).toBe('code');
+  });
+});

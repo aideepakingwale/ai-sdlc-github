@@ -598,7 +598,21 @@ function CsvView({ source }: { source: string }) {
 }
 
 // ---------------------------------------------------------------- registry
-const MARKDOWN_TYPES = new Set(['PRD', 'HLD', 'LLD', 'TEST_STRATEGY', 'RTM', 'ADR', 'EPIC', 'FEATURE', 'USER_STORY', 'PULL_REQUEST', 'SECURITY_SCAN', 'TEST_EXECUTION_REPORT', 'QUALITY_REPORT', 'BRD', 'DEPLOYMENT_PLAN', 'RELEASE_NOTES', 'ROLLBACK_PLAN', 'RUNBOOK', 'MONITORING_PLAN', 'SLO_REPORT']);
+const MARKDOWN_TYPES = new Set(['CODE_STRUCTURE', 'CUSTOM_DOC', 'PRD', 'HLD', 'LLD', 'TEST_STRATEGY', 'RTM', 'ADR', 'EPIC', 'FEATURE', 'USER_STORY', 'PULL_REQUEST', 'SECURITY_SCAN', 'TEST_EXECUTION_REPORT', 'QUALITY_REPORT', 'BRD', 'DEPLOYMENT_PLAN', 'RELEASE_NOTES', 'ROLLBACK_PLAN', 'RUNBOOK', 'MONITORING_PLAN', 'SLO_REPORT']);
+/** Plain-text artifacts (".txt", or no extension) that are really markdown - headings plus lists, tables, bold or a
+ *  fence. Code is excluded: a "# comment" line alone is not a heading. */
+const NOT_MARKDOWN_TYPES = new Set(['APP_CODE', 'DOCKERFILE', 'K6_SCRIPT', 'LOCUSTFILE']);
+export function looksLikeMarkdown(content: string): boolean {
+  const head = content.slice(0, 20_000);
+  if (!/^#{1,6}[ \t]+\S/m.test(head)) return false;
+  return /^\s*(?:[-*+]|\d+\.)[ \t]+\S/m.test(head) || /^\s*\|.+\|\s*$/m.test(head) || /\*\*[^*\n]+\*\*/.test(head) || /^```/m.test(head);
+}
+function isMarkdownCtx(c: ViewerContext): boolean {
+  if (c.ext === '.md' || c.ext === '.markdown') return true;
+  if (c.ext && c.ext !== '.txt') return false;
+  if (MARKDOWN_TYPES.has(c.type)) return true;
+  return !NOT_MARKDOWN_TYPES.has(c.type) && looksLikeMarkdown(c.content);
+}
 const JSON_TYPES = new Set(['CLOUDCRAFT_JSON', 'GRAFANA_DASHBOARD', 'POSTMAN_COLLECTION', 'XRAY_TESTS']);
 
 function pretty(json: string): string {
@@ -647,7 +661,7 @@ export const VIEWERS: ViewerPlugin[] = [
   },
   {
     id: 'markdown', label: 'Document', hasSource: true,
-    matches: (c) => c.ext === '.md' || c.ext === '.markdown' || (!c.ext && MARKDOWN_TYPES.has(c.type)),
+    matches: isMarkdownCtx,
     render: (c) => <MarkdownDoc content={c.content} />,
   },
   {

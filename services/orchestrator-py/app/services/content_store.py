@@ -33,7 +33,7 @@ _EXT = {
     # SDLC toolchain artifacts
     "REST_ASSURED": ".java", "PLAYWRIGHT_SPEC": ".ts", "JMETER_PLAN": ".jmx", "LOCUSTFILE": ".py",
     "SECURITY_SCAN": ".md", "TEST_EXECUTION_REPORT": ".md", "QUALITY_REPORT": ".md",
-    "PIPELINE_DESIGN": ".md",
+    "PIPELINE_DESIGN": ".md", "CODE_STRUCTURE": ".md",
 }
 
 
