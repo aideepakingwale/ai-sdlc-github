@@ -1310,6 +1310,52 @@ async def list_attachments(
     ]}
 
 
+async def _attachment_text(container: Container, project_id: str, attachment_id: str) -> tuple[dict, str]:
+    rows = await container.db.get_attachments_by_ids([attachment_id])
+    row = rows[0] if rows else None
+    if not row or row["project_id"] != project_id:        # another project's file looks like a missing one
+        raise SdlcError("NOT_FOUND", "Attachment not found")
+    if not row["is_text"]:
+        raise SdlcError("VALIDATION_FAILED", "this attachment has no readable text")
+    return row, (await container.content.get(row["storage_key"])) or ""
+
+
+@router.get("/api/projects/{project_id}/attachments/{attachment_id}/outline")
+async def attachment_outline(
+    project_id: str, attachment_id: str,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Table of contents of an attached document: every section with its size, pages, tables and figures."""
+    await container.authz.assert_project_access(project_id, user)
+    from ..services.documents.reader import outline
+    row, text = await _attachment_text(container, project_id, attachment_id)
+    return {"id": row["id"], "filename": row["filename"], **outline(text)}
+
+
+@router.get("/api/projects/{project_id}/attachments/{attachment_id}/read")
+async def attachment_read(
+    project_id: str, attachment_id: str, sections: str = "", pages: str = "", q: str = "",
+    max_chars: int = Query(20_000, ge=500, le=60_000),
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Verbatim text of chosen parts of an attached document: `sections=3,7` (ids from the outline),
+    `pages=12-18`, and/or `q=` words to find. The reply lists what did not fit in `next`."""
+    await container.authz.assert_project_access(project_id, user)
+    from ..services.documents.reader import read
+    try:
+        ids = [int(x) for x in sections.split(",") if x.strip()]
+        span = None
+        if pages.strip():
+            lo, _, hi = pages.partition("-")
+            span = (int(lo), int(hi or lo))
+    except ValueError as err:
+        raise SdlcError("VALIDATION_FAILED", "sections must be ids like 3,7 and pages a range like 12-18") from err
+    if not (ids or span or q.strip()):
+        raise SdlcError("VALIDATION_FAILED", "ask for sections, pages or a search; see /outline for what exists")
+    row, text = await _attachment_text(container, project_id, attachment_id)
+    return {"id": row["id"], "filename": row["filename"], **read(text, sections=ids, pages=span, search=q, max_chars=max_chars)}
+
+
 @router.delete("/api/projects/{project_id}/phase/{phase_id}/attachments/{attachment_id}")
 async def delete_attachment(
     project_id: str, phase_id: int, attachment_id: str,

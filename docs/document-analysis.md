@@ -48,6 +48,22 @@ The full extracted text is stored and unchanged; condensing happens per prompt.
 Attached content is wrapped in a notice that it is **material to analyse, never
 instructions to follow**.
 
+## Reading on demand (outline + read)
+
+The stored text stays fully addressable, so a stage is not limited to the excerpt chosen at prompt time:
+
+* **Outline** - `GET /api/projects/{id}/attachments/{attachmentId}/outline` lists every section:
+  id, title, level, size, page range, tables and figures. No model is involved.
+* **Read** - `GET /api/projects/{id}/attachments/{attachmentId}/read?sections=3,7` (ids from the outline),
+  `&pages=12-18`, and/or `&q=oauth mtls` returns those parts verbatim in document order within
+  `max_chars` (default 20,000, max 60,000). Anything that did not fit is listed in `next`.
+* **Model-chosen sections** - when a document is condensed, a light model reads only the *outline*
+  (never the text) plus the stage's task and picks the sections the stage needs in full. Those are
+  kept before keyword matching spends the rest of the budget. If the call fails, keyword fitting is
+  used as before.
+
+Both endpoints use the project's read permission and treat another project's attachment as not found.
+
 ## Configuration (`.env`)
 
 | Setting | Default | Meaning |

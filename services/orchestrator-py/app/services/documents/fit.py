@@ -116,8 +116,9 @@ def _cut(text: str, n: int) -> str:
     return window.rstrip()
 
 
-def fit_document(md: str, budget: int, query: str = "") -> str:
-    """Return `md` trimmed to at most `budget` characters - see the module docstring."""
+def fit_document(md: str, budget: int, query: str = "", pinned: set[int] | None = None) -> str:
+    """Return `md` trimmed to at most `budget` characters - see the module docstring.
+    `pinned` are section ids (see documents.reader) that must be kept in full before anything else is."""
     md = (md or "").strip()
     if budget <= 0 or len(md) <= budget:
         return md
@@ -136,7 +137,8 @@ def fit_document(md: str, budget: int, query: str = "") -> str:
     def score(c: _Chunk) -> float:
         overlap = len(q & c.toks) / (len(q) ** 0.5 or 1) if q else 0.0
         bonus = (0.4 if "| ---" in c.text else 0.0) + (0.3 if "> **Figure" in c.text else 0.0)
-        return overlap + bonus + (0.25 if c.idx == 0 else 0.0) - c.idx * 1e-6
+        pin = 100.0 if pinned and c.section in pinned else 0.0
+        return pin + overlap + bonus + (0.25 if c.idx == 0 else 0.0) - c.idx * 1e-6
 
     ranked = sorted(chunks, key=score, reverse=True)
     n_sections = max(1, len(sections))
