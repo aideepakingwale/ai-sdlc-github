@@ -428,3 +428,20 @@ async def test_choices_are_resolved_into_layout_text_and_stale_ones_fall_back_to
     assert set(out["artifact_formats"]) == {"PRD", "OPENAPI"}                    # HLD (deleted) and LLD (foreign) dropped
     warned = [e["label"] for e in events if "no longer available" in e.get("label", "")]
     assert len(warned) == 2 and not any("SECRET" in json.dumps(out) for _ in [0])
+
+
+# ================================================================== delivered file type
+SPEC_YAML = "openapi: 3.0.0\ninfo:\n  title: Pay\n  version: '1'\npaths: {}\n"
+
+
+def test_openapi_converts_between_yaml_and_json_without_a_model():
+    out, name = af.convert_file("OPENAPI", SPEC_YAML, "api.yaml", "json")
+    assert name == "api.json" and json.loads(out)["info"]["title"] == "Pay"
+    back, name2 = af.convert_file("OPENAPI", out, "api.json", "yaml")
+    assert name2 == "api.yaml" and "title: Pay" in back
+    assert af.convert_file("OPENAPI", SPEC_YAML, "api.yaml", "yaml") == (SPEC_YAML, "api.yaml")      # native: untouched
+    assert af.convert_file("PRD", "# x", "prd.md", "docx") == ("# x", "prd.md")                       # rendered in the browser
+    with pytest.raises(SdlcError, match="cannot be delivered"):
+        af.convert_file("EPIC", "x", "e.md", "pdf")
+    with pytest.raises(SdlcError, match="not valid"):
+        af.convert_file("OPENAPI", "a: [unclosed", "api.yaml", "json")

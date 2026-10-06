@@ -8,7 +8,7 @@ import json
 from typing import Literal
 
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from ..agents.phase_agents import _part_text
@@ -1078,11 +1078,12 @@ def _file_response(content: str, filename: str) -> Response:
 
 @router.get("/api/projects/{project_id}/artefacts/{artefact_id}/download")
 async def artefact_download(
-    project_id: str, artefact_id: str,
+    project_id: str, artefact_id: str, as_: str | None = Query(None, alias="as"),
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> Response:
     """Download the artifact as a real file (correct name + MIME) so the user
-    can open it with an application installed on their desktop."""
+    can open it with an application installed on their desktop. `?as=json|yaml`
+    converts an OpenAPI spec deterministically to the delivered type chosen for it."""
     await container.authz.assert_project_access(project_id, user)
     row = await container.db.get_artefact(artefact_id)
     if not row or row["project_id"] != project_id:
@@ -1093,6 +1094,9 @@ async def artefact_download(
         if stored is not None:
             content = stored
     filename = (row["storage_key"] or "").rsplit("/", 1)[-1] or f"{row['type']}-{row['id']}.txt"
+    if as_:
+        from ..services.artifact_formats import convert_file
+        content, filename = convert_file(row["type"], content, filename, as_)
     return _file_response(content, filename)
 
 
