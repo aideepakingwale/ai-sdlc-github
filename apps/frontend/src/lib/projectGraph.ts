@@ -29,6 +29,7 @@ export const STAGE_STATUS_COLOR: Record<string, string> = {
 };
 
 const COL = 460;
+const COLS = 4;                      // levels per row
 const ROW = 42;
 
 /** Edges that would blanket the canvas (shared context to every stage, every artifact to every downstream
@@ -44,20 +45,24 @@ export function layoutProject(data: ProjectGraphData, visible: Set<PNodeKind> = 
 
   nodes.filter((n) => n.level < 0).forEach((n, i) => placed.push({ ...n, x: 0, y: i * 90, r: 18 }));
 
-  const stagesByLevel = new Map<number, Placed[]>();
-  for (let level = 0; level < data.levels; level++) {
-    let y = 0;
-    for (const s of nodes.filter((n) => n.kind === 'stage' && n.level === level)) {
-      const atts = nodes.filter((n) => n.kind === 'attachment' && n.phase === s.phase);
-      const arts = nodes.filter((n) => n.kind === 'artifact' && n.phase === s.phase);
-      const x = (level + 1) * COL;
-      const p: Placed = { ...s, x, y, r: 28 + Math.min(12, Math.sqrt(s.tokens) / 8) };
-      placed.push(p);
-      atts.forEach((a, i) => placed.push({ ...a, x: x - 40, y: y + 84 + i * ROW, r: 11 }));
-      arts.forEach((a, i) => placed.push({ ...a, x: x + 40, y: y + 84 + i * ROW, r: 11 }));
-      y += 100 + Math.max(atts.length, arts.length) * ROW + 30;
-      stagesByLevel.set(level, [...(stagesByLevel.get(level) ?? []), p]);
+  // Long pipelines wrap into rows of COLS levels so the picture stays readable instead of one very wide strip.
+  let rowTop = 0;
+  for (let rowStart = 0; rowStart < data.levels; rowStart += COLS) {
+    let rowBottom = rowTop;
+    for (let level = rowStart; level < Math.min(data.levels, rowStart + COLS); level++) {
+      let y = rowTop;
+      for (const s of nodes.filter((n) => n.kind === 'stage' && n.level === level)) {
+        const atts = nodes.filter((n) => n.kind === 'attachment' && n.phase === s.phase);
+        const arts = nodes.filter((n) => n.kind === 'artifact' && n.phase === s.phase);
+        const x = (level - rowStart + 1) * COL;
+        placed.push({ ...s, x, y, r: 28 + Math.min(12, Math.sqrt(s.tokens) / 8) });
+        atts.forEach((a, i) => placed.push({ ...a, x: x - 40, y: y + 84 + i * ROW, r: 11 }));
+        arts.forEach((a, i) => placed.push({ ...a, x: x + 40, y: y + 84 + i * ROW, r: 11 }));
+        y += 100 + Math.max(atts.length, arts.length) * ROW + 30;
+      }
+      rowBottom = Math.max(rowBottom, y);
     }
+    rowTop = rowBottom + 40;
   }
   const at = new Map(placed.map((n) => [n.id, n]));
   const edges: PlacedEdge[] = data.edges

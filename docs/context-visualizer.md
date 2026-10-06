@@ -70,3 +70,10 @@ through the whole project, read-only:
 Click any circle for what it uses and what uses it; **Open this stage** jumps to it. Search, hide a kind,
 zoom and pan as in the stage view. `GET /api/projects/{id}/context/graph` serves it (project read
 permission; at most the 150 newest artifacts, flagged when truncated).
+
+## Retrieval is upstream-only
+
+Checking the graph against a real, generated project showed that "Retrieved knowledge" included the stage's
+own earlier output and the output of later stages (every artifact is indexed as soon as it is saved).
+Retrieval now counts project artifacts only from the stage's upstream stages; enterprise standards and
+codebase files are unaffected. The same rule feeds the prompt, the plan preview and the context manifest.

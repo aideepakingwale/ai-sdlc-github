@@ -418,7 +418,8 @@ class ChatService:
         context_block = "\n\n".join(
             f"### [Phase {a.phase}] {a.type}: {a.title}\n{(a.content or a.summary)[:1200]}" for a in context
         )
-        snippets = await self._deps.rag.retrieve(overlay.get("promptOverlay") or stage["name"], project["id"])
+        snippets = await self._deps.rag.retrieve(overlay.get("promptOverlay") or stage["name"], project["id"],
+                                                 artifact_phases={a.phase for a in context})
         rag_block = self._deps.rag.render_block(snippets)
         canon_block = await self._deps.canon.render_block(project["id"], stage["template"]) if self._deps.canon else ""
         produces = list(stage.get("outputs") or [])
@@ -1164,7 +1165,8 @@ class ChatService:
                             traits: dict[str, bool] | None) -> dict[str, Any]:
         from .context_manifest import build_manifest
         produces = list(stage.get("outputs") or [])
-        snippets = await self._deps.rag.retrieve(overlay.get("promptOverlay") or stage["name"], project["id"])
+        snippets = await self._deps.rag.retrieve(overlay.get("promptOverlay") or stage["name"], project["id"],
+                                                 artifact_phases={a.phase for a in context})
         canon_block = await self._deps.canon.render_block(project["id"], stage["template"]) if self._deps.canon else ""
         files = await self._db.count_codebase_files(project["id"])
         return build_manifest(

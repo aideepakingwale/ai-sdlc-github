@@ -198,7 +198,7 @@ async def test_context_view_returns_the_live_preview_the_last_run_and_what_chang
             self.checked = (pid, user)
 
     class Rag:
-        async def retrieve(self, q, pid):
+        async def retrieve(self, q, pid, top_k=None, artifact_phases=None):
             return []
 
     svc = ChatService.__new__(ChatService)
@@ -269,3 +269,28 @@ async def test_files_uploaded_after_the_plan_was_saved_still_count_as_stage_inpu
     assert await svc._stage_attachment_ids("p", 1, []) == ["a1", "a2"]
     assert await svc._stage_attachment_ids("p", 1, ["gone", "a2"]) == ["gone", "a2", "a1"]   # unknown ids are dropped later by project check
     del SimpleNamespace
+
+
+# ---------------------------------------------------------------- retrieval must not hand a stage its own output
+async def test_retrieval_counts_only_upstream_artifacts_but_never_filters_standards_or_code():
+    from app.services.rag import RagService
+
+    docs = [{"id": f"art-{p}", "title": f"[P{p}] HLD: stage {p} design", "source": "artifact", "content": "payments design", "embedding": [1.0] + [0.0] * 63}
+            for p in (1, 2, 3)]
+    docs += [{"id": "kb-std", "title": "AWS standard", "source": "standard", "content": "payments design", "embedding": [1.0] + [0.0] * 63},
+             {"id": "code-1", "title": "[code] app.py", "source": "codebase", "content": "payments design", "embedding": [1.0] + [0.0] * 63}]
+
+    class Db:
+        async def fetch_kb_docs(self, scopes):
+            return docs
+
+    class Emb:
+        def embed(self, text):
+            return [1.0] + [0.0] * 63
+
+    svc = RagService.__new__(RagService)
+    svc._db, svc._settings, svc.embedder = Db(), type("S", (), {"RAG_TOP_K": 20})(), Emb()
+    ids = lambda hits: sorted(h["id"] for h in hits)  # noqa: E731
+    assert ids(await svc.retrieve("payments", "p")) == ["art-1", "art-2", "art-3", "code-1", "kb-std"]          # unrestricted: as before
+    assert ids(await svc.retrieve("payments", "p", artifact_phases={1})) == ["art-1", "code-1", "kb-std"]       # stage 2: only stage 1's output
+    assert ids(await svc.retrieve("payments", "p", artifact_phases=set())) == ["code-1", "kb-std"]              # the entry stage: no artifacts

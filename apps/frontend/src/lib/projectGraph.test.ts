@@ -50,4 +50,14 @@ describe('project context graph', () => {
     expect(describeNode(data.nodes[3]!)).toBe('not started · not run yet');
     expect(describeNode(data.nodes[5]!)).toBe('PRD from stage 1, version 2');
   });
+
+  it('wraps a long pipeline into rows instead of one very wide strip', () => {
+    const stages = Array.from({ length: 8 }, (_, i) => n(`stage:${i + 1}`, 'stage', i, { phase: i + 1, status: 'NOT_STARTED' }));
+    const l = layoutProject({ levels: 8, totals: { stages: 8, artifacts: 0, attachments: 0, truncated: false }, nodes: stages, edges: [] });
+    const at = (id: string) => l.nodes.find((x) => x.id === id)!;
+    expect(at('stage:5').y).toBeGreaterThan(at('stage:1').y);                     // the fifth stage starts a new row
+    expect(at('stage:5').x).toBe(at('stage:1').x);                                // ...back at the first column
+    expect(at('stage:4').y).toBe(at('stage:1').y);
+    expect(l.width).toBeLessThan(8 * 460 * 0.7);                                   // narrower than one 8-column strip
+  });
 });

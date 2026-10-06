@@ -759,7 +759,8 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
     if compressed:
         emit({"type": "node", "node": "compressor", "label": "Context compressed to fit token budget"})
 
-    snippets = await deps.rag.retrieve(state.user_input, state.project_id)
+    snippets = await deps.rag.retrieve(state.user_input, state.project_id,
+                                       artifact_phases={a.phase for a in state.context_window})
     if snippets:
         emit({"type": "node", "node": "agent",
               "label": f"RAG: retrieved {len(snippets)} knowledge snippet(s) for grounding"})
