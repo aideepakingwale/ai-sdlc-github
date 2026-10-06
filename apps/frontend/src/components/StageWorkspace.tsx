@@ -395,13 +395,14 @@ export default function StageWorkspace({
     return lines.length ? `\n\n## Production scope (confirmed by the reviewer)\n${lines.map((l) => `- ${l}`).join('\n')}` : '';
   };
 
-  // One row per artifact the reviewer keeps: where its layout comes from and what file it is delivered as.
-  const renderFormats = () => {
-    const cat = (plan?.formatCatalog ?? []).filter((c) => {
-      const w = plan?.intel?.willProduce?.find((x) => fmtKey(x.output) === c.type);
-      return produceSel[c.output] ?? w?.include ?? w?.recommended ?? true;
-    });
-    if (cat.length === 0) return null;
+  // ONE list of the artifacts: tick what to generate and, on the same row, choose the layout it follows and the
+  // file type it is delivered as. (Layout and delivery apply only to ticked rows.)
+  const renderArtifacts = () => {
+    const rows = plan?.intel?.willProduce ?? [];
+    if (rows.length === 0) return null;
+    const catalog = new Map((plan?.formatCatalog ?? []).map((c) => [c.type, c]));
+    const isOn = (a: { output: string; include?: boolean; recommended?: boolean }) => produceSel[a.output] ?? a.include ?? a.recommended;
+    const cat = rows.filter(isOn).map((a) => catalog.get(fmtKey(a.output))).filter((c): c is FormatOption => Boolean(c));
     const layoutValue = (f: ArtifactFormat) => (f.source === 'system' ? 'system' : `${f.source}:${f.refId ?? ''}`);
     const parse = (v: string): ArtifactFormat => {
       const [source, ...rest] = v.split(':');
@@ -419,55 +420,74 @@ export default function StageWorkspace({
       setFmtSel(next);
     };
     const attachmentChoices = Array.from(new Map(cat.flatMap((c) => c.attachments).map((a) => [a.id, a])).values());
-    const sourceLabel: Record<string, string> = { system: 'System standard', attachment: 'Attached file', formwork: 'Template' };
+    const cols = 'sm:grid-cols-[minmax(0,1.5fr)_minmax(0,1.3fr)_minmax(0,0.8fr)]';
     return (
       <div>
-        <SectionLabel icon="file" hint="each artifact can follow its own layout and be delivered in its own file type">Output format per artifact</SectionLabel>
-        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
-          <span>Apply to all:</span>
-          <select aria-label="Apply layout to all artifacts" disabled={locked} value="" onChange={(e) => e.target.value && applyAll(e.target.value)}
-            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-brand-400 focus:outline-none">
-            <option value="">Choose a layout…</option>
-            <option value="system">System standard</option>
-            {attachmentChoices.map((a) => <option key={a.id} value={`attachment:${a.id}`}>Follow “{a.filename}” (where supported)</option>)}
-          </select>
-          <span className="text-slate-400">Artifacts that cannot follow it keep their own choice. Attached files are used as context only unless you pick one here.</span>
-        </div>
+        <SectionLabel icon="tasks" hint={`${rows.filter(isOn).length} of ${rows.length} selected — tick what you want, then pick each one’s layout and file type`}>
+          Artifacts to generate
+        </SectionLabel>
+        {attachmentChoices.length > 0 && (
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+            <span>Apply to all:</span>
+            <select aria-label="Apply layout to all artifacts" disabled={locked} value="" onChange={(e) => e.target.value && applyAll(e.target.value)}
+              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-brand-400 focus:outline-none">
+              <option value="">Choose a layout…</option>
+              <option value="system">System standard</option>
+              {attachmentChoices.map((a) => <option key={a.id} value={`attachment:${a.id}`}>Follow “{a.filename}” (where supported)</option>)}
+            </select>
+            <span className="text-slate-400">Artifacts that cannot follow it keep their own choice.</span>
+          </div>
+        )}
         <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
-          <div className="hidden gap-2 bg-slate-50 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400 sm:grid sm:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,0.8fr)]">
+          <div className={`hidden gap-2 bg-slate-50 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400 sm:grid ${cols}`}>
             <span>Artifact</span><span>Layout follows</span><span>Delivered as</span>
           </div>
-          {cat.map((c) => {
-            const f = formatOf(c.output);
-            const ft = f.fileType ?? c.fileTypes.find((x) => x.native)?.value ?? '';
-            const follows = f.source === 'attachment' ? c.attachments.find((a) => a.id === f.refId)?.filename
-              : f.source === 'formwork' ? c.formworks.find((w) => w.id === f.refId)?.name : null;
+          {rows.map((a) => {
+            const on = Boolean(isOn(a));
+            const c = catalog.get(fmtKey(a.output));
+            const f = c ? formatOf(c.output) : null;
+            const ft = f && c ? f.fileType ?? c.fileTypes.find((x) => x.native)?.value ?? '' : '';
+            const off = locked || !on;
             return (
-              <div key={c.type} className="grid items-center gap-2 px-3 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,0.8fr)]" data-testid={`format-row-${c.type}`}>
-                <div className="min-w-0">
-                  <div className="truncate text-[13px] font-semibold text-slate-800">{c.output}</div>
-                  <div className="text-[11px] text-slate-500">{sourceLabel[f.source]}{follows ? ` · ${follows}` : c.houseTemplate && f.source === 'system' ? ` · ${c.houseTemplate}` : ''}</div>
-                </div>
-                <select aria-label={`Layout for ${c.output}`} disabled={locked || c.sources.length === 1} value={layoutValue(f)}
-                  onChange={(e) => setFormat(c.output, { ...parse(e.target.value), fileType: f.fileType })}
-                  className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-brand-400 focus:outline-none disabled:bg-slate-50 disabled:text-slate-500">
-                  <option value="system">System standard{c.houseTemplate ? ` (${c.houseTemplate})` : ''}</option>
-                  {c.sources.includes('attachment') && c.attachments.length > 0 && (
-                    <optgroup label="Follow an attached file">
-                      {c.attachments.map((a) => <option key={a.id} value={`attachment:${a.id}`}>{a.filename}</option>)}
-                    </optgroup>
-                  )}
-                  {c.sources.includes('formwork') && c.formworks.length > 0 && (
-                    <optgroup label="Follow a template">
-                      {c.formworks.map((w) => <option key={w.id} value={`formwork:${w.id}`}>{w.name}{w.scope === 'platform' ? ' (platform)' : ''}</option>)}
-                    </optgroup>
-                  )}
-                </select>
-                <select aria-label={`Delivered file type for ${c.output}`} disabled={locked || c.fileTypes.length === 1} value={ft}
-                  onChange={(e) => setFormat(c.output, { ...f, fileType: e.target.value })}
-                  className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-brand-400 focus:outline-none disabled:bg-slate-50 disabled:text-slate-500">
-                  {c.fileTypes.map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}
-                </select>
+              <div key={a.output} data-testid={`artifact-row-${fmtKey(a.output)}`}
+                className={`grid items-start gap-2 px-3 py-2 transition ${cols} ${on ? 'bg-brand-50/30' : 'bg-white'}`}>
+                <label className="flex min-w-0 cursor-pointer items-start gap-2.5">
+                  <input type="checkbox" className="mt-1 h-4 w-4 shrink-0 accent-brand-600" checked={on} disabled={locked} aria-label={`Generate ${a.output}`}
+                    onChange={(e) => setProduceSel((p) => ({ ...p, [a.output]: e.target.checked }))} />
+                  <span className="min-w-0">
+                    <span className="flex flex-wrap items-center gap-1.5">
+                      <span className={`text-[13px] font-semibold ${on ? 'text-slate-800' : 'text-slate-500'}`}>{a.output}</span>
+                      {a.recommended
+                        ? <Badge tone="success" icon="check">Recommended</Badge>
+                        : <Badge title="Not needed for this request, but you can still include it">Optional</Badge>}
+                    </span>
+                    {a.reason && <span className="mt-0.5 block text-xs text-slate-500">{a.reason}</span>}
+                  </span>
+                </label>
+                {c && f ? (
+                  <>
+                    <select aria-label={`Layout for ${c.output}`} disabled={off || c.sources.length === 1} value={layoutValue(f)}
+                      onChange={(e) => setFormat(c.output, { ...parse(e.target.value), fileType: f.fileType })}
+                      className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-brand-400 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400">
+                      <option value="system">System standard{c.houseTemplate ? ` (${c.houseTemplate})` : ''}</option>
+                      {c.sources.includes('attachment') && c.attachments.length > 0 && (
+                        <optgroup label="Follow an attached file">
+                          {c.attachments.map((x) => <option key={x.id} value={`attachment:${x.id}`}>{x.filename}</option>)}
+                        </optgroup>
+                      )}
+                      {c.sources.includes('formwork') && c.formworks.length > 0 && (
+                        <optgroup label="Follow a template">
+                          {c.formworks.map((w) => <option key={w.id} value={`formwork:${w.id}`}>{w.name}{w.scope === 'platform' ? ' (platform)' : ''}</option>)}
+                        </optgroup>
+                      )}
+                    </select>
+                    <select aria-label={`Delivered file type for ${c.output}`} disabled={off || c.fileTypes.length === 1} value={ft}
+                      onChange={(e) => setFormat(c.output, { ...f, fileType: e.target.value })}
+                      className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-brand-400 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400">
+                      {c.fileTypes.map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}
+                    </select>
+                  </>
+                ) : <><span className="text-xs text-slate-300">—</span><span className="text-xs text-slate-300">—</span></>}
               </div>
             );
           })}
@@ -1179,36 +1199,7 @@ export default function StageWorkspace({
                         </div>
                       )}
 
-                      {(plan.intel.willProduce?.length ?? 0) > 0 && (
-                        <div>
-                          <SectionLabel icon="tasks" hint={`${plan.intel.willProduce.filter((a) => produceSel[a.output] ?? a.include ?? a.recommended).length} of ${plan.intel.willProduce.length} selected — tick what you want, untick to skip`}>
-                            Artifacts to generate
-                          </SectionLabel>
-                          <div className="space-y-1.5">
-                            {plan.intel.willProduce.map((a) => {
-                              const on = produceSel[a.output] ?? a.include ?? a.recommended;
-                              return (
-                                <label key={a.output} className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 transition ${on ? 'border-brand-300 bg-brand-50/40' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
-                                  <input
-                                    type="checkbox" className="mt-1 h-4 w-4 accent-brand-600"
-                                    checked={on} disabled={locked}
-                                    onChange={(e) => setProduceSel((p) => ({ ...p, [a.output]: e.target.checked }))}
-                                  />
-                                  <span className="min-w-0 flex-1">
-                                    <span className="flex flex-wrap items-center gap-2">
-                                      <span className="text-[13px] font-semibold text-slate-800">{a.output}</span>
-                                      {a.recommended
-                                        ? <Badge tone="success" icon="check">Recommended</Badge>
-                                        : <Badge title="Not needed for this request, but you can still include it">Optional</Badge>}
-                                    </span>
-                                    {a.reason && <span className="mt-0.5 block text-xs text-slate-500">{a.reason}</span>}
-                                  </span>
-                                </label>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
+                      {renderArtifacts()}
 
                       {(plan.intel.promptChecks?.length ?? 0) > 0 && (
                         <Callout tone="advice" title="Left out — not applicable to this project">
@@ -1280,8 +1271,6 @@ export default function StageWorkspace({
                           </div>
                         </div>
                       )}
-
-                      {renderFormats()}
 
                       {plan.intel.recommendation && (
                         <Callout tone="advice" title="Advice">{plan.intel.recommendation}</Callout>
