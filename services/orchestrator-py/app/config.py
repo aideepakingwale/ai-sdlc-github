@@ -197,6 +197,9 @@ class Settings(BaseSettings):
     # validator. Set QUALITY_GATE_ENABLED=false to disable the gate entirely.
     QUALITY_GATE_ENABLED: bool = True
     COVERAGE_MIN_PERCENT: int = 80
+    # Two-step code generation: the implementation stage first proposes the repository structure for human
+    # approval, and writes code only after it is approved. false = the previous single-step behaviour.
+    CODE_TWO_STEP_ENABLED: bool = True
     LINT_REQUIRED: bool = True
     # Optional override for the project-creation technology catalog (language →
     # version → frameworks). Point at a JSON file to reconfigure without a

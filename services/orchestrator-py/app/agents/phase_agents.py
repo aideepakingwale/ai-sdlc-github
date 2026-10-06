@@ -1959,7 +1959,58 @@ async def _run_phase5(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
 
 
 # ---------------------------------------------------------------- Phase 6: Dev
+async def _phase6_verify(
+    deps: AgentDeps, state: AgentState, emit: Emit, files: list[dict[str, str]], artifacts: list[ContextArtifact],
+) -> tuple[list[str], str]:
+    """The post-generation verification battery (D-36): API tests (Postman/newman), UI tests (Playwright),
+    performance (k6), security (OWASP ZAP) and code quality (SonarQube), folded into two reports.
+    Returns (verdict fragments, quality-gate sentence)."""
+    sections: list[str] = []
+    verdicts: list[str] = []
+
+    postman_json = _ctx_content(state, "POSTMAN_COLLECTION")
+    if postman_json:
+        pm = await _tool(deps, emit, "postman_run_collection", {"collectionJson": postman_json})
+        sections.append(pm["reportMarkdown"])
+        verdicts.append(f"API {pm['passed']}/{pm['total']}")
+    spec = _ctx_content(state, "PLAYWRIGHT_SPEC")
+    if spec:
+        pw = await _tool(deps, emit, "playwright_run_tests", {"specTs": spec})
+        sections.append(pw["reportMarkdown"])
+        verdicts.append(f"UI {pw['passed']}/{pw['total']}")
+    k6_script = _ctx_content(state, "K6_SCRIPT")
+    if k6_script:
+        k6 = await _tool(deps, emit, "k6_run_test", {"script": k6_script})
+        sections.append(k6["reportMarkdown"])
+        verdicts.append(f"perf p95={k6['p95Ms']}ms {'✅' if k6['thresholdsPassed'] else '❌'}")
+    if _applies(state, "ZAP_SCAN"):
+        zap = await _tool(deps, emit, "zap_baseline_scan", {
+            "targetUrl": "http://staging.sdlc.local",
+            **({"openapiYaml": _ctx_content(state, "OPENAPI")} if _ctx_content(state, "OPENAPI") else {}),
+        })
+        sections.append(zap["reportMarkdown"])
+        verdicts.append(f"ZAP {zap['result']}")
+    if sections:
+        _add(artifacts, await _save_artifact(
+            deps, state, emit, type_="TEST_EXECUTION_REPORT", title="Test execution report",
+            content="\n\n---\n\n".join(sections), summary=" · ".join(verdicts),
+        ))
+
+    sonar = await _tool(deps, emit, "sonarqube_analyse", {"files": files})
+    _add(artifacts, await _save_artifact(
+        deps, state, emit, type_="QUALITY_REPORT", title="SonarQube quality report",
+        content=sonar["reportMarkdown"],
+        summary=f"Quality gate {sonar['qualityGate']}: {sonar['bugs']} bugs, "
+                f"{sonar['codeSmells']} smells, {sonar['coveragePct']}% coverage",
+    ))
+    return verdicts, f"quality gate {sonar['qualityGate']}"
+
+
 async def _run_phase6(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAgentResult:
+    # Two-step code generation: propose the repository structure for approval, then write the approved files.
+    from . import code_generation
+    if code_generation.enabled(deps):
+        return await code_generation.run(deps, state, emit)
     out: Phase6Output = await _generate_validated(deps, state, emit)  # type: ignore[assignment]
     artifacts: list[ContextArtifact] = []
 
@@ -2029,49 +2080,8 @@ async def _run_phase6(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         recovered = (f"recovered after {loop['iterations']} AI fix iteration(s)"
                      if loop["iterations"] > 0 else "passed first time")
 
-        # SDLC toolchain (D-36): post-CI verification battery — API tests
-        # (Postman/newman), UI tests (Playwright), performance (k6), security
-        # (OWASP ZAP) and code quality (SonarQube) — folded into two reports.
-        sections: list[str] = []
-        verdicts: list[str] = []
-
-        postman_json = _ctx_content(state, "POSTMAN_COLLECTION")
-        if postman_json:
-            pm = await _tool(deps, emit, "postman_run_collection", {"collectionJson": postman_json})
-            sections.append(pm["reportMarkdown"])
-            verdicts.append(f"API {pm['passed']}/{pm['total']}")
-        spec = _ctx_content(state, "PLAYWRIGHT_SPEC")
-        if spec:
-            pw = await _tool(deps, emit, "playwright_run_tests", {"specTs": spec})
-            sections.append(pw["reportMarkdown"])
-            verdicts.append(f"UI {pw['passed']}/{pw['total']}")
-        k6_script = _ctx_content(state, "K6_SCRIPT")
-        if k6_script:
-            k6 = await _tool(deps, emit, "k6_run_test", {"script": k6_script})
-            sections.append(k6["reportMarkdown"])
-            verdicts.append(f"perf p95={k6['p95Ms']}ms {'✅' if k6['thresholdsPassed'] else '❌'}")
-        if _applies(state, "ZAP_SCAN"):
-            zap = await _tool(deps, emit, "zap_baseline_scan", {
-                "targetUrl": "http://staging.sdlc.local",
-                **({"openapiYaml": _ctx_content(state, "OPENAPI")} if _ctx_content(state, "OPENAPI") else {}),
-            })
-            sections.append(zap["reportMarkdown"])
-            verdicts.append(f"ZAP {zap['result']}")
-        if sections:
-            _add(artifacts, await _save_artifact(
-                deps, state, emit, type_="TEST_EXECUTION_REPORT", title="Test execution report",
-                content="\n\n---\n\n".join(sections), summary=" · ".join(verdicts),
-            ))
-
-        sonar = await _tool(deps, emit, "sonarqube_analyse", {
-            "files": [f.model_dump() for f in out.files],
-        })
-        _add(artifacts, await _save_artifact(
-            deps, state, emit, type_="QUALITY_REPORT", title="SonarQube quality report",
-            content=sonar["reportMarkdown"],
-            summary=f"Quality gate {sonar['qualityGate']}: {sonar['bugs']} bugs, "
-                    f"{sonar['codeSmells']} smells, {sonar['coveragePct']}% coverage",
-        ))
+        verdicts, sonar_line = await _phase6_verify(deps, state, emit, [f.model_dump() for f in out.files], artifacts)
+        sonar = {"qualityGate": sonar_line.replace("quality gate ", "")}
 
         return PhaseAgentResult(
             summary=f"Phase 6 complete: code + unit tests pushed to {out.branch}; CI {recovered}; "

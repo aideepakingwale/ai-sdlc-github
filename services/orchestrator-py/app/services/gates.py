@@ -25,7 +25,7 @@ Regenerate = Callable[[str, int, UserPublic], Awaitable[None]]
 class GateService:
     def __init__(
         self, db: Database, dynamo: DynamoStore, audit: AuditService,
-        authz: AuthzService, workflow: Any, regenerate: Regenerate, publisher: Any = None,
+        authz: AuthzService, workflow: Any, regenerate: Regenerate, publisher: Any = None, code: Any = None,
     ) -> None:
         self._db = db
         self._dynamo = dynamo
@@ -34,6 +34,7 @@ class GateService:
         self._workflow = workflow
         self._regenerate = regenerate
         self._publisher = publisher  # PublishService (D-67); None disables deferred publish
+        self._code = code            # CodeGenService: two-step code generation (structure approval, commit record)
 
     async def list_states(self, project_id: str, viewer: UserPublic | None = None) -> list[PhaseStateView]:
         wf = await self._workflow.view(project_id)
@@ -309,12 +310,22 @@ class GateService:
     ) -> dict[str, Any]:
         """All required reviewers have signed (or an admin override) — publish the
         queued external writes, transition the gate to APPROVED and advance."""
+        # Two-step code generation: approving the proposed STRUCTURE does not complete the stage - it releases
+        # the gate and starts the implementation; only the later approval of the CODE completes it.
+        if self._code is not None:
+            plan = await self._code.structure_pending(project_id, phase, stage)
+            if plan:
+                return await self._code.approve_structure(project_id=project_id, phase=phase, stage=stage, plan=plan,
+                                                          user=user, override=override)
         if self._publisher is not None:
             published = await self._publisher.publish(
                 project_id=project_id, phase=phase, approver_email=user.email,
             )
         else:
             published = {"published": 0}
+        if self._code is not None:
+            await self._code.after_publish(project_id=project_id, phase=phase, stage=stage,
+                                           results=published.get("results", []), user=user)
         await self._dynamo.transition_phase_state(
             project_id=project_id, phase=phase,
             expected="PENDING_REVIEW", next_status="APPROVED", reviewed_by=user.email,

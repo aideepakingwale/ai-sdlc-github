@@ -176,6 +176,39 @@ function render(kind: string, topic: string, seed: string, userText: string): st
     case 'phase5':
       return corpus.phase5(topic, seed);
 
+    case 'code_structure': {
+      // Step 1 of code generation: a small, valid repository plan (no code yet).
+      const slug = topic.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'service';
+      const f = (path: string, purpose: string, kind = 'source', layer = '') => ({ path, purpose, kind, layer, covers: [] });
+      return JSON.stringify({
+        summary: `Layered service for ${topic}: HTTP API, domain services, persistence adapters and tests.`,
+        conventions: ['Modules and files use snake_case; classes PascalCase.', 'One public class or concern per module.', 'Tests mirror the source tree under tests/ and are named test_<module>.py.'],
+        directories: [{ path: 'src', purpose: 'Application source' }, { path: 'src/app/api', purpose: 'HTTP routes' }, { path: 'src/app/domain', purpose: 'Business rules' }, { path: 'tests', purpose: 'Automated tests' }],
+        files: [
+          f('README.md', 'How to build, run and test the service', 'docs'),
+          f('src/app/__init__.py', 'Package marker', 'source', 'app'),
+          f('src/app/main.py', 'Application entry point and wiring', 'source', 'api'),
+          f('src/app/api/routes.py', 'HTTP endpoints for the integration', 'source', 'api'),
+          f('src/app/domain/service.py', 'Core integration rules (idempotency, retries)', 'source', 'domain'),
+          f('tests/test_service.py', 'Unit tests for the integration rules', 'test', 'domain'),
+        ],
+        branch: `feature/${slug}`, commitMessage: `feat: initial ${topic} implementation`,
+        prTitle: `Implement ${topic}`, prBody: `Implements ${topic} per the approved design.`, checklist: ['Tests pass', 'Lint clean'],
+      });
+    }
+
+    case 'code_batch': {
+      // Step 2: contents for exactly the files named in the prompt's `<!-- files: a | b -->` marker.
+      const m = /<!--\s*files:\s*([^>]*?)\s*-->/.exec(userText);
+      const paths = (m?.[1] ?? '').split('|').map((x) => x.trim()).filter(Boolean);
+      const body = (path: string): string => {
+        if (path.endsWith('.md')) return `# ${topic}\n\nGenerated for the approved structure (mock).\n`;
+        if (path.endsWith('.py')) return `"""${path} - generated for ${topic} (mock provider)."""\n\n\ndef handle(payload: dict) -> dict:\n    return {"ok": True, "echo": payload}\n`;
+        return `# ${path}\n`;
+      };
+      return JSON.stringify({ files: paths.map((path) => ({ path, content: body(path) })), designNotes: 'Mock implementation of the agreed files.' });
+    }
+
     case 'phase6':
       return corpus.phase6(topic, seed);
     case 'cloudcraft':
