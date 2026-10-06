@@ -208,11 +208,12 @@ class ChatService:
                 amend_feedback = amend
 
             sp_row = await self._db.get_stage_plan(project["id"], seq)
+            window = self._upstream_window(wf, stage, context)
             state = AgentState(
                 project_id=project["id"], session_id=session["id"], current_phase=seq,
                 stage_template=stage["template"], stage_name=stage["name"],
                 stage_reviewer=stage["reviewerRole"],
-                user_input=message, context_window=list(context), amend_comments=amend,
+                user_input=message, context_window=window, amend_comments=amend,
                 tech_stack=stack_of(project), tech_stack_source=stack_source(project),
                 model_role=stage.get("modelRole") or "",
                 **await self._resolve_formats(project["id"], seq, self._formats_of(sp_row), emit),
@@ -233,7 +234,7 @@ class ChatService:
                 prev_status=prev_status, emit=emit, summary=summary,
             )
             if phase_result:
-                context = final_state.context_window
+                context = self._merge_window(context, final_state.context_window[len(window):], seq)
                 # Persist the deferred external-write plan for this stage (D-67).
                 await self._persist_publish_plan(project["id"], seq, phase_result)
                 if final_state.gate_status == "PENDING_REVIEW":
@@ -371,13 +372,49 @@ class ChatService:
         membership = await self._authz.get_membership_role(project_id, user.id)
         return membership in self._stage_writers(stage)
 
+    async def _stage_attachment_ids(self, project_id: str, phase: int, saved: list[str]) -> list[str]:
+        """Every file attached to this stage, plus any the saved plan names. A file uploaded after the
+        plan was last saved is still part of what the stage reads (the plan screen always sends them all)."""
+        ids = list(saved)
+        for r in await self._db.list_attachments(project_id, phase):
+            if r["id"] not in ids:
+                ids.append(r["id"])
+        return ids
+
+    @staticmethod
+    def _merge_window(full: list[ContextArtifact], produced: list[ContextArtifact], phase: int) -> list[ContextArtifact]:
+        """The session's running list after a stage ran: everything it had, plus what this run produced
+        (replacing that stage's earlier versions of the same artifacts instead of piling up copies)."""
+        fresh = {(a.type, a.title) for a in produced}
+        return [a for a in full if not (a.phase == phase and (a.type, a.title) in fresh)] + list(produced)
+
+    @staticmethod
+    def _upstream_window(wf: dict, stage: dict, raw: list[ContextArtifact]) -> list[ContextArtifact]:
+        """Only what this stage builds on: artifacts of the stages it depends on, directly or through
+        others. The session keeps one running list of every artifact in the project, so without this a
+        stage would also be handed its own earlier output and the output of stages that come after it."""
+        by_key = {s["key"]: s for s in wf.get("stages", [])}
+        seqs: set[int] = set()
+        todo = list(stage.get("dependsOn") or [])
+        seen: set[str] = set()
+        while todo:
+            key = todo.pop()
+            if key in seen or key not in by_key:
+                continue
+            seen.add(key)
+            seqs.add(by_key[key]["seq"])
+            todo.extend(by_key[key].get("dependsOn") or [])
+        return [a for a in raw if a.phase in seqs]
+
     async def _assemble_prompt_preview(self, project: dict, session: dict, stage: dict, overlay: dict, emit: Emit,
                                        items: list[dict[str, Any]] | None = None):
         """Assemble the exact system+user prompt the stage would run with, given the
         editable overlay — WITHOUT calling the LLM. The proprietary craft/quality-bar
         core is included read-only; only the overlay (instructions + curated context)
         is user-editable (D-56)."""
-        context = [ContextArtifact.model_validate(a) for a in (session.get("context_window") or [])]
+        context = self._upstream_window(
+            await self._workflow.view(project["id"]), stage,
+            [ContextArtifact.model_validate(a) for a in (session.get("context_window") or [])])
         context_block = "\n\n".join(
             f"### [Phase {a.phase}] {a.type}: {a.title}\n{(a.content or a.summary)[:1200]}" for a in context
         )
@@ -392,7 +429,8 @@ class ChatService:
             skip={k for k, v in fmts.items() if v.get("source") == ATTACHMENT},
         ) if self._deps.formworks else ""
         extra_context = await self._resolve_extra_context(
-            project["id"], overlay.get("referencedArtifactIds") or [], overlay.get("attachmentIds") or [],
+            project["id"], overlay.get("referencedArtifactIds") or [],
+            await self._stage_attachment_ids(project["id"], int(stage["seq"]), overlay.get("attachmentIds") or []),
             overlay.get("formworkIds") or [], emit,
             query=f"{overlay.get('promptOverlay') or ''} {stage['name']} {' '.join(produces)}",
             items=items,
@@ -1562,11 +1600,13 @@ class ChatService:
             enforce_input(prompt_overlay, channel="plan")
         attached_items: list[dict[str, Any]] = []
         extra_context = await self._resolve_extra_context(
-            project_id, overlay["referencedArtifactIds"], overlay["attachmentIds"], overlay["formworkIds"], emit,
+            project_id, overlay["referencedArtifactIds"],
+            await self._stage_attachment_ids(project_id, phase, overlay["attachmentIds"]), overlay["formworkIds"], emit,
             query=f"{prompt_overlay} {stage['name']} {' '.join(stage.get('outputs') or [])}",
             items=attached_items,
         )
-        context = [ContextArtifact.model_validate(a) for a in (session.get("context_window") or [])]
+        full_context = [ContextArtifact.model_validate(a) for a in (session.get("context_window") or [])]
+        context = self._upstream_window(wf, stage, full_context)
 
         # Interactive ambiguity pre-check (#1/D-108): ask STRUCTURED clarifying
         # questions (with predefined options) instead of assuming — even when a
@@ -1644,7 +1684,8 @@ class ChatService:
         # own legitimate flows driven elsewhere.
         settled = last_gate in ("IN_PROGRESS", "ESCALATED", "AMEND_REQUESTED")
         if phase_result:
-            await self._db.update_context_window(session["id"], final_state.context_window)
+            await self._db.update_context_window(session["id"], self._merge_window(
+                full_context, final_state.context_window[len(context):], phase))
             # Persist the deferred external-write plan for this stage (D-67).
             await self._persist_publish_plan(project_id, phase, phase_result)
             if final_state.gate_status == "PENDING_REVIEW":
