@@ -1455,7 +1455,10 @@ export default function StageWorkspace({
             </Callout>
             <ContextPanel projectId={projectId} seq={selectedSeq} refreshKey={`blocked|${attachments.length}`} />
           </>
-        ) : null}
+        ) : (
+          // generated / in review / approved: the panel stays, now with the "actual" record of the last run
+          <ContextPanel projectId={projectId} seq={selectedSeq} refreshKey={`done|${stage.status}|${stageArtefacts.length}|${attachments.length}`} />
+        )}
 
         {/* ---- live generation ---- */}
         {streamingHere && (

@@ -35,7 +35,7 @@ from .artifact_formats import (
     ATTACHMENT, FILE_LABELS, FORMWORK, catalog as format_catalog, native_file_type, norm_type,
     norm_type as fmt_norm, parse_formats, validate_formats,
 )
-from .stack import build_stack_question, is_stack_owner, mentions_stack, stack_already_asked, stack_of, stack_source
+from .stack import SOURCE_USER, answered_stack, build_stack_question, is_stack_owner, mentions_stack, stack_already_asked, stack_of, stack_source
 from .flow import STALE_STATUSES, transitive_downstream_seqs
 from .guardrails import enforce_input, sanitise_output
 from .telemetry import set_run_context
@@ -705,6 +705,19 @@ class ChatService:
             origin="clarification", updated_by=user.email,
         )
         await self._db.set_stage_clarification(project_id, phase, None)  # clear pending questions
+        # A stack the requester picked in the answers is a decision: record it on the project so the
+        # knowledge graph, later stages and the code generator no longer treat it as "undecided".
+        try:
+            project = await self._db.get_project(project_id) or {}
+            chosen = answered_stack(answers) if (
+                not stack_of(project) and is_stack_owner(template=stage.get("template"), persona=stage.get("persona") or "")) else ""
+            if chosen:
+                await self._db.set_project_stack(project_id, chosen, SOURCE_USER)
+                self._audit.record(project_id=project_id, phase=phase, agent_role="Orchestrator",
+                                   event="project.stack_decided", human_reviewer=user.email,
+                                   detail={"techStack": chosen, "via": "clarification"})
+        except Exception:  # noqa: BLE001 — recording the stack must never block answering
+            log.warning("could not record the stack chosen in the clarification", exc_info=True)
         # Persist the clarification exchange into the discussion history (D-112) so it
         # is visible, timestamped, and survives navigation — not just folded into the
         # overlay. Best-effort: never block answering on a history write.

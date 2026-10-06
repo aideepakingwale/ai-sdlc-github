@@ -42,3 +42,13 @@ async def test_validator_missing_document_gets_own_category():
     await _persist_validation_feedback(Deps(), St(), v)
     cats = [i["category"] for i in captured["issues"]]
     assert cats == ["quality-score", "missing-document", "completeness"]
+
+
+def test_a_stack_chosen_in_a_clarification_answer_is_picked_up():
+    from app.services.stack import answered_stack
+    qa = [{"question": "How many AWS accounts?", "answer": "One per environment"},
+          {"question": "Which runtime and IaC stack should the LLD and CDK artifacts target?",
+           "answer": "Python 3.12 + AWS CDK v2 (TypeScript)"}]
+    assert answered_stack(qa) == "Python 3.12 + AWS CDK v2 (TypeScript)"
+    assert answered_stack([{"question": "Which language?", "answer": "Recommend one for me"}]) == ""
+    assert answered_stack([{"question": "Which cloud?", "answer": "AWS"}]) == ""

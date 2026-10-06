@@ -227,6 +227,24 @@ def decide_from_text(*texts: str) -> StackDecision | None:
     return parse_decision_section(*texts) or infer_stack(*texts)
 
 
+_STACK_QUESTION_RE = re.compile(r"\b(language|runtime|tech(nology)? stack|framework|iac stack)\b", re.I)
+_NO_CHOICE = ("no preference", "recommend", "use your", "you decide", "let the agent", "i'll specify", "i will specify")
+
+
+def answered_stack(answers: list[dict[str, Any]]) -> str:
+    """The stack the requester chose in a clarification answer, '' when none was chosen. A
+    "recommend one for me" / "no preference" answer leaves it to the Technical Architect."""
+    for a in answers:
+        question = str(a.get("question") or "")
+        answer = re.sub(r"\s+", " ", str(a.get("answer") or "")).strip(" .")
+        if not answer or len(answer) > 160 or not _STACK_QUESTION_RE.search(question):
+            continue
+        if answer.lower().startswith(_NO_CHOICE) or answer.lower() == RECOMMEND_OPTION.lower():
+            continue
+        return answer
+    return ""
+
+
 # ---------------------------------------------------------------- persistence
 async def record_decision(db: Any, project: dict[str, Any], decision: StackDecision,
                           *, source: str) -> str | None:
