@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     ATTACHMENT_RENDER_PAGES: Literal["auto", "off"] = "auto"
     # Budget (characters) for ALL attached material in one stage prompt. Large
     # documents are condensed section by section to fit - never cut off after page 1.
-    ATTACHMENT_CONTEXT_CHARS: int = 80_000
+    ATTACHMENT_CONTEXT_CHARS: int = 200_000
 
     # External MCP servers the platform can leverage in addition to the in-house
     # tool-connector (D-61). Disabled by default; enable per server and supply
