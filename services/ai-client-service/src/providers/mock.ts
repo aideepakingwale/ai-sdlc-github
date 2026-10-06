@@ -176,6 +176,21 @@ function render(kind: string, topic: string, seed: string, userText: string): st
     case 'phase5':
       return corpus.phase5(topic, seed);
 
+    case 'stage_plan': {
+      // The planner's proposal: restate the request, recommend each declared output, outline the steps.
+      const outs = (/OUTPUT ARTIFACTS this stage can produce:\s*([^.\n]*)\./.exec(userText)?.[1] ?? '').split(',').map((x) => x.trim()).filter((x) => x && x !== '—');
+      const ask = /USER INPUT \/ INSTRUCTIONS for this stage:\n([\s\S]*?)\n\nProduce the proposal/.exec(userText)?.[1]?.trim() ?? '';
+      return JSON.stringify({
+        understood: ask && !ask.startsWith('(none') ? `You want this stage to deliver: ${ask.slice(0, 220)}` : `Deliver this stage's standard outputs for ${topic}.`,
+        willProduce: outs.map((output, i) => ({ output, recommended: true, include: true, reason: `Needed for ${topic}${i === 0 ? ' - the primary deliverable' : ''}.` })),
+        formatSource: 'the stage default template', suggestedArtifacts: [], outOfScope: ['Implementation details that belong to later stages.'],
+        recommendation: `Produce ${outs.join(', ') || 'the standard outputs'} for ${topic}.`, summary: `Tailored approach for ${topic}.`,
+        steps: [{ id: 'generate', label: 'Generate artifacts', kind: 'llm', tier: 'standard', rationale: 'Draft each artifact from the approved context.' },
+                { id: 'gate', label: 'Reviewer sign-off', kind: 'gate', tier: '', rationale: 'A human approves before the next stage.' }],
+        toolRecommendations: [], skillRecommendations: [], assumptions: ['Earlier stages are approved and current.'], risks: ['Requirements may be incomplete.'],
+      });
+    }
+
     case 'code_structure': {
       // Step 1 of code generation: a small, valid repository plan (no code yet).
       const slug = topic.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'service';

@@ -1100,7 +1100,7 @@ class ChatService:
             "document and asked to follow its format, set formatSource to mirror that file's sections; "
             "else a matching formwork; else the stage's default template. List anything out of scope — "
             "including parts of the request that belong to a DIFFERENT stage. Be specific to the inputs; "
-            "never generic. Only recommend tools from the AVAILABLE list. One sentence per rationale."
+            "never generic. Only recommend tools from the AVAILABLE list. One sentence per rationale. #mock:stage_plan"
         )
         usr_p = (
             f"STAGE: {stage['name']} (persona: {stage.get('persona')}, template {stage['template']}).\n"
