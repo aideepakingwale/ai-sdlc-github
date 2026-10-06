@@ -12,6 +12,8 @@ from typing import Any, AsyncIterator, Callable
 
 from redis.asyncio import Redis
 
+from pydantic import BaseModel, Field
+
 from ..agents.phase_agents import EXTERNAL_WRITE_TOOLS, TEMPLATE_TOOLS, AgentDeps
 from ..services.plan_model import build_model_catalog, derive_plan_steps
 from ..agents.prompts import build_phase_prompt, render_stack
@@ -39,6 +41,15 @@ from .telemetry import set_run_context
 
 LAYOUT_CHARS = 14_000          # how much of an attached layout document is shown to the model (structure first)
 log = logging.getLogger("chat")
+
+
+class SectionPick(BaseModel):
+    """The sections of an attached document a light model chose to keep in full."""
+    ids: list[int] = Field(default_factory=list, max_length=60)
+
+
+async def _none() -> set[int]:
+    return set()
 
 Emit = Callable[[dict[str, Any]], None]
 
@@ -1661,10 +1672,12 @@ class ChatService:
         if docs:
             share = allocate([len(b) for _, b in docs], max(budget - curated, budget // 2))
             manifest: list[str] = []
-            for (row, body), cap in zip(docs, share, strict=True):
+            picks = await asyncio.gather(*(self._pick_sections(body, cap, query) if len(body) > cap else _none()
+                                           for (_, body), cap in zip(docs, share, strict=True)))
+            for (row, body), cap, pinned in zip(docs, share, picks, strict=True):
                 info = self._attachment_info(row)
                 summary = summarise(info.get("stats"))
-                fitted = fit_document(body, cap, query)
+                fitted = fit_document(body, cap, query, pinned=pinned or None)
                 condensed = len(fitted) < len(body) - 50
                 head = f"### Attachment — {row['filename']}" + (f" ({summary})" if summary else "")
                 if condensed:
@@ -1683,6 +1696,38 @@ class ChatService:
         block = "\n\n".join(parts)
         hard_cap = budget + curated + 6_000
         return block[:hard_cap] + ("\n… (attached context truncated)" if len(block) > hard_cap else "")
+
+    async def _pick_sections(self, body: str, cap: int, query: str) -> set[int]:
+        """A document too large for its share of the prompt: let a light model read the OUTLINE (not the
+        text) and choose which sections this stage needs in full. Cheap (one small call over a table of
+        contents), and better than keyword overlap alone. Any failure falls back to keyword fitting."""
+        from .documents.reader import outline, outline_text
+        if not query.strip() and cap > 0:
+            return set()
+        try:
+            toc = outline_text(body)
+            result, _ = await self._deps.llm.generate_json(
+                intent="standard", tag="attachment_sections", temperature=0, max_tokens=500, max_attempts=1, role="light",
+                schema=SectionPick,
+                messages=[
+                    {"role": "system", "content": (
+                        "You choose which parts of a long attached document a software-delivery stage needs to read in full. "
+                        "You see only the outline: [id] title (size, pages). Pick the sections whose content the task depends on "
+                        f"(requirements, interfaces, data, constraints, decisions). Their total must stay under about {cap // 2:,} "
+                        "characters. Reply as JSON: {\"ids\": [..section ids..]}. Never invent ids.")},
+                    {"role": "user", "content": f"Task for this stage:\n{query[:1500]}\n\nOutline:\n{toc}"},
+                ])
+            known = {e["id"]: e["chars"] for e in outline(body, max_entries=10_000)["entries"]}
+            picked: set[int] = set()
+            used = 0
+            for i in result.ids:
+                if i in known and used + known[i] <= cap // 2:
+                    picked.add(i)
+                    used += known[i]
+            return picked
+        except Exception as err:  # noqa: BLE001 - advisory only
+            log.info("attachment section selection skipped: %s", err)
+            return set()
 
     @classmethod
     def _attachment_label(cls, row: Any) -> str:
