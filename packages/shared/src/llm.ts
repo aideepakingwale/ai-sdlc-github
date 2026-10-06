@@ -55,7 +55,7 @@ export const GenerateRequestSchema = z.object({
   /** Ask the provider for a strict-JSON response (json mode where supported). */
   json: z.boolean().default(false),
   temperature: z.number().min(0).max(2).default(0.2),
-  maxTokens: z.number().int().positive().max(32768).default(4096),
+  maxTokens: z.number().int().positive().max(64_000).default(4096),   // providers clamp to their own ceiling (see bedrock.ts)
   /** Free-form tag surfaced in audit logs (e.g. persona or node name). */
   tag: z.string().optional(),
   /** Model tier to route to (D-25); default auto = intent-based frontier chain. */
