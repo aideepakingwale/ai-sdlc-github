@@ -198,7 +198,7 @@ async def test_context_view_returns_the_live_preview_the_last_run_and_what_chang
             self.checked = (pid, user)
 
     class Rag:
-        async def retrieve(self, q, pid):
+        async def retrieve(self, q, pid, top_k=None, artifact_phases=None):
             return []
 
     svc = ChatService.__new__(ChatService)
@@ -222,3 +222,75 @@ async def test_context_view_returns_the_live_preview_the_last_run_and_what_chang
     assert out["preview"]["mode"] == "preview" and any(i["label"] == "spec.pdf" for layer in out["preview"]["layers"] for i in layer["items"])
     assert out["actual"]["runId"] == "m2" and out["actual"]["mode"] == "actual"
     assert {x["label"] for x in out["diff"]["removed"]} == {"sample.docx", "logo.png", "@HLD: Old HLD"}
+
+
+# ---------------------------------------------------------------- a stage is only given what it builds on
+def _art(phase, type_, title="t"):
+    return ContextArtifact(phase=phase, type=type_, title=title, summary="s")
+
+
+WF = {"stages": [
+    {"key": "po", "seq": 1, "dependsOn": []},
+    {"key": "sa", "seq": 2, "dependsOn": ["po"]},
+    {"key": "ta", "seq": 3, "dependsOn": ["sa"]},
+    {"key": "qa", "seq": 4, "dependsOn": ["po"]},       # a parallel branch off stage 1
+]}
+ALL = [_art(1, "PRD"), _art(2, "HLD"), _art(3, "LLD"), _art(4, "TEST_STRATEGY")]
+
+
+def test_a_stage_sees_its_upstream_stages_only_not_its_own_output_or_later_stages():
+    from app.services.chat import ChatService
+    up = ChatService._upstream_window
+    assert [a.type for a in up(WF, WF["stages"][1], ALL)] == ["PRD"]                    # solution: just requirements
+    assert [a.type for a in up(WF, WF["stages"][2], ALL)] == ["PRD", "HLD"]              # transitive: through stage 2 back to 1
+    assert [a.type for a in up(WF, WF["stages"][3], ALL)] == ["PRD"]                    # a sibling branch is not upstream
+    assert up(WF, WF["stages"][0], ALL) == []                                           # the entry stage builds on nothing
+
+
+def test_after_a_run_the_session_keeps_everything_and_a_rerun_replaces_instead_of_duplicating():
+    from app.services.chat import ChatService
+    merged = ChatService._merge_window(ALL, [_art(2, "HLD", "t"), _art(2, "ADR", "new")], 2)
+    assert [(a.phase, a.type) for a in merged] == [(1, "PRD"), (3, "LLD"), (4, "TEST_STRATEGY"), (2, "HLD"), (2, "ADR")]
+    assert len([a for a in merged if a.type == "HLD"]) == 1                               # no stale copy of the stage's own output
+
+
+async def test_files_uploaded_after_the_plan_was_saved_still_count_as_stage_inputs():
+    from types import SimpleNamespace
+
+    from app.services.chat import ChatService
+
+    class Db:
+        async def list_attachments(self, pid, phase):
+            return [{"id": "a1"}, {"id": "a2"}]
+
+    svc = ChatService.__new__(ChatService)
+    svc._db = Db()
+    assert await svc._stage_attachment_ids("p", 1, ["a1"]) == ["a1", "a2"]
+    assert await svc._stage_attachment_ids("p", 1, []) == ["a1", "a2"]
+    assert await svc._stage_attachment_ids("p", 1, ["gone", "a2"]) == ["gone", "a2", "a1"]   # unknown ids are dropped later by project check
+    del SimpleNamespace
+
+
+# ---------------------------------------------------------------- retrieval must not hand a stage its own output
+async def test_retrieval_counts_only_upstream_artifacts_but_never_filters_standards_or_code():
+    from app.services.rag import RagService
+
+    docs = [{"id": f"art-{p}", "title": f"[P{p}] HLD: stage {p} design", "source": "artifact", "content": "payments design", "embedding": [1.0] + [0.0] * 63}
+            for p in (1, 2, 3)]
+    docs += [{"id": "kb-std", "title": "AWS standard", "source": "standard", "content": "payments design", "embedding": [1.0] + [0.0] * 63},
+             {"id": "code-1", "title": "[code] app.py", "source": "codebase", "content": "payments design", "embedding": [1.0] + [0.0] * 63}]
+
+    class Db:
+        async def fetch_kb_docs(self, scopes):
+            return docs
+
+    class Emb:
+        def embed(self, text):
+            return [1.0] + [0.0] * 63
+
+    svc = RagService.__new__(RagService)
+    svc._db, svc._settings, svc.embedder = Db(), type("S", (), {"RAG_TOP_K": 20})(), Emb()
+    ids = lambda hits: sorted(h["id"] for h in hits)  # noqa: E731
+    assert ids(await svc.retrieve("payments", "p")) == ["art-1", "art-2", "art-3", "code-1", "kb-std"]          # unrestricted: as before
+    assert ids(await svc.retrieve("payments", "p", artifact_phases={1})) == ["art-1", "code-1", "kb-std"]       # stage 2: only stage 1's output
+    assert ids(await svc.retrieve("payments", "p", artifact_phases=set())) == ["code-1", "kb-std"]              # the entry stage: no artifacts

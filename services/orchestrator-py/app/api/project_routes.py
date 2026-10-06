@@ -1231,6 +1231,14 @@ async def stage_context(
     return await container.chat.context_view(project_id=project_id, phase=phase_id, user=user)
 
 
+@router.get("/api/projects/{project_id}/context/graph")
+async def project_context_graph(
+    project_id: str, user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """The project-level context graph: shared context, stages, attached files, artifacts and who builds on them."""
+    return await container.chat.project_context_graph(project_id=project_id, user=user)
+
+
 @router.get("/api/projects/{project_id}/context/overview")
 async def context_overview(
     project_id: str, user: UserPublic = Depends(current_user), container: Container = Depends(get_container),

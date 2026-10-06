@@ -1487,10 +1487,13 @@ export default function StageWorkspace({
             )}
           </section>
         ) : blockedReason.length > 0 ? (
-          <Callout tone="warning" icon="lock" title="This stage is waiting for an earlier one">
-            It runs once the upstream gate{blockedReason.length > 1 ? 's are' : ' is'} approved:{' '}
-            <span className="font-semibold">{blockedReason.join(', ')}</span>.
-          </Callout>
+          <>
+            <Callout tone="warning" icon="lock" title="This stage is waiting for an earlier one">
+              It runs once the upstream gate{blockedReason.length > 1 ? 's are' : ' is'} approved:{' '}
+              <span className="font-semibold">{blockedReason.join(', ')}</span>.
+            </Callout>
+            <ContextPanel projectId={projectId} seq={selectedSeq} refreshKey={`blocked|${attachments.length}`} />
+          </>
         ) : null}
 
         {/* ---- live generation ---- */}

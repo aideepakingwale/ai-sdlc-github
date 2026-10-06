@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
 import {
   CONTEXT_SOURCE_OPTIONS,
@@ -10,6 +10,7 @@ import {
   type WorkflowView,
 } from '../api/flow';
 import type { ProjectMember } from '../api/types';
+import { inputChoices } from '../lib/workflowInputs';
 import WorkflowCanvas, { STAGE_PALETTE, type StagePreset } from './WorkflowCanvas';
 import { STAGE_ROLE_CHOICES } from '../lib/modelRoutes';
 
@@ -165,12 +166,6 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
     },
     onError: (e) => setSaveError(e instanceof Error ? e.message : 'Save failed'),
   });
-
-  const outputsUniverse = useMemo(() => {
-    const set = new Set<string>(['requirements']);
-    (stages ?? []).forEach((s) => s.outputs.forEach((o) => set.add(o)));
-    return [...set];
-  }, [stages]);
 
   /** Transitive ancestors of a stage across the dependsOn graph. */
   const ancestorsOf = useCallback((list: StageConfig[], key: string): Set<string> => {
@@ -818,7 +813,7 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
                   <div>
                     <label className="text-[10px] font-semibold uppercase text-slate-400">Inputs (from upstream outputs)</label>
                     <div className="mt-1 flex flex-wrap gap-1">
-                      {outputsUniverse.map((o) => {
+                      {inputChoices(stages ?? [], selected.key).map(({ name: o, unmet }) => {
                         const has = selected.inputs.includes(o);
                         return (
                           <button
@@ -828,14 +823,19 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
                                 inputs: has ? selected.inputs.filter((x) => x !== o) : [...selected.inputs, o],
                               })
                             }
+                            title={unmet ? 'No upstream stage produces this - remove it' : undefined}
                             className={`rounded-md px-2 py-1 text-[11px] ${
-                              has ? 'bg-amber-100 font-semibold text-amber-700' : 'bg-slate-100 text-slate-400'
+                              unmet ? 'bg-red-100 font-semibold text-red-700 line-through'
+                                : has ? 'bg-amber-100 font-semibold text-amber-700' : 'bg-slate-100 text-slate-400'
                             }`}
                           >
                             {o}
                           </button>
                         );
                       })}
+                      {inputChoices(stages ?? [], selected.key).length === 1 && (
+                        <span className="text-[10px] text-slate-400">Connect an upstream stage above to use its outputs.</span>
+                      )}
                     </div>
                   </div>
 

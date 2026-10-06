@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '../api/client';
 import type { FlowStage } from '../api/flow';
+import ProjectContextGraph from './ProjectContextGraph';
 import { LAYER_COLORS, formatChars, type ContextOverview } from '../lib/contextGraph';
 
 /**
@@ -13,6 +14,7 @@ export default function ContextStrip({ projectId, stages, focusedPhase, onFocusP
   projectId: string; stages: FlowStage[]; focusedPhase: number | null; onFocusPhase: (p: number | null) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [graph, setGraph] = useState(false);
   const q = useQuery({
     queryKey: ['context-overview', projectId, stages.map((s) => `${s.phase}:${s.status}:${s.updatedAt ?? ''}`).join('|')],
     queryFn: () => api.get<ContextOverview>(`/api/projects/${projectId}/context/overview`),
@@ -23,9 +25,14 @@ export default function ContextStrip({ projectId, stages, focusedPhase, onFocusP
 
   return (
     <div className="mt-2 border-t border-slate-100 pt-2" data-testid="context-strip">
-      <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="text-[11px] font-semibold text-slate-500 hover:text-brand-700">
-        {open ? '▾' : '▸'} Context by stage
-      </button>
+      <div className="flex items-center gap-3">
+        <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="text-[11px] font-semibold text-slate-500 hover:text-brand-700">
+          {open ? '▾' : '▸'} Context by stage
+        </button>
+        <button type="button" onClick={() => setGraph(true)} className="rounded border border-slate-200 px-1.5 py-0.5 text-[11px] font-semibold text-slate-600 hover:border-brand-300 hover:text-brand-700"
+          title="See how context flows through the whole project">◎ Project context graph</button>
+      </div>
+      {graph && <ProjectContextGraph projectId={projectId} onClose={() => setGraph(false)} onOpenStage={(p) => onFocusPhase(p)} />}
       {open && (
         <div className="mt-1.5 space-y-1">
           {q.isLoading && <div className="text-[11px] text-slate-400">Loading…</div>}

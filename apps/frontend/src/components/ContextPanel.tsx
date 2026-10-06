@@ -5,6 +5,7 @@ import { Badge } from './ui/Badge';
 import { Button } from './ui/Button';
 import { Icon } from './ui/Icon';
 import ContextGraphView from './ContextGraphView';
+import ProjectContextGraph from './ProjectContextGraph';
 import { LAYER_COLORS, STATUS_LABEL, coverage, formatChars, type ContextManifest, type ContextView, type ManifestItem } from '../lib/contextGraph';
 
 /**
@@ -16,6 +17,7 @@ import { LAYER_COLORS, STATUS_LABEL, coverage, formatChars, type ContextManifest
 export default function ContextPanel({ projectId, seq, refreshKey }: { projectId: string; seq: number; refreshKey: string }) {
   const [open, setOpen] = useState(false);
   const [full, setFull] = useState(false);
+  const [project, setProject] = useState(false);
   const [mode, setMode] = useState<'preview' | 'actual'>('preview');
   const q = useQuery({
     queryKey: ['context', projectId, seq, refreshKey],
@@ -55,6 +57,7 @@ export default function ContextPanel({ projectId, seq, refreshKey }: { projectId
             </div>
             {mode === 'actual' && view.actual?.ranAt && <span className="text-[11px] text-slate-400">last run {new Date(view.actual.ranAt).toLocaleString()}</span>}
             <span className="flex-1" />
+            <Button size="sm" variant="ghost" icon="layers" onClick={() => setProject(true)} title="How context flows through the whole project">Whole project</Button>
             <Button size="sm" variant="secondary" icon="search" onClick={() => setFull(true)}>Open full view</Button>
           </div>
           <div className="space-y-3">
@@ -74,6 +77,7 @@ export default function ContextPanel({ projectId, seq, refreshKey }: { projectId
           </div>
         </div>
       )}
+      {project && <ProjectContextGraph projectId={projectId} onClose={() => setProject(false)} />}
       {full && view && <ContextGraphView view={view} initialMode={mode} onClose={() => setFull(false)} />}
     </section>
   );
