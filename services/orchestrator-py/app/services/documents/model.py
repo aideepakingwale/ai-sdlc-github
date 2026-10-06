@@ -32,7 +32,7 @@ class Limits:
     max_pages: int = 200                 # PDF pages / slides / sheets-rows are capped past this
     max_figures: int = 24                # figures sent to vision per document
     max_rows_per_sheet: int = 1000
-    max_chars: int = 300_000             # extracted Markdown kept per document
+    max_chars: int = 1_000_000             # extracted Markdown kept per document
     max_seconds: float = 90.0            # wall-clock for parsing
     figure_seconds: float = 120.0        # wall-clock for describing figures
     figure_concurrency: int = 3
