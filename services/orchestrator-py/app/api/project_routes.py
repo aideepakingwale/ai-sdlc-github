@@ -1221,6 +1221,24 @@ def _attachment_extraction(row) -> dict:  # noqa: ANN001
     return raw if isinstance(raw, dict) else {}
 
 
+# ------------------------------------------------------------------ context visualizer
+@router.get("/api/projects/{project_id}/phase/{phase_id}/context")
+async def stage_context(
+    project_id: str, phase_id: int,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """What a stage knows: the preview built from its saved plan, and the manifest of its last run."""
+    return await container.chat.context_view(project_id=project_id, phase=phase_id, user=user)
+
+
+@router.get("/api/projects/{project_id}/context/overview")
+async def context_overview(
+    project_id: str, user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Per stage, the size and shape of the context its latest run was given."""
+    return await container.chat.context_overview(project_id=project_id, user=user)
+
+
 # ------------------------------------------------------------------ stage attachments (D-54)
 @router.post("/api/projects/{project_id}/phase/{phase_id}/attachments", status_code=201)
 async def upload_attachment(

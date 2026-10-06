@@ -520,6 +520,36 @@ class Database:
             "SELECT * FROM stage_plans WHERE project_id=$1 AND phase=$2", project_id, phase
         )
 
+    async def insert_context_manifest(self, project_id: str, phase: int, manifest: dict, created_by: str | None) -> str:
+        """Store what a stage knew for one run; keep only the latest few per stage."""
+        assert self.pool
+        mid = new_id()
+        await self.pool.execute(
+            "INSERT INTO context_manifests (id, project_id, phase, manifest, created_by) VALUES ($1,$2,$3,$4::jsonb,$5)",
+            mid, project_id, phase, json.dumps(manifest), created_by)
+        await self.pool.execute(
+            """DELETE FROM context_manifests WHERE project_id=$1 AND phase=$2 AND id NOT IN
+               (SELECT id FROM context_manifests WHERE project_id=$1 AND phase=$2 ORDER BY created_at DESC LIMIT 10)""",
+            project_id, phase)
+        return mid
+
+    async def list_context_manifests(self, project_id: str, phase: int, limit: int = 2) -> list[dict]:
+        assert self.pool
+        rows = await self.pool.fetch(
+            "SELECT id, manifest, created_at FROM context_manifests WHERE project_id=$1 AND phase=$2 ORDER BY created_at DESC LIMIT $3",
+            project_id, phase, limit)
+        return [{"id": r["id"], "createdAt": r["created_at"].isoformat(),
+                 "manifest": json.loads(r["manifest"]) if isinstance(r["manifest"], str) else r["manifest"]} for r in rows]
+
+    async def latest_context_manifests(self, project_id: str) -> list[dict]:
+        """The most recent manifest of every stage that has run (pipeline overview)."""
+        assert self.pool
+        rows = await self.pool.fetch(
+            """SELECT DISTINCT ON (phase) id, phase, manifest, created_at FROM context_manifests
+               WHERE project_id=$1 ORDER BY phase, created_at DESC""", project_id)
+        return [{"id": r["id"], "phase": r["phase"], "createdAt": r["created_at"].isoformat(),
+                 "manifest": json.loads(r["manifest"]) if isinstance(r["manifest"], str) else r["manifest"]} for r in rows]
+
     async def set_stage_plan_sig(self, project_id: str, phase: int, sig: str | None) -> None:
         """Remember the input signature the plan was last built for; a later difference means
         the plan is stale and must be reviewed again before generating."""
