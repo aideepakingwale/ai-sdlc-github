@@ -27,7 +27,7 @@ from ..services.applicability import (
 from ..services.audit import AuditService
 from ..services.content_store import ContentStore, artifact_key, source_key
 from ..services.content_validators import format_issues, syntactic_issues
-from ..services.context import build_context_block
+from ..services.context import attached_digest, build_context_block
 from ..services.diagram_render import render_architecture
 from ..services.guardrails import sanitise_output
 from ..services.prompt_library import render as render_prompt
@@ -1010,6 +1010,7 @@ async def _validate_output(
                     output_digest=_output_digest(out, skipped=tuple(
                         scope_skipped_fields(state, list(type(out).model_fields)))),
                     context_digest=context_digest[:2_500],
+                    attached_digest=attached_digest(state.extra_context) or "(none attached)",
                     syntax_errors=format_issues(syntactic) or "(none)",
                 )},
             ],

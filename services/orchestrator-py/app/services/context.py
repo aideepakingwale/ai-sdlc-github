@@ -5,6 +5,7 @@ phase N+1; over the token threshold, non-exact bodies are LLM-summarised
 from __future__ import annotations
 
 import asyncio
+import re
 
 from ..domain.models import ContextArtifact, estimate_tokens
 from ..integrations.llm import LlmClient
@@ -14,6 +15,28 @@ from .prompt_library import render as render_prompt
 # Expected size of one LLM summary (the prompt asks for <=150 words) and how many run at once.
 SUMMARY_TOKENS = 250
 COMPRESS_CONCURRENCY = 4
+
+
+_ATTACHED_HEAD = re.compile(r"(?m)^### (Attachment|Reference|Template) — ")
+
+
+def attached_digest(extra_context: str, *, per_item: int = 600, total: int = 4_000) -> str:
+    """A short digest of the material the requester attached / @-referenced (titles plus the opening of each), for
+    the checking agents - the validator and fact-check do not see the attached documents themselves, so without
+    this they report them as 'listed but not present'. Empty when nothing was attached."""
+    text = (extra_context or "").strip()
+    if not text:
+        return ""
+    starts = [m.start() for m in _ATTACHED_HEAD.finditer(text)]
+    if not starts:
+        return text[:per_item]
+    out: list[str] = []
+    for i, a in enumerate(starts):
+        block = text[a:starts[i + 1] if i + 1 < len(starts) else len(text)].strip()
+        head, _, body = block.partition("\n")
+        out.append(f"{head}\n{body.strip()[:per_item]}{' …' if len(body.strip()) > per_item else ''}")
+    joined = "\n\n".join(out)
+    return joined[:total] + (" …" if len(joined) > total else "")
 
 
 def _render(items: list[ContextArtifact]) -> str:
