@@ -129,7 +129,8 @@ class AgentState(BaseModel):
     final_response: str = ""
     gate_status: PhaseStatus = "IN_PROGRESS"
     amend_comments: str | None = None
-    tech_stack: str = "Node.js + TypeScript"
+    tech_stack_source: str = ""  # "" undecided | "ta" decided by the Technical Architect | "user"
+    tech_stack: str = ""  # "" = not decided yet (the Technical Architect stage decides)
     # Compact project profile (name, stack, integrations) threaded into every
     # stage so the whole run stays in sync with the project configuration (#4).
     project_profile: str = ""
@@ -255,7 +256,7 @@ class CreateProjectRequest(BaseModel):
     # Legacy single-string stack (kept for backward compatibility). When the
     # structured fields below are supplied, the route composes tech_stack from
     # them and this is ignored.
-    techStack: str = Field(default="Node.js + TypeScript", max_length=120)
+    techStack: str = Field(default="", max_length=120)
     # Structured stack from the configurable catalog: programming language →
     # version → framework(s). Composed server-side into the tech_stack string.
     language: str | None = Field(default=None, max_length=40)
@@ -268,6 +269,14 @@ class CreateProjectRequest(BaseModel):
     # the domain model decoupled from the workflow engine; validated in the route.
     # Omitted → the project starts on the default workflow, editable in the designer.
     workflow: dict | None = None
+
+
+class SetTechStackRequest(BaseModel):
+    """Manager override of the project's technology stack (normally decided by the
+    Technical Architect stage). An empty `language` clears it back to undecided."""
+    language: str = Field(default="", max_length=60)
+    languageVersion: str = Field(default="", max_length=40)
+    frameworks: list[str] = Field(default_factory=list, max_length=12)
 
 
 class AddMemberRequest(BaseModel):

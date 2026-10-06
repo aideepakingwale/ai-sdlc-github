@@ -167,7 +167,7 @@ class Database:
 
     # ------------------------------------------------------------ projects & sessions
     async def create_project(
-        self, *, name: str, created_by: str, tech_stack: str = "Node.js + TypeScript",
+        self, *, name: str, created_by: str, tech_stack: str = "",
         integrations: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         assert self.pool
@@ -193,6 +193,14 @@ class Database:
     async def get_project(self, project_id: str) -> asyncpg.Record | None:
         assert self.pool
         return await self.pool.fetchrow("SELECT * FROM projects WHERE id=$1", project_id)
+
+    async def set_project_stack(self, project_id: str, tech_stack: str, source: str) -> None:
+        """Record the project's decided technology stack and who decided it."""
+        assert self.pool
+        await self.pool.execute(
+            "UPDATE projects SET tech_stack=$2, tech_stack_source=$3 WHERE id=$1",
+            project_id, tech_stack, source,
+        )
 
     async def update_project_integrations(self, project_id: str, integrations: dict[str, Any]) -> None:
         """Edit a project's GitHub/Atlassian targets after creation (D-62)."""
@@ -455,7 +463,7 @@ class Database:
     async def insert_attachment(
         self, *, project_id: str, phase: int, filename: str, content_type: str,
         size_bytes: int, is_text: bool, storage_key: str, created_by: str | None,
-        attachment_id: str | None = None,
+        attachment_id: str | None = None, extraction: dict[str, Any] | None = None,
     ) -> str:
         assert self.pool
         # Caller may supply the id so the DB row, the content-store key and the
@@ -463,10 +471,10 @@ class Database:
         attachment_id = attachment_id or new_id()
         await self.pool.execute(
             "INSERT INTO stage_attachments "
-            "(id, project_id, phase, filename, content_type, size_bytes, is_text, storage_key, created_by) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+            "(id, project_id, phase, filename, content_type, size_bytes, is_text, storage_key, created_by, extraction) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)",
             attachment_id, project_id, phase, filename, content_type, size_bytes,
-            is_text, storage_key, created_by,
+            is_text, storage_key, created_by, json.dumps(extraction or {}),
         )
         return attachment_id
 

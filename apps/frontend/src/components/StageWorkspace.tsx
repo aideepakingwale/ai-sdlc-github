@@ -11,6 +11,7 @@ import { Button } from './ui/Button';
 import { SectionLabel } from './ui/Card';
 import { Stepper } from './ui/Stepper';
 import { deriveGuide } from '../lib/stageGuide';
+import { summariseExtraction, type AttachmentExtraction } from '../lib/attachmentSummary';
 import { useStickToBottom } from '../hooks/useStickToBottom';
 import type { ProjectFlow } from '../api/flow';
 import type { ChatMessage, PhaseStateView, User } from '../api/types';
@@ -145,6 +146,9 @@ export default function StageWorkspace({
   const [refIds, setRefIds] = useState<string[]>([]);
   const [formworkIds, setFormworkIds] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
+  // Per-file outcome of the last upload batch: what failed, and what was only partly read.
+  const [uploadNotes, setUploadNotes] = useState<Array<{ name: string; tone: 'error' | 'warn'; text: string }>>([]);
+  const [uploadProgress, setUploadProgress] = useState('');
   const [plan, setPlan] = useState<StagePlan | null>(null);
   const [planBusy, setPlanBusy] = useState(false);
   // D-112: the reviewer's decision on which outputs to produce (defaults to the
@@ -188,7 +192,7 @@ export default function StageWorkspace({
   const attachmentsQ = useQuery({
     queryKey: ['attachments', projectId, selectedSeq],
     queryFn: () =>
-      api.get<{ attachments: Array<{ id: string; filename: string; sizeBytes: number; isText: boolean }> }>(
+      api.get<{ attachments: Array<{ id: string; filename: string; sizeBytes: number; isText: boolean; extraction?: AttachmentExtraction }> }>(
         `/api/projects/${projectId}/phase/${selectedSeq}/attachments`,
       ),
     enabled: Boolean(projectId),
@@ -607,13 +611,28 @@ export default function StageWorkspace({
 
   async function onAttach(files: FileList | null) {
     if (!files?.length) return;
+    const batch = Array.from(files);
     setUploading(true);
+    setUploadNotes([]);
+    const notes: Array<{ name: string; tone: 'error' | 'warn'; text: string }> = [];
     try {
-      for (const file of Array.from(files)) {
-        await api.upload(`/api/projects/${projectId}/phase/${selectedSeq}/attachments`, file);
+      // One at a time: each file is analysed (text, tables, pictures, diagrams) server-side,
+      // and a failure in one must not hide the others.
+      for (const [i, file] of batch.entries()) {
+        setUploadProgress(batch.length > 1 ? `Analysing ${i + 1} of ${batch.length} — ${file.name}` : `Analysing ${file.name}`);
+        try {
+          const res = await api.upload<{ warnings?: string[]; note?: string; stats?: Record<string, number> }>(
+            `/api/projects/${projectId}/phase/${selectedSeq}/attachments`, file);
+          const warnings = res.warnings ?? [];
+          if (warnings.length) notes.push({ name: file.name, tone: 'warn', text: warnings.join(' · ') });
+        } catch (err) {
+          notes.push({ name: file.name, tone: 'error', text: err instanceof Error ? err.message : 'Upload failed' });
+        }
+        await qc.invalidateQueries({ queryKey: ['attachments', projectId, selectedSeq] });
       }
-      await qc.invalidateQueries({ queryKey: ['attachments', projectId, selectedSeq] });
     } finally {
+      setUploadNotes(notes);
+      setUploadProgress('');
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
@@ -678,11 +697,14 @@ export default function StageWorkspace({
   // Stage 1 must be told what to build; any stage that DOES get a prompt needs a
   // usable one (not a stray character). Later stages may run with no prompt at all.
   const trimmedPrompt = prompt.trim();
-  const promptRequired = stage.phase === 1;
+  // Attached documents (or pinned references) ARE the brief: analysing a requirements
+  // document needs no typed description, so only an empty stage 1 with nothing attached is blocked.
+  const hasBrief = attachments.length > 0 || refIds.length > 0;
+  const promptRequired = stage.phase === 1 && !hasBrief;
   const promptMissing = promptRequired && trimmedPrompt.length === 0;
   const promptTooShort = trimmedPrompt.length > 0 && trimmedPrompt.length < 12;
   const promptError = promptMissing
-    ? 'Describe what to build before reviewing the plan.'
+    ? 'Describe what to build — or attach a requirements document — before reviewing the plan.'
     : promptTooShort
       ? 'Add a bit more detail — at least 12 characters — so the agent has something to work with.'
       : '';
@@ -1011,8 +1033,8 @@ export default function StageWorkspace({
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => onAttach(e.target.files)} />
                 <Button size="sm" icon="paperclip" loading={uploading} disabled={locked} onClick={() => fileInputRef.current?.click()}
-                  title="Attach a document the agent should read — or follow the format of">
-                  {uploading ? 'Uploading…' : 'Attach files'}
+                  title="Attach any documents the agent should read — or follow the format of: PDF, Word, PowerPoint, Excel, draw.io, Visio, SVG, images (diagrams and screenshots are read), HTML, Markdown, CSV, JSON…">
+                  {uploading ? (uploadProgress || 'Analysing…') : 'Attach files'}
                 </Button>
                 <span className="text-xs text-slate-400">or type <kbd className="rounded bg-slate-100 px-1 font-mono text-slate-500">@</kbd> to reference earlier outputs and templates</span>
               </div>
@@ -1032,10 +1054,26 @@ export default function StageWorkspace({
                     </span>
                   ))}
                   {attachments.map((a) => (
-                    <span key={`a-${a.id}`} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600" title={a.isText ? 'Inlined into the prompt' : 'Binary — kept but not inlined'}>
-                      <Icon name="paperclip" size={11} /> {a.filename}{!a.isText && <span className="text-amber-600">(binary)</span>}
+                    <span key={`a-${a.id}`} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600"
+                      title={a.isText
+                        ? `Inlined into the prompt${(a.extraction?.warnings ?? []).length ? ` — note: ${(a.extraction?.warnings ?? []).join('; ')}` : ''}`
+                        : 'Binary — kept but not inlined'}>
+                      <Icon name="paperclip" size={11} /> {a.filename}
+                      {summariseExtraction(a.extraction?.stats) && <span className="text-slate-400">· {summariseExtraction(a.extraction?.stats)}</span>}
+                      {(a.extraction?.warnings ?? []).length > 0 && <span className="text-amber-600" aria-label="Partly read">⚠</span>}
+                      {!a.isText && <span className="text-amber-600">(binary)</span>}
                       <button type="button" aria-label={`Remove ${a.filename}`} onClick={() => removeAttachment(a.id)} disabled={locked} className="ml-0.5 text-slate-400 hover:text-red-600 disabled:opacity-30"><Icon name="x" size={11} /></button>
                     </span>
+                  ))}
+                </div>
+              )}
+
+              {uploadNotes.length > 0 && (
+                <div className="mt-2 space-y-1" role="status" data-testid="upload-notes">
+                  {uploadNotes.map((n) => (
+                    <Callout key={n.name} tone={n.tone === 'error' ? 'error' : 'warning'} compact>
+                      <strong>{n.name}</strong> — {n.tone === 'error' ? `could not be attached: ${n.text}` : `attached, but only partly read: ${n.text}`}
+                    </Callout>
                   ))}
                 </div>
               )}

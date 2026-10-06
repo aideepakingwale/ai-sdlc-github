@@ -5,6 +5,17 @@ RUN groupadd -g 10001 sdlc && useradd -u 10001 -g sdlc -m sdlc
 # for professional architecture SVGs.
 RUN apt-get update && apt-get install -y --no-install-recommends graphviz tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
+# LibreOffice (headless): lets document analysis RENDER slides and Word pages whose
+# diagrams are drawn shapes (not pictures) so the vision model can read them, and open
+# legacy .doc/.ppt/.xls/.rtf/.odt files. Adds roughly 300 MB; build with
+# `--build-arg INSTALL_LIBREOFFICE=false` to skip it (structured text, tables, pictures
+# and diagram connections are still extracted without it).
+ARG INSTALL_LIBREOFFICE=true
+RUN if [ "$INSTALL_LIBREOFFICE" = "true" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends \
+        libreoffice-writer libreoffice-impress libreoffice-calc fonts-dejavu-core fonts-liberation \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
 WORKDIR /app
 COPY services/orchestrator-py/pyproject.toml ./
 COPY services/orchestrator-py/app ./app

@@ -34,7 +34,8 @@ from ..services.prompt_library import render as render_prompt
 from ..services.steering import resolve_steering
 from ..services.rag import RagService
 from ..services.scaffold import quality_gate_files
-from .prompts import build_phase_prompt, openapi_fix_prompt
+from ..services.stack import decide_from_text, is_stack_owner, record_decision, stack_of, stack_source
+from .prompts import build_phase_prompt, openapi_fix_prompt, render_stack
 from .schemas import (
     PHASE_SCHEMAS,
     CloudArchitecture,
@@ -261,7 +262,7 @@ def run_scope(state: Any) -> dict[str, Any]:
     """Build the run's effective scope: confirmed scope + auto-excluded inapplicable
     artifacts. Anything the reviewer explicitly asked to produce is never auto-excluded."""
     scope = production_scope(state.user_input)
-    upstream = [state.project_profile or "", (state.extra_context or "")[:2_000]]
+    upstream = [state.project_profile or "", (state.extra_context or "")[:8_000]]
     upstream += [f"{a.type} {a.title} {a.summary}" for a in state.context_window[-30:]]
     corpus = project_corpus(project={"tech_stack": state.tech_stack}, user_text=state.user_input,
                             upstream=upstream)
@@ -786,7 +787,7 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
         rag_block=deps.rag.render_block(snippets),
         user_input=state.user_input,
         amend_comments=amend_comments,
-        tech_stack=state.tech_stack,
+        tech_stack=state.tech_stack, tech_stack_source=state.tech_stack_source,
         project_profile=state.project_profile,
         has_codebase=state.has_codebase,
         canon_block=canon_block,
@@ -1606,6 +1607,29 @@ async def _run_phase2(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
 
 
 # ---------------------------------------------------------------- Phase 3: TA
+async def _capture_stack(deps: AgentDeps, state: AgentState, emit: Emit, *, texts: list[str]) -> None:
+    """Persist the stack the Technical Architect stage decided, so every later stage
+    (tests, pipeline, code) targets it. Reads the design's "Technology stack decision"
+    section; falls back to inferring it from the design text. Never raises and never
+    overwrites a stack a manager set by hand."""
+    try:
+        project = await deps.db.get_project(state.project_id) or {}
+        if stack_of(project) and stack_source(project) == "user":
+            return
+        decided = decide_from_text(*texts)
+        if decided is None:
+            emit({"type": "node", "node": "agent",
+                  "label": "No technology stack could be determined from this design - reviewers can set it on the project"})
+            return
+        stored = await record_decision(deps.db, project | {"id": state.project_id}, decided, source="ta")
+        if stored:
+            emit({"type": "node", "node": "agent", "label": f"Technology stack decided: {stored}"})
+            deps.audit.record(project_id=state.project_id, phase=state.current_phase, agent_role="Technical Architect",
+                              event="project.stack_decided", detail={"techStack": stored})
+    except Exception:  # noqa: BLE001 - recording the stack must never fail the stage
+        log.warning("could not record the decided technology stack", exc_info=True)
+
+
 async def _run_phase3(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAgentResult:
     out: Phase3Output = await _generate_validated(deps, state, emit)  # type: ignore[assignment]
     artifacts: list[ContextArtifact] = []
@@ -1627,6 +1651,7 @@ async def _run_phase3(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         )
         openapi_yaml = fix.openapiYaml
 
+    await _capture_stack(deps, state, emit, texts=[out.lldMarkdown, openapi_yaml, out.cdkStack])
     commit = await _publish(deps, emit, "github_commit_lld_artefacts", {
         "branch": "main",
         "files": [
@@ -2013,7 +2038,8 @@ async def _run_custom(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     system = render_prompt("policy.responsible_ai") + "\n\n" + (f"{steering}\n\n" if steering else "") + profile + render_prompt(
         "phase.custom.system", persona=persona, stage_name=state.stage_name or "Custom stage",
         outputs=", ".join(outputs), tools=", ".join(tools) or "(none)",
-        tech_stack=state.tech_stack,
+        stack_block=render_stack(state.tech_stack, owner=is_stack_owner(persona=persona),
+                                 source=state.tech_stack_source),
     )
     # An optional PM-chosen library prompt layers extra, stage-specific instruction.
     if state.custom_prompt_id:
@@ -2053,6 +2079,9 @@ async def _run_custom(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
             else (state.stage_name or out_type),
             content=body, summary=body[:300], exact=True,
         ))
+
+    if is_stack_owner(persona=persona):
+        await _capture_stack(deps, state, emit, texts=[d.content for d in data.deliverables])
 
     # Tool plan (D-77): schedule ONLY declared tools, routed through the D-67
     # deferral — queued now, executed on gate approval by the approver (safe: no
@@ -2131,7 +2160,8 @@ async def _run_custom_format(deps: AgentDeps, state: AgentState, emit: Emit) -> 
         render_prompt("policy.responsible_ai"),
         render_prompt("phase.system.persona", persona=persona, phase_id=phase.id, phase_name=phase.name),
         resolve_steering(persona),
-        render_prompt("phase.system.stack", tech_stack=state.tech_stack),
+        render_stack(state.tech_stack, owner=is_stack_owner(template=phase.id, persona=persona),
+                     source=state.tech_stack_source),
         (f"## Project profile\n{state.project_profile}" if state.project_profile else ""),
         render_prompt("phase.system.craft"),
         "## Governing output format (MANDATORY — overrides every default)\n"

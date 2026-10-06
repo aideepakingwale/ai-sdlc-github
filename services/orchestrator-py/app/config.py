@@ -49,6 +49,22 @@ class Settings(BaseSettings):
     # model — caps the request payload and token cost without hurting legibility.
     ATTACHMENT_VISION_MAX_EDGE: int = 1536
 
+    # Document analysis (PDF / Word / PowerPoint / Excel / diagrams). Every bound
+    # exists so one hostile or enormous upload cannot exhaust the server.
+    ATTACHMENT_MAX_BYTES: int = 50_000_000       # per file (nginx client_max_body_size must be >= this)
+    ATTACHMENT_MAX_PAGES: int = 200              # pages / slides read per document
+    ATTACHMENT_MAX_FIGURES: int = 24             # pictures / diagram pages sent to the vision model per document
+    ATTACHMENT_FIGURE_CONCURRENCY: int = 3       # parallel vision calls per upload
+    ATTACHMENT_PARSE_SECONDS: int = 90           # wall-clock budget for parsing one file
+    ATTACHMENT_ANALYSIS_SECONDS: int = 120       # wall-clock budget for describing its figures
+    ATTACHMENT_STORE_CHARS: int = 300_000        # extracted Markdown kept per attachment
+    # Render slides / diagram pages to images for the vision model through
+    # LibreOffice (when installed). 'off' keeps the structural text extraction only.
+    ATTACHMENT_RENDER_PAGES: Literal["auto", "off"] = "auto"
+    # Budget (characters) for ALL attached material in one stage prompt. Large
+    # documents are condensed section by section to fit - never cut off after page 1.
+    ATTACHMENT_CONTEXT_CHARS: int = 80_000
+
     # External MCP servers the platform can leverage in addition to the in-house
     # tool-connector (D-61). Disabled by default; enable per server and supply
     # credentials in .env. Their tools are exposed namespaced (github.* / atlassian.*).

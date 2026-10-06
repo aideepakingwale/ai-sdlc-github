@@ -31,11 +31,18 @@ dependencies = [
     "markdownify>=0.13",   # HTML -> Markdown
     "openpyxl>=3.1",       # .xlsx -> Markdown tables
     "python-pptx>=1.0",    # .pptx -> Markdown (slides as sections)
+    # Rich document analysis: layout-aware PDF text + real tables, and page
+    # rendering (pdfium wheels bundle the renderer - no system dependency) so
+    # diagrams and scanned pages can be read by the vision model.
+    "pdfplumber>=0.11",
+    "pypdfium2>=4.30",
+    "lxml>=5.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",
+    "reportlab>=4.0",     # builds real PDF fixtures for the document-ingestion tests
     "pytest-asyncio>=0.24",
     "ruff>=0.8",
 ]

@@ -446,7 +446,14 @@ export default function Workspace() {
       {governanceOpen && <GovernancePanel onClose={() => setGovernanceOpen(false)} />}
       {obsOpen && <ObservabilityPanel onClose={() => setObsOpen(false)} />}
       {contextOpen && activeProjectId && (
-        <ProjectContextPanel projectId={activeProjectId} techStack={detail.data?.project.techStack} onClose={() => setContextOpen(false)} />
+        <ProjectContextPanel
+          projectId={activeProjectId}
+          techStack={detail.data?.project.techStack}
+          techStackDecided={detail.data?.project.techStackDecided}
+          techStackSource={detail.data?.project.techStackSource}
+          canSetStack={(detail.data?.me?.canManageTeam ?? false) || detail.data?.me?.membershipRole === 'TA'}
+          onClose={() => setContextOpen(false)}
+        />
       )}
       {newProjectOpen && (
         <NewProjectModal onClose={() => setNewProjectOpen(false)} onCreated={onProjectCreated} />

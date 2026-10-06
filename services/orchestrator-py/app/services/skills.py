@@ -22,6 +22,7 @@ from ..domain.errors import SdlcError
 from ..domain.models import PhaseRole, UserPublic, get_phase
 from .guardrails import enforce_input, sanitise_output
 from .prompt_library import render as render_prompt
+from .stack import stack_of
 from .skill_loader import SkillPackError, load_skill_packs
 from .telemetry import set_run_context
 
@@ -368,7 +369,7 @@ class SkillService:
         set_run_context(project_id, project["current_phase"]) # span attribution
         ctx = SkillContext(
             project_id=project_id, phase=project["current_phase"],
-            tech_stack=project.get("tech_stack") or "Node.js + TypeScript",
+            tech_stack=stack_of(project),
             user=user, user_input=user_input.strip(), deps=self._deps,
         )
         result = await skill.run(ctx)

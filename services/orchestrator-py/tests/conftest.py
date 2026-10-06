@@ -178,10 +178,10 @@ class FakeDb:
         if project_id in self.projects:
             return self.projects[project_id]
         return {"id": project_id, "name": "P", "created_by": "u-pm",
-                "current_phase": 1, "status": "ACTIVE", "tech_stack": "Node.js + TypeScript"}
+                "current_phase": 1, "status": "ACTIVE", "tech_stack": ""}
 
     # Project creation + per-project integration targets
-    async def create_project(self, *, name, created_by, tech_stack="Node.js + TypeScript", integrations=None):
+    async def create_project(self, *, name, created_by, tech_stack="", integrations=None):
         import datetime as _dt
         ig = integrations or {}
         pid = f"proj-{len(self.projects) + 1}"
@@ -193,6 +193,11 @@ class FakeDb:
         }
         self.projects[pid] = row
         return row
+
+    async def set_project_stack(self, project_id, tech_stack, source):
+        row = self.projects.get(project_id)
+        if row is not None:
+            row["tech_stack"], row["tech_stack_source"] = tech_stack, source
 
     async def update_project_integrations(self, project_id, integrations):
         row = self.projects.get(project_id)

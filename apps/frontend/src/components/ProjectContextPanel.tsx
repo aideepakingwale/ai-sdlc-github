@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
+import TechStackBar from './TechStackBar';
 
 /**
  * Project Context workspace: the two human-authored inputs that shape
@@ -49,7 +50,16 @@ const PRIORITY_CHIP: Record<string, string> = {
   context: 'bg-slate-100 text-slate-600',
 };
 
-export default function ProjectContextPanel({ projectId, techStack, onClose }: { projectId: string; techStack?: string; onClose: () => void }) {
+export default function ProjectContextPanel({
+  projectId, techStack, techStackDecided = !!techStack, techStackSource, canSetStack = false, onClose,
+}: {
+  projectId: string;
+  techStack?: string;
+  techStackDecided?: boolean;
+  techStackSource?: string;
+  canSetStack?: boolean;
+  onClose: () => void;
+}) {
   const qc = useQueryClient();
   const [tab, setTab] = useState<'canon' | 'formwork' | 'preview'>('canon');
   const [draft, setDraft] = useState({
@@ -151,17 +161,13 @@ export default function ProjectContextPanel({ projectId, techStack, onClose }: {
           <button onClick={onClose} className="rounded px-2 py-1 text-slate-400 hover:bg-slate-100">✕</button>
         </div>
 
-        {techStack && (
-          <div className="border-b border-slate-200 bg-brand-50 px-5 py-2.5">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-brand-700">Technology stack</span>
-              <span className="rounded-full bg-brand-600 px-2.5 py-0.5 text-xs font-semibold text-white">{techStack}</span>
-            </div>
-            <div className="mt-1 text-[11px] text-slate-500">
-              Pinned to the project — every phase, custom stage and agent run targets this stack.
-            </div>
-          </div>
-        )}
+        <TechStackBar
+          projectId={projectId}
+          techStack={techStack}
+          decided={techStackDecided}
+          source={techStackSource}
+          canSet={canSetStack}
+        />
 
         <div className="flex gap-1 border-b border-slate-200 bg-white px-5 py-2">
           {([['canon', `📖 Canon (${canon.data?.entries.length ?? 0})`],
