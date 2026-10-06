@@ -129,6 +129,15 @@ class AgentState(BaseModel):
     final_response: str = ""
     gate_status: PhaseStatus = "IN_PROGRESS"
     amend_comments: str | None = None
+    # Per-artifact output format chosen in the plan (see services/artifact_formats.py).
+    #   artifact_formats  {TYPE: {source, refId?, fileType?}} as validated and stored
+    #   format_layouts    {TYPE: {"name", "text"}} - the attached file each 'attachment' artifact follows
+    #   formwork_selection{TYPE: formwork id} - the template each 'formwork' artifact follows
+    #   skip_types        artifacts written separately as their own document: the standard runner skips them
+    artifact_formats: dict[str, dict[str, str]] = Field(default_factory=dict)
+    format_layouts: dict[str, dict[str, str]] = Field(default_factory=dict)
+    formwork_selection: dict[str, str] = Field(default_factory=dict)
+    skip_types: list[str] = Field(default_factory=list)
     # Model role this stage generates with (reason | generate | light); "" = by stage template.
     model_role: str = ""
     tech_stack_source: str = ""  # "" undecided | "ta" decided by the Technical Architect | "user"
@@ -191,6 +200,9 @@ class StagePlanUpdate(BaseModel):
     formworkIds: list[str] = Field(default_factory=list)
     # Per-step model overrides (D-68): { "<stepId>": { "model": "<provider>/<id>" } }.
     stepOverrides: dict[str, dict[str, str]] = Field(default_factory=dict)
+    # Per-artifact output format: { "<ARTIFACT_TYPE>": {source, refId?, fileType?} }. Omitted
+    # (None) keeps what is stored; {} resets every artifact to the system standard.
+    artifactFormats: dict[str, dict[str, str]] | None = None
 
 
 class ChatRequest(BaseModel):

@@ -34,6 +34,7 @@ from ..services.prompt_library import render as render_prompt
 from ..services.steering import resolve_steering
 from ..services.rag import RagService
 from ..services.scaffold import quality_gate_files
+from ..services.artifact_formats import attachment_layout_types, norm_type
 from ..services.model_routes import role_for_stage
 from ..services.stack import decide_from_text, is_stack_owner, record_decision, stack_of, stack_source
 from .prompts import build_phase_prompt, openapi_fix_prompt, render_stack
@@ -271,7 +272,8 @@ def run_scope(state: Any) -> dict[str, Any]:
     auto = inapplicable_types(traits, state.stage_template)
     wanted = {re.sub(r"[^A-Z0-9]+", "_", x.upper()).strip("_") for x in scope.get("include") or []}
     auto = {t: why for t, why in auto.items() if t not in wanted}
-    return {**scope, "exclude": [*scope.get("exclude", []), *auto], "auto": auto}
+    skip = [t for t in (getattr(state, "skip_types", None) or []) if t not in wanted]
+    return {**scope, "exclude": [*scope.get("exclude", []), *auto, *skip], "auto": auto}
 
 # A human label per external-write tool, so an excluded concept also suppresses the
 # matching external write (no empty Jira epic created on approval, etc.).
@@ -630,7 +632,7 @@ def _deferred_stub(tool: str, args: dict[str, Any], n: int) -> dict[str, Any]:
     return {"url": token}
 
 
-async def _publish(deps: AgentDeps, emit: Emit, name: str, args: dict[str, Any]) -> dict[str, Any]:
+async def _publish(deps: AgentDeps, emit: Emit, name: str, args: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
     """Route an external WRITE through the deferral gate (D-67). When a publish
     sink is active (generation, pre-gate), the call is queued and a deterministic
     stub is returned so generation completes without touching Jira/Confluence/
@@ -640,7 +642,7 @@ async def _publish(deps: AgentDeps, emit: Emit, name: str, args: dict[str, Any])
     # cross-links still resolve) WITHOUT executing or queuing it, so no empty Jira
     # epic / Confluence page is created on gate approval for an unwanted deliverable.
     label = _TOOL_LABELS.get(name)
-    if label and labels_excluded(_scope_ctx.get(), label):
+    if label and not force and labels_excluded(_scope_ctx.get(), label):
         emit({"type": "tool_call", "tool": name, "status": "skipped",
               "summary": "suppressed — not in the confirmed output scope"})
         return _deferred_stub(name, args, 0)
@@ -658,13 +660,15 @@ async def _save_artifact(
     deps: AgentDeps, state: AgentState, emit: Emit, *,
     type_: str, title: str, content: str, summary: str,
     url: str | None = None, exact: bool = False, ref_key: str | None = None,
-    source_path: str | None = None,
+    source_path: str | None = None, ignore_scope: bool = False,
 ) -> ContextArtifact | None:
     # D-112 Phase B-ii: honour the reviewer's confirmed scope. If this artifact's
     # concept was explicitly excluded (and not included), skip it entirely — do not
     # persist, index or surface it — so generation produces only what was confirmed.
+    # (`ignore_scope`: a document written on purpose in its own layout, whose type the
+    # standard runner was told to skip precisely so this one is the only copy.)
     scope = effective_scope(state)
-    if labels_excluded(scope, type_, title):
+    if not ignore_scope and labels_excluded(scope, type_, title):
         emit({"type": "node", "node": "agent",
               "label": f"Skipped {type_} '{title[:60]}' — not in the confirmed output scope"})
         return None
@@ -758,7 +762,8 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
                   "label": "Canon: applying the project's binding rules and decisions"})
     formwork_block = ""
     if deps.formworks is not None:
-        formwork_block = await deps.formworks.render_block(state.project_id, list(phase.produces))
+        formwork_block = await deps.formworks.render_block(
+            state.project_id, list(phase.produces), selected=state.formwork_selection, skip=set(state.skip_types))
         if formwork_block:
             emit({"type": "node", "node": "agent",
                   "label": "Formwork: shaping output to the project's approved templates"})
@@ -2084,7 +2089,11 @@ async def _run_custom(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     opens the gate like any built-in phase. Reuses the same context assembly,
     guardrails, model-override, persistence and audit machinery."""
     persona = state.custom_persona or "Specialist"
-    outputs = state.custom_outputs or ["DELIVERABLE"]
+    # Outputs the reviewer chose to write as their own document (following an attached file)
+    # are produced separately - don't generate them twice.
+    separate = {norm_type(t) for t in state.skip_types}
+    outputs = [o for o in (state.custom_outputs or ["DELIVERABLE"]) if norm_type(o) not in separate] \
+        or (state.custom_outputs or ["DELIVERABLE"])
     emit({"type": "node", "node": "agent",
           "label": f"{persona} generating for '{state.stage_name}' ({', '.join(outputs)})"})
 
@@ -2246,13 +2255,32 @@ async def _run_custom_format(deps: AgentDeps, state: AgentState, emit: Emit) -> 
     instruction = re.split(r"##\s*Production scope", state.user_input or "", maxsplit=1)[0].strip()
     user = instruction or f"Produce the {phase.name} document, following the attached format exactly."
 
-    # PLAIN-TEXT STREAMING generation (D-112): the response IS the markdown (no JSON
-    # escaping / retry), and it STREAMS to the workspace token-by-token so the reviewer
-    # watches the document being written live instead of waiting behind a spinner.
-    emit({"type": "content_start", "part": "document", "title": f"{phase.name} document",
-          "doc_type": _PRIMARY_DOC_TYPE.get(state.stage_template, "DOCUMENT")})
+    markdown, title, art = await _stream_document(
+        deps, state, emit, system=system, user=user, part="document",
+        doc_type=_PRIMARY_DOC_TYPE.get(state.stage_template, "DOCUMENT"),
+        part_title=f"{phase.name} document", fallback_title=state.stage_name or phase.name,
+        tag=f"stage{state.current_phase}_custom_format", persona=persona,
+        audit_detail={"customFormat": True, "attachedFormat": True},
+    )
+    arts = [art] if art is not None else []
+    return PhaseAgentResult(
+        summary=f"Produced '{title}' following your attached format ({len(markdown)} chars). "
+                f"No default template or Agile backlog was generated — only the document you asked for.",
+        new_artifacts=arts, gate_status="PENDING_REVIEW",
+    )
 
-    # Persist the partial document every few seconds so it survives navigation/restart.
+
+async def _stream_document(
+    deps: AgentDeps, state: AgentState, emit: Emit, *, system: str, user: str, part: str, doc_type: str,
+    part_title: str, fallback_title: str, tag: str, persona: str, audit_detail: dict[str, Any],
+    fixed_title: str | None = None, ignore_scope: bool = False,
+    publish: tuple[str, Callable[[str, str], dict[str, Any]]] | None = None,
+) -> tuple[str, str, ContextArtifact | None]:
+    """Stream ONE markdown document from the model into the workspace (live, token by token),
+    persist the partial text every few seconds so it survives navigation / restart, then save it as
+    an artifact. Returns (markdown, title, artifact-or-None). Shared by the stage-wide attached-format
+    run and the per-artifact layout run, which differ only in prompt, part name and artifact type."""
+    emit({"type": "content_start", "part": part, "title": part_title, "doc_type": doc_type})
     written: list[str] = []
     last_save = [time.monotonic()]
     saves: set[asyncio.Task[None]] = set()
@@ -2260,14 +2288,14 @@ async def _run_custom_format(deps: AgentDeps, state: AgentState, emit: Emit) -> 
     async def _save_partial(text: str) -> None:
         try:
             await deps.db.upsert_generation_part(
-                project_id=state.project_id, phase=state.current_phase, field="document",
+                project_id=state.project_id, phase=state.current_phase, field=part,
                 status="running", error=None, value_json=None, partial_text=text,
             )
         except Exception:  # noqa: BLE001
             log.warning("partial document save failed", exc_info=True)
 
     def _on_delta(t: str) -> None:
-        emit({"type": "content_delta", "part": "document", "text": t})
+        emit({"type": "content_delta", "part": part, "text": t})
         written.append(t)
         if time.monotonic() - last_save[0] >= 3:
             last_save[0] = time.monotonic()
@@ -2276,7 +2304,7 @@ async def _run_custom_format(deps: AgentDeps, state: AgentState, emit: Emit) -> 
             task.add_done_callback(saves.discard)
 
     result = await deps.llm.generate_stream(
-        intent="generation", tag=f"stage{state.current_phase}_custom_format",
+        intent="generation", tag=tag,
         messages=[{"role": "system", "content": system, "cache": True},
                   {"role": "user", "content": user}],
         on_delta=_on_delta,
@@ -2284,46 +2312,125 @@ async def _run_custom_format(deps: AgentDeps, state: AgentState, emit: Emit) -> 
         model=state.model_overrides.get("generate") or None,
         role=state.model_role or role_for_stage(state.stage_template),
     )
-    emit({"type": "content_end", "part": "document"})
+    emit({"type": "content_end", "part": part})
     state.last_provider, state.last_model = result.provider, result.model
     markdown = (result.content or "").strip()
     if saves:
         await asyncio.gather(*saves, return_exceptions=True)
-    try:
-        await deps.db.upsert_generation_part(
-            project_id=state.project_id, phase=state.current_phase, field="document",
-            status="done", error=None, value_json=json.dumps(markdown), partial_text=None,
-        )
-    except Exception:  # noqa: BLE001
-        log.warning("document part save failed", exc_info=True)
-    emit({"type": "part", "part": "document", "status": "done", "text": markdown})
     # Strip a stray ```markdown fence the model may wrap the whole doc in.
     if markdown.startswith("```"):
         markdown = re.sub(r"^```[a-zA-Z]*\n", "", markdown)
         markdown = re.sub(r"\n```$", "", markdown).strip()
+    try:
+        await deps.db.upsert_generation_part(
+            project_id=state.project_id, phase=state.current_phase, field=part,
+            status="done", error=None, value_json=json.dumps(markdown), partial_text=None,
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("document part save failed", exc_info=True)
+    emit({"type": "part", "part": part, "status": "done", "text": markdown})
     deps.audit.record(
         project_id=state.project_id, phase=state.current_phase, agent_role=persona,
         event="ai.generation", provider=result.provider, model=result.model,
         prompt_tokens=result.usage["promptTokens"], completion_tokens=result.usage["completionTokens"],
-        artefact_body=markdown, detail={"customFormat": True, "attachedFormat": True},
+        artefact_body=markdown, detail=audit_detail,
     )
     if result.provider == "mock" or "mock" in (result.model or "").lower():
         emit({"type": "node", "node": "guardrail",
               "label": "⚠ Served by the deterministic MOCK provider — output is placeholder."})
-    doc_type = _PRIMARY_DOC_TYPE.get(state.stage_template, "DOCUMENT")
-    # Title from the document's first H1, else the stage name.
+    # Title: the caller's fixed one (keeps version lineage stable across regenerations), else the
+    # document's first H1, else the fallback.
     m = re.search(r"^#\s+(.+)$", markdown, re.M)
-    title = (m.group(1).strip() if m else "") or (state.stage_name or phase.name)
+    title = fixed_title or (m.group(1).strip() if m else "") or fallback_title
+    url: str | None = None
+    if publish is not None:                         # queued for publication on gate approval
+        tool, build_args = publish
+        url = (await _publish(deps, emit, tool, build_args(title, markdown), force=True)).get("url")
     art = await _save_artifact(
         deps, state, emit, type_=doc_type, title=title,
-        content=markdown, summary=markdown[:300], exact=True,
+        content=markdown, summary=markdown[:300], exact=True, ignore_scope=ignore_scope, url=url,
     )
-    arts = [art] if art is not None else []
-    return PhaseAgentResult(
-        summary=f"Produced '{title}' following your attached format ({len(markdown)} chars). "
-                f"No default template or Agile backlog was generated — only the document you asked for.",
-        new_artifacts=arts, gate_status="PENDING_REVIEW",
+    return markdown, title, art
+
+
+# Titles the standard runners give these artifacts - reused so a document written in a chosen
+# layout is a new VERSION of the same artifact rather than an unrelated one.
+_STANDARD_TITLES: dict[str, str] = {
+    "PRD": "Product Requirements Document", "HLD": "High-Level Design", "LLD": "Low-Level Design",
+    "TEST_STRATEGY": "Test Strategy", "RTM": "Requirements Traceability Matrix",
+    "PIPELINE_DESIGN": "CI/CD & operations design",
+}
+# Confluence pages the standard runners publish (on gate approval) for these artifacts.
+_DOC_PUBLISH: dict[str, tuple[str, Callable[[AgentState], Callable[[str, str], dict[str, Any]]]]] = {
+    "PRD": ("confluence_publish_prd", lambda s: lambda title, md: {
+        "title": f"PRD — {s.user_input[:60]}", "content": md, "jiraLinks": []}),
+    "HLD": ("confluence_publish_hld", lambda s: lambda title, md: {
+        "title": f"HLD — {s.user_input[:60]}", "hldContent": md, "adrLinks": []}),
+    "LLD": ("confluence_publish_lld", lambda s: lambda title, md: {
+        "serviceName": s.user_input[:60], "lldContent": md, "plantumlSources": []}),
+}
+
+
+def _stage_outputs(state: AgentState) -> list[str]:
+    """Every artifact type this stage's runner produces."""
+    if state.stage_template == 7:
+        return list(state.custom_outputs or [])
+    from ..services.applicability import GENERATED_ARTIFACTS
+    return list(dict.fromkeys([*get_phase(state.stage_template).produces,
+                               *GENERATED_ARTIFACTS.get(state.stage_template, [])]))
+
+
+def layout_doc_types(state: AgentState) -> list[str]:
+    """Artifacts to write as their own document following an attached file: prose artifacts the
+    reviewer pointed at an attachment whose text was resolved, that the stage actually produces and
+    that the confirmed scope keeps."""
+    wanted = [t for t in attachment_layout_types(state.artifact_formats) if state.format_layouts.get(t)]
+    produced = {norm_type(o) for o in _stage_outputs(state)}
+    scope = run_scope(state)
+    return [t for t in wanted if t in produced and not labels_excluded(scope, t)]
+
+
+async def _generate_layout_doc(
+    deps: AgentDeps, state: AgentState, emit: Emit, type_: str,
+) -> ContextArtifact | None:
+    """Write ONE artifact (e.g. the PRD) as its own document in the layout of the attached file the
+    reviewer chose for it. The other artifacts of the stage are untouched: they keep their own choice."""
+    layout = state.format_layouts[type_]
+    phase = get_phase(state.stage_template) if state.stage_template != 7 else None
+    persona = (state.custom_persona or "Specialist") if phase is None else phase.agent_persona
+    emit({"type": "node", "node": "agent",
+          "label": f"Writing the {type_} in the layout of '{layout['name']}' (its own document)"})
+    context_block, _ = await build_context_block(
+        state.context_window, deps.settings.CONTEXT_TOKEN_THRESHOLD, deps.llm)
+    canon_block = await deps.canon.render_block(state.project_id, state.stage_template) if deps.canon else ""
+    sys_parts = [
+        render_prompt("policy.responsible_ai"),
+        (render_prompt("phase.system.persona", persona=persona, phase_id=phase.id, phase_name=phase.name)
+         if phase else f"You are the {persona} agent for the '{state.stage_name}' stage."),
+        resolve_steering(persona),
+        render_stack(state.tech_stack, owner=is_stack_owner(template=state.stage_template, persona=persona),
+                     source=state.tech_stack_source),
+        (f"## Project profile\n{state.project_profile}" if state.project_profile else ""),
+        render_prompt("phase.system.craft"),
+        render_prompt("artifact.layout.system", artifact_type=type_, layout_name=layout["name"]),
+        f"## Reference layout - {layout['name']} (structure only)\n{layout['text']}",
+        ("## Binding project rules\n" + canon_block if canon_block else ""),
+        (f"## Attached source material and pinned context\n{state.extra_context}" if state.extra_context else ""),
+        (f"## Approved context from previous phases\n{context_block}" if context_block else ""),
+    ]
+    instruction = re.split(r"##\s*Production scope", state.user_input or "", maxsplit=1)[0].strip()
+    user = (instruction + "\n\n" if instruction else "") + (
+        f"Produce the {type_} now, in the layout of '{layout['name']}'.")
+    publish = _DOC_PUBLISH.get(type_)
+    _, _, art = await _stream_document(
+        deps, state, emit, system="\n".join(p for p in sys_parts if p), user=user,
+        part=f"document:{type_}", doc_type=type_, part_title=f"{type_} (layout: {layout['name']})",
+        fallback_title=_STANDARD_TITLES.get(type_, type_), fixed_title=_STANDARD_TITLES.get(type_),
+        tag=f"stage{state.current_phase}_layout_{type_.lower()}", persona=persona, ignore_scope=True,
+        audit_detail={"layoutDocument": type_, "layoutFrom": layout["name"]},
+        publish=(publish[0], publish[1](state)) if publish else None,
     )
+    return art
 
 
 _RUNNERS: dict[int, Callable[[AgentDeps, AgentState, Emit], Awaitable[PhaseAgentResult]]] = {
@@ -2356,10 +2463,16 @@ async def run_phase_agent(deps: AgentDeps, state: AgentState, emit: Emit) -> Pha
     # sink so external writes are QUEUED, not executed. The collected actions ride
     # back on the result for the caller to persist against the phase; they replay
     # only after the gate is approved. Disabled → sink stays None → legacy path.
-    # D-112: when the requester explicitly asked to follow an attached document's
-    # format, generate a single document mirroring it instead of the stage's fixed
-    # schema/backlog. Falls back to the normal runner if that path fails (e.g. mock).
-    if _wants_attached_format(state):
+    # Per-artifact layouts: artifacts the reviewer pointed at an attached file are written as their own
+    # document; everything else in the stage keeps its own choice and runs normally, alongside.
+    layout_types = layout_doc_types(state)
+    if layout_types:
+        return await _run_with_layout_docs(deps, state, emit, runner, layout_types)
+
+    # D-112 (legacy, stage-wide): an overlay that carries the old "follow my attached document" token and no
+    # per-artifact choices generates a single document mirroring it instead of the stage's schema/backlog.
+    # Falls back to the normal runner if that path fails (e.g. mock).
+    if not state.artifact_formats and _wants_attached_format(state):
         try:
             return await _run_custom_format(deps, state, emit)
         except Exception as err:  # noqa: BLE001
@@ -2367,6 +2480,10 @@ async def run_phase_agent(deps: AgentDeps, state: AgentState, emit: Emit) -> Pha
             emit({"type": "node", "node": "guardrail", "status": "error",
                   "label": f"Attached-format generation failed ({str(err)[:120]}); falling back to the standard output"})
 
+    return await _run_standard(deps, state, emit, runner)
+
+
+async def _run_standard(deps: AgentDeps, state: AgentState, emit: Emit, runner: Any) -> PhaseAgentResult:
     defer = getattr(deps.settings, "PUBLISH_ON_APPROVAL", True)
     token = _publish_sink.set([] if defer else None)
     # D-112 Phase B-ii: expose the confirmed scope to the side-effecting helpers.
@@ -2380,3 +2497,59 @@ async def run_phase_agent(deps: AgentDeps, state: AgentState, emit: Emit) -> Pha
     if defer and collected:
         result.publish_actions = collected
     return result
+
+
+async def _run_with_layout_docs(
+    deps: AgentDeps, state: AgentState, emit: Emit, runner: Any, layout_types: list[str],
+) -> PhaseAgentResult:
+    """Run the stage when some artifacts follow an attached file's layout: those are written as their own
+    documents (in parallel) while the standard runner produces the rest, with the layout artifacts skipped
+    so there is exactly one copy of each. A retrigger of `document:<TYPE>` regenerates just that document."""
+    retrig = list(state.retrigger_fields)
+    doc_retrig = {f.split(":", 1)[1] for f in retrig if f.startswith("document:")}
+    schema_retrig = [f for f in retrig if not f.startswith("document:")]
+    docs = [t for t in layout_types if not retrig or t in doc_retrig]
+    std_state = state.model_copy(update={"skip_types": [*state.skip_types, *layout_types],
+                                         "retrigger_fields": schema_retrig})
+    remaining = [o for o in _stage_outputs(std_state)
+                 if norm_type(o) not in layout_types and not labels_excluded(run_scope(std_state), o)]
+    run_standard = bool(schema_retrig) if retrig else bool(remaining)
+
+    defer = getattr(deps.settings, "PUBLISH_ON_APPROVAL", True)
+    token = _publish_sink.set([] if defer else None)
+    scope_token = _scope_ctx.set(run_scope(std_state))
+    try:
+        async def one_doc(t: str) -> ContextArtifact | None:
+            try:
+                return await _generate_layout_doc(deps, state, emit, t)
+            except Exception as err:  # noqa: BLE001 - one document failing must not sink the stage
+                log.warning("layout document %s failed: %s", t, err, exc_info=True)
+                try:
+                    await deps.db.upsert_generation_part(
+                        project_id=state.project_id, phase=state.current_phase, field=f"document:{t}",
+                        status="failed", error=str(err)[:300], value_json=None, partial_text=None)
+                except Exception:  # noqa: BLE001
+                    pass
+                emit({"type": "part", "part": f"document:{t}", "status": "failed", "error": str(err)[:300], "text": ""})
+                emit({"type": "node", "node": "guardrail", "status": "error",
+                      "label": f"✗ {t} (own layout) failed — {str(err)[:140]}. Retrigger it to complete."})
+                return None
+
+        std_task = runner(deps, std_state, emit) if run_standard else None
+        gathered = await asyncio.gather(*([std_task] if std_task else []), *(one_doc(t) for t in docs))
+        std_result: PhaseAgentResult | None = gathered[0] if std_task else None  # type: ignore[assignment]
+        doc_arts = [a for a in (gathered[1:] if std_task else gathered) if a is not None]
+    finally:
+        collected = _publish_sink.get()
+        _publish_sink.reset(token)
+        _scope_ctx.reset(scope_token)
+    if not std_result and not doc_arts:
+        raise SdlcError("PROVIDER_ERROR", "none of the requested documents could be generated")
+    names = ", ".join(f"{t} ← '{state.format_layouts[t]['name']}'" for t in layout_types)
+    summary = ((std_result.summary + " ") if std_result else "") + (
+        f"Written as their own documents in the layout you chose: {names}." if doc_arts else "")
+    out = PhaseAgentResult(summary=summary, new_artifacts=[*(std_result.new_artifacts if std_result else []), *doc_arts],
+                           gate_status="PENDING_REVIEW")
+    if defer and collected:
+        out.publish_actions = collected     # the standard runner's queued publishes and the documents' own
+    return out
