@@ -392,7 +392,7 @@ class ScriptedMcp:
         self.run_counter = 0
         self.runs: dict[str, str] = {}
 
-    async def call(self, tool: str, args: dict):
+    async def call(self, tool: str, args: dict, **_kw):
         if tool == "github_poll_run_status":
             conclusion = self.runs.get(args["runId"], "failure")
             return {"status": "completed", "conclusion": conclusion,
@@ -697,7 +697,7 @@ class _RecMcp:
         self._responses = responses or {}
         self._fail_on = fail_on
 
-    async def call(self, tool, args):  # noqa: ANN001
+    async def call(self, tool, args, **_kw):  # noqa: ANN001
         self.calls.append((tool, dict(args)))
         if self._fail_on and tool == self._fail_on:
             raise RuntimeError("connector down")

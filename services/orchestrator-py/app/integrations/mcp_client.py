@@ -51,10 +51,21 @@ class McpServer:
     headers: dict[str, str] | None = None
 
 
+# Tools that publish somewhere project-specific (a repository, a Confluence space, a Jira project).
+TARGETED_PREFIXES = ("jira_", "confluence_", "github_")
+
+
 class McpToolClient:
     def __init__(self, url: str, extra_servers: list[McpServer] | None = None) -> None:
         # The primary tool-connector is always server 0 and owns un-prefixed names.
         self._servers: list[McpServer] = [McpServer("tools", url)] + list(extra_servers or [])
+        self._target_for: Any = None          # async (project_id) -> {"githubRepo":…, "confluenceSpaceKey":…, "jiraProjectKey":…}
+        self._current_project: Any = None     # () -> project id of the run in progress, or None
+
+    def bind_targets(self, target_for: Any, current_project: Any = None) -> None:
+        """Make every publishing tool call carry ITS PROJECT's integration target (repository, space, Jira project).
+        Without this a call falls back to the platform default, which every project would then share."""
+        self._target_for, self._current_project = target_for, current_project
 
     def _resolve(self, name: str) -> tuple[McpServer, str]:
         """Route a (possibly namespaced) tool name to its server + real tool name."""
@@ -98,8 +109,19 @@ class McpToolClient:
                 log.warning("MCP server %s (%s) unavailable: %s", srv.name, srv.url, err)
         return out
 
-    async def call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+    async def _with_target(self, srv: McpServer, real_name: str, args: dict[str, Any], project_id: str | None) -> dict[str, Any]:
+        """Attach the calling project's integration target to a publishing tool call (primary connector only)."""
+        if srv.prefix is not None or not real_name.startswith(TARGETED_PREFIXES) or self._target_for is None or "target" in args:
+            return args
+        pid = project_id or (self._current_project() if self._current_project else None)
+        if not pid:
+            return args
+        target = await self._target_for(pid)
+        return {**args, "target": target} if target else args
+
+    async def call(self, name: str, args: dict[str, Any], *, project_id: str | None = None) -> dict[str, Any]:
         srv, real_name = self._resolve(name)
+        args = await self._with_target(srv, real_name, args, project_id)
         try:
             async with self._session(srv) as streams:
                 read, write = streams[0], streams[1]  # 2- or 3-tuple across mcp versions
