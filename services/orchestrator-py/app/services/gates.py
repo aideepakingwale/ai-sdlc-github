@@ -5,6 +5,8 @@ next level only when every gate in the current level is APPROVED."""
 
 from __future__ import annotations
 
+import json
+
 import logging
 import uuid
 from typing import Any, Awaitable, Callable
@@ -20,6 +22,22 @@ from .guardrails import enforce_input
 log = logging.getLogger("gates")
 
 Regenerate = Callable[[str, int, UserPublic], Awaitable[None]]
+
+
+def _stored_overrides(row: Any) -> dict:
+    """The stage plan's per-step model overrides as a dict ({} when none / an older row)."""
+    try:
+        raw = row["step_overrides"] if row else None
+    except (KeyError, IndexError, TypeError):
+        return {}
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode()
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except ValueError:
+            return {}
+    return raw if isinstance(raw, dict) else {}
 
 
 class GateService:
@@ -132,6 +150,8 @@ class GateService:
                 referenced_artifact_ids=(existing["referenced_artifact_ids"] if existing else []) or [],
                 attachment_ids=(existing["attachment_ids"] if existing else []) or [],
                 formwork_ids=(existing["formwork_ids"] if existing else []) or [],
+                # keep everything the earlier plan carried: per-step models (formats are kept by the DB layer)
+                step_overrides=_stored_overrides(existing),
                 origin="amend", updated_by=user.id,
             )
         except Exception as err:  # noqa: BLE001 — draft seeding is best-effort

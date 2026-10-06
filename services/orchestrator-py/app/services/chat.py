@@ -437,6 +437,9 @@ class ChatService:
             query=f"{overlay.get('promptOverlay') or ''} {stage['name']} {' '.join(produces)}",
             items=items,
         )
+        revision = await self._revision_context(project["id"], int(stage["seq"]), overlay.get("promptOverlay") or "", items)
+        if revision:
+            extra_context = f"{extra_context}\n\n{revision}" if extra_context else revision
         user_input = overlay.get("promptOverlay") or f"Generate {', '.join(produces)} for '{stage['name']}'."
         if stage["template"] == 7:
             # Custom phase (D-74): preview the generic prompt the runner will use —
@@ -1523,6 +1526,59 @@ class ChatService:
     def _format_lines(rows: list[dict[str, str]]) -> str:
         return "\n".join(f"- {r['artifact']} — layout: {r['layout']}; delivered as {r['deliveredAs']}" for r in rows)
 
+    _AMEND_RE = re.compile(
+        r"Reviewer's requested changes \(([^)]*)\):\n(.*?)(?=\n\nReviewer's requested changes \(|\n\n## |\Z)", re.S)
+
+    async def _revision_context(self, project_id: str, phase: int, overlay_text: str,
+                                items: list[dict[str, Any]] | None, amending: bool | None = None) -> str:
+        """When a stage is being amended, everything it already knew stays and the amendment EXTENDS it:
+        the previous version of its deliverables goes to the model (so it edits rather than starts over),
+        and the history - the original instructions, answered clarifications and every amendment so far -
+        is itemised for the context graph. Returns the block to append to the attached context ('' when
+        the stage is not being amended)."""
+        from .documents import allocate, fit_document
+        if amending is None:
+            st = await self._dynamo.get_phase_state(project_id, phase)
+            amending = bool(st and st.get("status") == "AMEND_REQUESTED")
+        if not amending:
+            return ""
+        budget = int(getattr(getattr(self, "_settings", None), "REVISION_CONTEXT_CHARS", 60_000) or 60_000)
+        rows = [r for r in await self._db.list_artefacts(project_id) if r["phase"] == phase]
+        bodies: list[tuple[Any, str]] = []
+        for r in rows:
+            body = r["content"] or ""
+            if r["storage_key"]:
+                stored = await self._deps.content.get(r["storage_key"])
+                if stored is not None:
+                    body = stored
+            if body.strip():
+                bodies.append((r, body))
+        parts: list[str] = []
+        if bodies:
+            share = allocate([len(b) for _, b in bodies], budget)
+            for (r, body), cap in zip(bodies, share, strict=True):
+                fitted = fit_document(body, cap, overlay_text)
+                parts.append(f"### Previous version — {r['type']}: {r['title']}\n{fitted}")
+                if items is not None:
+                    items.append({"kind": "revision", "id": r["id"], "label": f"Previous version - {r['title']}", "chars": len(fitted),
+                                  "totalChars": len(body), "status": "condensed" if len(fitted) < len(body) - 50 else "full",
+                                  "phase": phase, "artifactType": r["type"]})
+        if items is not None:
+            if "## Clarifications (confirmed by the reviewer)" in overlay_text:
+                block = overlay_text.split("## Clarifications (confirmed by the reviewer)", 1)[1].split("\n\n## ", 1)[0]
+                items.append({"kind": "amendment", "id": "clarifications", "label": "Clarification answers", "chars": len(block),
+                              "totalChars": len(block), "status": "full"})
+            for n, m in enumerate(self._AMEND_RE.finditer(overlay_text), 1):
+                items.append({"kind": "amendment", "id": f"amend-{n}", "label": f"Amendment {n} - {m.group(1)}",
+                              "chars": len(m.group(2)), "totalChars": len(m.group(2)), "status": "full"})
+        if not parts:
+            return ""
+        return ("## This stage is being AMENDED — extend the previous version, do not start over\n"
+                "Everything in the instructions above (the original request, the clarifications and every earlier amendment) still applies; "
+                "the latest reviewer changes are an extension of them. Below is the previous version of this stage's deliverables. "
+                "Keep what the reviewers did not ask to change, apply the requested changes, and keep the document's structure and numbering stable.\n\n"
+                + "\n\n".join(parts))
+
     @staticmethod
     def _formats_of(row: Any) -> dict[str, dict[str, str]]:
         """The stage's stored per-artifact formats ({} when none / an older row)."""
@@ -1700,6 +1756,10 @@ class ChatService:
             query=f"{prompt_overlay} {stage['name']} {' '.join(stage.get('outputs') or [])}",
             items=attached_items,
         )
+        revision = await self._revision_context(project_id, phase, prompt_overlay, attached_items,
+                                                amending=(status == "AMEND_REQUESTED"))
+        if revision:
+            extra_context = f"{extra_context}\n\n{revision}" if extra_context else revision
         full_context = [ContextArtifact.model_validate(a) for a in (session.get("context_window") or [])]
         context = self._upstream_window(wf, stage, full_context)
 

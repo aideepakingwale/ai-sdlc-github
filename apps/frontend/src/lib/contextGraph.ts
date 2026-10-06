@@ -28,7 +28,7 @@ export interface ContextOverview {
 
 export const LAYER_COLORS: Record<string, string> = {
   instructions: '#64748b', project: '#0ea5e9', canon: '#8b5cf6', upstream: '#10b981',
-  input: '#f59e0b', attached: '#ec4899', retrieved: '#14b8a6',
+  input: '#f59e0b', revision: '#f97316', attached: '#ec4899', retrieved: '#14b8a6',
 };
 export const STATUS_LABEL: Record<ItemStatus, string> = {
   full: 'In full', condensed: 'Condensed', summarised: 'Summary only', excluded: 'Not included',

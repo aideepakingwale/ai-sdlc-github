@@ -28,6 +28,7 @@ LAYERS: list[tuple[str, str, str]] = [
     ("canon", "Standards & templates", "Organisation canon and the output templates the artifacts must follow."),
     ("upstream", "Previous stages", "Artifacts approved in earlier stages that this stage builds on."),
     ("input", "Your instructions", "What the reviewer asked for in the plan."),
+    ("revision", "Amendment & history", "The previous version being amended, the amendments requested so far and the clarifications already answered."),
     ("attached", "Attached material", "Files and artifacts the reviewer attached or @-referenced for this stage."),
     ("retrieved", "Retrieved knowledge", "Enterprise standards and approved artifacts found by similarity search."),
 ]
@@ -118,7 +119,8 @@ def build_manifest(
                        note="" if instruction else "None given - the stage's defaults apply"))
 
     for a in attached:
-        items.append(_item("attached", f"{a['kind']}:{a['id']}", a["label"], chars=int(a.get("chars") or 0),
+        layer_id = "revision" if a["kind"] in ("revision", "amendment") else "attached"
+        items.append(_item(layer_id, f"{a['kind']}:{a['id']}", a["label"], chars=int(a.get("chars") or 0),
                            total=int(a.get("totalChars") or a.get("chars") or 0), status=a.get("status", "full"),
                            kind=a["kind"], source={k: v for k, v in a.items() if k in ("id", "filename", "phase", "artifactType", "summary", "type")} | {"type": a["kind"]},
                            note=a.get("note", "")))
@@ -172,7 +174,7 @@ def _edge_label(i: dict[str, Any]) -> str:
     if i["status"] in ("condensed", "summarised"):
         return i["status"]
     return {"upstream": "builds on", "attached": "analysed", "retrieved": "informs", "canon": "must follow",
-            "instructions": "governs", "project": "applies", "input": "asked for"}.get(i["layer"], "")
+            "instructions": "governs", "project": "applies", "input": "asked for", "revision": "amends"}.get(i["layer"], "")
 
 
 def diff_manifests(old: dict[str, Any] | None, new: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:

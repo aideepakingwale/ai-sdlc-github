@@ -1192,7 +1192,7 @@ export default function StageWorkspace({
               </div>
             </form>
 
-            <ContextPanel projectId={projectId} seq={selectedSeq} refreshKey={`${locked}|${attachments.length}|${plan?.planState?.fresh ?? ''}|${(plan?.overlay.promptOverlay ?? '').length}`} />
+            <ContextPanel projectId={projectId} seq={selectedSeq} refreshKey={`${locked}|${stage.status}|${attachments.length}|${plan?.planState?.fresh ?? ''}|${(plan?.overlay.promptOverlay ?? '').length}`} />
 
             {/* ---- Step 2 · Review the plan ---- */}
             {plan && (

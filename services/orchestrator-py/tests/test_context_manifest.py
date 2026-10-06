@@ -35,7 +35,7 @@ def _manifest(**kw):
 def test_every_layer_is_present_with_items_and_totals():
     m = _manifest()
     ids = [layer["id"] for layer in m["layers"]]
-    assert ids == ["instructions", "project", "canon", "upstream", "input", "attached", "retrieved"]
+    assert ids == ["instructions", "project", "canon", "upstream", "input", "revision", "attached", "retrieved"]
     by = {layer["id"]: layer for layer in m["layers"]}
     assert any("Quality bar" in i["label"] for i in by["instructions"]["items"])
     assert m["totals"]["tokens"] == tokens_of(m["totals"]["chars"]) and m["totals"]["items"] == sum(len(layer["items"]) for layer in m["layers"])
