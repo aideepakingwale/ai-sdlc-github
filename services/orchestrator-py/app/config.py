@@ -107,7 +107,17 @@ class Settings(BaseSettings):
     PER_ARTIFACT_MAX_PARALLEL: int = 4
     # Number of background workers consuming the stage-generation queue (D-99).
     # Bounds how many stage runs execute concurrently across the platform.
-    GENERATION_WORKERS: int = 2
+    GENERATION_WORKERS: int = 4
+    # Role-based model routing (latency). Small judging / summarising calls - the
+    # validator, fact-check, clarification check, trait detection and context
+    # compression - do not need the large generation model; pin them to a fast one.
+    # Value: 'provider/model', e.g. 'bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0'.
+    # Empty = use the normal chain (no change). A failing light model is bypassed for
+    # a few minutes and the call falls back to the normal chain, so a wrong id degrades
+    # to the old speed instead of breaking runs.
+    LIGHT_MODEL: str = ""
+    # Model for the stage planner (the 'Review plan' proposal). Empty = normal chain.
+    PLAN_MODEL: str = ""
     BUILD_LOOP_MAX_ITERATIONS: int = 5
     BUILD_POLL_INTERVAL_MS: int = 30_000
     GITHUB_WEBHOOK_SECRET: str = "dev-webhook-secret"
@@ -193,6 +203,10 @@ class Settings(BaseSettings):
     # rebuild; unset uses the built-in default. Hot-reloaded on mtime change.
     TECH_CATALOG_PATH: str | None = None
     VALIDATION_MAX_REPAIRS: int = 1
+    # When the validator flags specific artifacts, rework ONLY those (the others are reused
+    # from the first run's saved parts) instead of regenerating the whole stage. Falls back
+    # to a full regeneration when the issues cannot be localised.
+    VALIDATION_LOCALISED_REWORK: bool = True
 
 
 def _load_secrets_manager() -> None:

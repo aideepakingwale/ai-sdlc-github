@@ -978,6 +978,7 @@ async def _validate_output(
             intent="standard", tag=f"validation_stage{state.current_phase}",
             temperature=0, max_tokens=1024, schema=ValidationVerdict,
             model=state.model_overrides.get("validate") or None,  # per-step model override (D-68)
+            role="light",
             messages=[
                 {"role": "system", "content": render_prompt("validate.system")},
                 {"role": "user", "content": render_prompt(
@@ -1087,6 +1088,37 @@ async def _persist_validation_feedback(
         log.warning("could not persist validation feedback: %s", err)
 
 
+def _norm_key(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+def failing_fields(state: AgentState, out: BaseModel, errors: list[ValidationIssue]) -> list[str] | None:
+    """The schema fields (artifacts) the validator's ERRORS point at, or None when they
+    cannot all be localised - in which case the caller regenerates everything.
+
+    The validator names an `area` per issue: a field name ("openapiYaml"), an artifact type
+    ("OPENAPI", "LLD") or free text containing one. Several fields can share a type (LLD
+    covers four), so a type maps to all of them. Fields excluded by the confirmed scope are
+    never regenerated. Localised rework regenerates far less than the whole stage."""
+    fields = list(type(out).model_fields)
+    by_type = FIELD_ARTIFACT_TYPES.get(state.stage_template, {})
+    skipped = set(scope_skipped_fields(state, fields))
+    picked: set[str] = set()
+    for issue in errors:
+        area = _norm_key(issue.area)
+        hit = {f for f in fields if len(_norm_key(f)) >= 5 and _norm_key(f) in area}
+        hit |= {f for f, types in by_type.items()
+                if f in fields and any(len(_norm_key(t)) >= 3 and _norm_key(t) in area for t in types)}
+        if not hit:
+            return None
+        picked |= hit
+    picked -= skipped
+    remaining = [f for f in fields if f not in skipped]
+    if not picked or len(picked) >= len(remaining):
+        return None                      # nothing to localise, or it IS everything
+    return [f for f in fields if f in picked]
+
+
 async def _generate_validated(deps: AgentDeps, state: AgentState, emit: Emit) -> BaseModel:
     """Generate a phase's output, then validate it against the user's intent and
     for syntactic correctness, re-invoking the phase agent with concrete
@@ -1121,7 +1153,18 @@ async def _generate_validated(deps: AgentDeps, state: AgentState, emit: Emit) ->
             return out
         emit({"type": "node", "node": "validator",
               "label": f"Validator: {len(errors)} issue(s) found — asking the agent to rework"})
-        out = await _generate(deps, state, emit, rework=_rework_text(verdict))
+        # Rework only the artifacts the validator flagged when it can tell which (the others
+        # are reused from the parts the first run saved); otherwise regenerate everything.
+        flagged = failing_fields(state, out, errors) if getattr(deps.settings, "VALIDATION_LOCALISED_REWORK", True) else None
+        if flagged:
+            emit({"type": "node", "node": "validator",
+                  "label": f"Validator: reworking only {', '.join(flagged)} "
+                           f"({len(flagged)} of {len(type(out).model_fields)} artifacts) - the rest is kept"})
+            out = await _generate(
+                deps, state.model_copy(update={"retrigger_fields": flagged, "per_artifact": True}),
+                emit, rework=_rework_text(verdict))
+        else:
+            out = await _generate(deps, state, emit, rework=_rework_text(verdict))
     return out
 
 

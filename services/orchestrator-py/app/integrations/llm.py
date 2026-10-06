@@ -18,6 +18,9 @@ from ..services.prompt_library import render as render_prompt
 
 log = logging.getLogger("llm")
 
+# How long a role's pinned model is bypassed after it fails (seconds).
+ROLE_COOLDOWN_SECONDS = 300
+
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -83,8 +86,12 @@ class LlmClient:
         redis: Any = None,
         debug_env_default: bool = False,
         debug_max_chars: int = 200_000,
+        role_models: dict[str, str] | None = None,
     ) -> None:
         self._base = base_url.rstrip("/")
+        # Role -> pinned model ('provider/model') for light calls; see `role=` on generate().
+        self._role_models = {k: v.strip() for k, v in (role_models or {}).items() if v and v.strip()}
+        self._role_disabled_until: dict[str, float] = {}
         # The gateway streams real provider calls (Bedrock) that can run for
         # minutes on a large artifact; the generate POST must therefore outlast
         # the gateway's own provider ceiling (600s, D-96). If httpx gives up first
@@ -147,6 +154,48 @@ class LlmClient:
         return {"mode": "auto", "effectiveMock": True, "activeProviders": [], "providers": []}
 
     async def generate(
+        self,
+        *,
+        intent: str,
+        messages: list[dict[str, Any]],
+        json_mode: bool = False,
+        temperature: float = 0.2,
+        max_tokens: int = 4096,
+        tag: str | None = None,
+        tier: str = "auto",
+        model: str | None = None,
+        role: str | None = None,
+    ) -> LlmResult:
+        """One generation. `role` ('light' | 'plan') routes small judging / planning
+        calls to the model configured for that role. An explicit `model` always wins.
+        If the role's model fails, the call is retried once on the normal chain and the
+        role is bypassed for ROLE_COOLDOWN_SECONDS, so a mistyped model id costs one
+        slow call instead of breaking every run."""
+        pinned = self._role_model(role) if model is None else None
+        if pinned:
+            try:
+                return await self._generate(
+                    intent=intent, messages=messages, json_mode=json_mode, temperature=temperature,
+                    max_tokens=max_tokens, tag=tag, tier=tier, model=pinned)
+            except SdlcError as err:
+                if err.code != "PROVIDER_ERROR":
+                    raise
+                self._role_disabled_until[role or ""] = time.monotonic() + ROLE_COOLDOWN_SECONDS
+                log.warning("role model %s for '%s' failed (%s); using the normal chain for %ss",
+                            pinned, role, err, ROLE_COOLDOWN_SECONDS)
+        return await self._generate(
+            intent=intent, messages=messages, json_mode=json_mode, temperature=temperature,
+            max_tokens=max_tokens, tag=tag, tier=tier, model=model)
+
+    def _role_model(self, role: str | None) -> str | None:
+        if not role:
+            return None
+        pinned = self._role_models.get(role)
+        if not pinned or time.monotonic() < self._role_disabled_until.get(role, 0.0):
+            return None
+        return pinned
+
+    async def _generate(
         self,
         *,
         intent: str,
@@ -305,6 +354,7 @@ class LlmClient:
         tier: str = "auto",
         model: str | None = None,
         max_attempts: int = 3,
+        role: str | None = None,
     ) -> tuple[T, LlmResult]:
         """JSON-mode generation validated against `schema`, with truncation-aware retries.
 
@@ -328,6 +378,7 @@ class LlmClient:
             result = await self.generate(
                 intent=intent, messages=msgs, json_mode=True,
                 temperature=temperature, max_tokens=effective_max, tag=tag, tier=tier, model=model,
+                role=role,
             )
             # Provider says it hit the cap → grow the budget and retry before parsing
             # (parsing truncated JSON is pointless).

@@ -541,7 +541,7 @@ class ChatService:
         req = user_input.strip() or f"Produce {', '.join(stage.get('outputs') or ['the deliverables'])} for the '{stage['name']}' stage."
         try:
             out, _ = await self._deps.llm.generate_json(
-                intent="standard", tier="auto", tag="clarify", max_tokens=1500, max_attempts=2,
+                intent="standard", tier="auto", tag="clarify", max_tokens=1500, max_attempts=2, role="light",
                 schema=ClarificationOutput,
                 messages=[
                     {"role": "system", "content": render_prompt("policy.clarification") + "\n\n" + render_prompt(
@@ -772,7 +772,7 @@ class ChatService:
             try:
                 system, usr = traits_prompt(project=project, user_text=user_text, upstream=upstream)
                 data, _ = await self._deps.llm.generate_json(
-                    intent="standard", tag="project_traits", temperature=0, max_tokens=900,
+                    intent="standard", tag="project_traits", temperature=0, max_tokens=900, role="light",
                     schema=ProjectTraitsIntel, max_attempts=1,
                     messages=[{"role": "system", "content": system}, {"role": "user", "content": usr}],
                 )
@@ -1062,7 +1062,7 @@ class ChatService:
                 # JSON on richer stages and failed the whole plan (D-112 fix). Generous and
                 # env-tunable via PLAN_MAX_TOKENS. Still one shot (D-109).
                 max_tokens=await self._plan_max_tokens(),
-                schema=StagePlanIntel, max_attempts=1,
+                schema=StagePlanIntel, max_attempts=1, role="plan",
                 messages=[{"role": "system", "content": sys_p}, {"role": "user", "content": usr_p}],
             )
             plan = data.model_dump()

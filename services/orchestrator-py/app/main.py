@@ -86,7 +86,10 @@ async def lifespan(app: FastAPI):
         redis=redis,  # D-104: read the runtime llm_debug_trace toggle
         debug_env_default=settings.LLM_DEBUG_TRACE,
         debug_max_chars=settings.LLM_DEBUG_TRACE_MAX_CHARS,
+        role_models={"light": settings.LIGHT_MODEL, "plan": settings.PLAN_MODEL},
     )
+    if settings.LIGHT_MODEL:
+        log.info("light calls (validate / fact-check / clarify / traits / compression) -> %s", settings.LIGHT_MODEL)
     mcp = McpToolClient(settings.TOOLS_MCP_URL, extra_servers=_external_mcp_servers(settings))
     for s in mcp._servers[1:]:
         log.info("external MCP server enabled: %s -> %s", s.prefix, s.url)
