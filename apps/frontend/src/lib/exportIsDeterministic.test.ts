@@ -55,3 +55,19 @@ describe('document export is deterministic: no LLM, no API, no tokens', () => {
     expect(sameOrigin('not a url', 'also not a url')).toBe(false);
   });
 });
+
+describe('PDF print view is self-contained', () => {
+  it('builds a standalone document with its own styles, the title, the content and no UI chrome', async () => {
+    const { printHtml } = await import('./docExport');
+    const root = document.createElement('div');
+    root.innerHTML = '<div data-export-skip>toolbar</div><h2>1. Overview</h2><p>Real content</p><img src="data:image/png;base64,AAAA" alt="diagram">';
+    const html = printHtml(root, 'LLD <Test>');
+    expect(html).toMatch(/^<!doctype html>/i);
+    expect(html).toContain('<title>LLD &lt;Test&gt;</title>');
+    expect(html).toContain('Real content');
+    expect(html).toContain('data:image/png');
+    expect(html).not.toContain('toolbar');
+    expect(html).toContain('@page');
+    expect(html).not.toMatch(/#root|doc-print-root/);
+  });
+});

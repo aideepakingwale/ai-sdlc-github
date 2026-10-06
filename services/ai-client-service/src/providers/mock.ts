@@ -145,6 +145,10 @@ function render(kind: string, topic: string, seed: string, userText: string): st
         ],
       });
 
+    case 'text_diagram':
+      // A text drawing redrawn as standard Mermaid source (plain text, no fences).
+      return 'flowchart LR\n  A[Source system] --> B[Integration layer] --> C[Target system]';
+
     case 'custom_format':
       // D-112: a single document mirroring a user-attached format. PLAIN markdown
       // (text mode, not JSON) so the pipeline persists ONE document and no backlog;
