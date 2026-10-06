@@ -1144,18 +1144,24 @@ export default function StageWorkspace({
                       <button type="button" aria-label={`Remove ${f.name}`} onClick={() => setFormworkIds((p) => p.filter((id) => id !== f.id))} className="ml-0.5 text-violet-400 hover:text-red-600"><Icon name="x" size={11} /></button>
                     </span>
                   ))}
-                  {attachments.map((a) => (
+                  {attachments.map((a) => {
+                    // "converted from .doc via LibreOffice" is informational, not a read problem.
+                    const allNotes = a.extraction?.warnings ?? [];
+                    const infoNotes = allNotes.filter((w) => /^converted from /i.test(w));
+                    const warns = allNotes.filter((w) => !/^converted from /i.test(w));
+                    return (
                     <span key={`a-${a.id}`} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600"
                       title={a.isText
-                        ? `Inlined into the prompt${(a.extraction?.warnings ?? []).length ? ` — note: ${(a.extraction?.warnings ?? []).join('; ')}` : ''}`
+                        ? `Inlined into the prompt${infoNotes.length ? ` (${infoNotes.join('; ')})` : ''}${warns.length ? ` — note: ${warns.join('; ')}` : ''}`
                         : 'Binary — kept but not inlined'}>
                       <Icon name="paperclip" size={11} /> {a.filename}
                       {summariseExtraction(a.extraction?.stats) && <span className="text-slate-400">· {summariseExtraction(a.extraction?.stats)}</span>}
-                      {(a.extraction?.warnings ?? []).length > 0 && <span className="text-amber-600" aria-label="Partly read">⚠</span>}
+                      {warns.length > 0 && <span className="text-amber-600" aria-label="Partly read">⚠</span>}
                       {!a.isText && <span className="text-amber-600">(binary)</span>}
                       <button type="button" aria-label={`Remove ${a.filename}`} onClick={() => removeAttachment(a.id)} disabled={locked} className="ml-0.5 text-slate-400 hover:text-red-600 disabled:opacity-30"><Icon name="x" size={11} /></button>
                     </span>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 
