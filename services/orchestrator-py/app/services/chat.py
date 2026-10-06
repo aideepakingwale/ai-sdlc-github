@@ -29,11 +29,15 @@ from ..repos.aws import DynamoStore
 from ..repos.pg import Database
 from .audit import AuditService
 from .authz import AuthzService
+from .artifact_formats import (
+    ATTACHMENT, FORMWORK, catalog as format_catalog, norm_type as fmt_norm, parse_formats, validate_formats,
+)
 from .stack import build_stack_question, is_stack_owner, mentions_stack, stack_already_asked, stack_of, stack_source
 from .flow import STALE_STATUSES, transitive_downstream_seqs
 from .guardrails import enforce_input, sanitise_output
 from .telemetry import set_run_context
 
+LAYOUT_CHARS = 14_000          # how much of an attached layout document is shown to the model (structure first)
 log = logging.getLogger("chat")
 
 Emit = Callable[[dict[str, Any]], None]
@@ -200,6 +204,7 @@ class ChatService:
                 user_input=message, context_window=list(context), amend_comments=amend,
                 tech_stack=stack_of(project), tech_stack_source=stack_source(project),
                 model_role=stage.get("modelRole") or "",
+                **await self._resolve_formats(project["id"], seq, self._formats_of(sp_row), emit),
                 project_profile=self._project_profile(project),
                 has_codebase=has_codebase, extra_context=extra_context,
                 model_overrides=self._model_overrides_from(self._step_overrides(sp_row)),  # per-step model (D-68)
@@ -368,7 +373,12 @@ class ChatService:
         rag_block = self._deps.rag.render_block(snippets)
         canon_block = await self._deps.canon.render_block(project["id"], stage["template"]) if self._deps.canon else ""
         produces = list(stage.get("outputs") or [])
-        formwork_block = await self._deps.formworks.render_block(project["id"], produces) if self._deps.formworks else ""
+        fmts = overlay.get("artifactFormats") or {}
+        formwork_block = await self._deps.formworks.render_block(
+            project["id"], produces,
+            selected={k: v["refId"] for k, v in fmts.items() if v.get("source") == FORMWORK and v.get("refId")},
+            skip={k for k, v in fmts.items() if v.get("source") == ATTACHMENT},
+        ) if self._deps.formworks else ""
         extra_context = await self._resolve_extra_context(
             project["id"], overlay.get("referencedArtifactIds") or [], overlay.get("attachmentIds") or [],
             overlay.get("formworkIds") or [], emit,
@@ -1097,6 +1107,7 @@ class ChatService:
             "referencedArtifactIds": (row["referenced_artifact_ids"] if row else []) or [],
             "attachmentIds": (row["attachment_ids"] if row else []) or [],
             "formworkIds": (row["formwork_ids"] if row else []) or [],
+            "artifactFormats": self._formats_of(row),
             "origin": row["origin"] if row else "new",
         }
         # Pending interactive clarification (D-108): the UI renders these as answer cards.
@@ -1227,6 +1238,9 @@ class ChatService:
             # with its source and evidence. Code enforces it; the user can override it.
             "traits": [{"trait": k, **v} for k, v in trait_detail.items()],
             "catalog": build_model_catalog(roster),
+            # Per-artifact output format: each artifact's kind, the layout sources / file types it
+            # supports, the templates + attached files it could follow, and the current choice.
+            "formatCatalog": self._format_catalog(plan_stage, formworks, attachments, overlay.get("artifactFormats") or {}),
             "context": {
                 "priorArtifacts": [{"id": a["id"], "phase": a["phase"], "type": a["type"], "title": a["title"]} for a in prior_arts],
                 "canonApplied": canon_applied,
@@ -1237,6 +1251,7 @@ class ChatService:
             },
             "overlay": {
                 **{k: overlay[k] for k in ("promptOverlay", "referencedArtifactIds", "attachmentIds", "formworkIds", "origin")},
+                "artifactFormats": overlay.get("artifactFormats") or {},
                 "stepOverrides": step_overrides,
             },
             "prompt": {"system": system, "user": user_prompt},
@@ -1250,6 +1265,10 @@ class ChatService:
             raise SdlcError("FORBIDDEN", f"Editing the '{stage['name']}' plan requires write permission ({' or '.join(self._stage_writers(stage))})")
         await self.assert_not_generating(project_id, phase)
         await self._assert_own_references(project_id, overlay)
+        formats = None                                    # None = keep the stored per-artifact formats
+        if overlay.get("artifactFormats") is not None:
+            formats = validate_formats(overlay["artifactFormats"], self._stage_output_types(stage))
+            await self._assert_format_refs(project_id, phase, formats)
         row = await self._db.get_stage_plan(project_id, phase)
         await self._db.upsert_stage_plan(
             project_id=project_id, phase=phase, prompt_overlay=overlay.get("promptOverlay", ""),
@@ -1257,6 +1276,7 @@ class ChatService:
             attachment_ids=overlay.get("attachmentIds") or [],
             formwork_ids=overlay.get("formworkIds") or [],
             step_overrides=overlay.get("stepOverrides") or {},  # per-step model overrides (D-68)
+            artifact_formats=formats,
             origin=(row["origin"] if row else "new"), updated_by=user.id,
         )
         self._audit.record(project_id=project_id, phase=phase, agent_role="Orchestrator",
@@ -1264,6 +1284,97 @@ class ChatService:
         # D-109: a save is a persist, not a display — don't pay the ~30s planner here;
         # reuse the cached intel. The explicit GET /plan recomputes it when needed.
         return await self.build_plan(project_id=project_id, phase=phase, user=user, run_intel=False)
+
+    @staticmethod
+    def _formats_of(row: Any) -> dict[str, dict[str, str]]:
+        """The stage's stored per-artifact formats ({} when none / an older row)."""
+        try:
+            return parse_formats(row["artifact_formats"])
+        except (KeyError, IndexError, TypeError):
+            return {}
+
+    @staticmethod
+    def _stage_output_types(stage: dict) -> list[str]:
+        """Every artifact type the stage can produce: its declared outputs plus the ones its
+        template derives (e.g. the test suites)."""
+        return list(dict.fromkeys([*(stage.get("outputs") or []), *GENERATED_ARTIFACTS.get(stage["template"], [])]))
+
+    async def _resolve_formats(self, project_id: str, seq: int, formats: dict[str, dict[str, str]], emit: Emit,
+                               ) -> dict[str, Any]:
+        """Turn a stage's saved per-artifact formats into what the run needs: for each artifact that follows
+        an attached file, that file's layout text (condensed to its structure); for each that follows a
+        template, the template id. A file or template that has since been deleted, or does not belong here,
+        is dropped with a notice - the artifact then simply uses the system standard."""
+        from .documents import fit_document
+
+        layouts: dict[str, dict[str, str]] = {}
+        selection: dict[str, str] = {}
+        kept: dict[str, dict[str, str]] = {}
+        att_ids = [f["refId"] for f in formats.values() if f.get("source") == ATTACHMENT]
+        rows = {r["id"]: r for r in await self._db.get_attachments_by_ids(att_ids)} if att_ids else {}
+        for t, f in formats.items():
+            if f.get("source") == ATTACHMENT:
+                row = rows.get(f.get("refId"))
+                text = ""
+                if row and row["project_id"] == project_id and row["phase"] == seq and row["is_text"]:
+                    text = await self._deps.content.get(row["storage_key"]) or ""
+                if not text.strip():
+                    emit({"type": "node", "node": "guardrail",
+                          "label": f"{t}: the file chosen as its layout is no longer available - using the system standard"})
+                    continue
+                layouts[t] = {"name": row["filename"], "text": fit_document(text, LAYOUT_CHARS, f"{t} structure sections")}
+                kept[t] = f
+            elif f.get("source") == FORMWORK and f.get("refId"):
+                selection[t] = f["refId"]
+                kept[t] = f
+            elif f.get("fileType"):
+                kept[t] = f
+        return {"artifact_formats": kept, "format_layouts": layouts, "formwork_selection": selection}
+
+    async def _assert_format_refs(self, project_id: str, phase: int, formats: dict[str, dict[str, str]]) -> None:
+        """Every attached file / template a format points at must belong to THIS project (templates may
+        also be platform-wide), the file must belong to this stage and be readable text, and a template
+        must be for that artifact type - another project's id is refused, never stored."""
+        att_ids = [f["refId"] for f in formats.values() if f.get("source") == ATTACHMENT]
+        fw_ids = [f["refId"] for f in formats.values() if f.get("source") == FORMWORK]
+        atts = {r["id"]: r for r in await self._db.get_attachments_by_ids(att_ids)} if att_ids else {}
+        fws = {r["id"]: r for r in await self._db.get_formworks_by_ids(fw_ids)} if fw_ids else {}
+        for t, f in formats.items():
+            ref = f.get("refId")
+            if f.get("source") == ATTACHMENT:
+                row = atts.get(ref)
+                if not row or row["project_id"] != project_id or row["phase"] != phase:
+                    raise SdlcError("VALIDATION_FAILED", f"{t}: that attached file is not part of this stage")
+                if not row["is_text"]:
+                    raise SdlcError("VALIDATION_FAILED", f"{t}: '{row['filename']}' could not be read, so it cannot define a layout")
+            elif f.get("source") == FORMWORK:
+                row = fws.get(ref)
+                if not row or row["project_id"] not in (None, project_id):
+                    raise SdlcError("VALIDATION_FAILED", f"{t}: that template is not available to this project")
+                if fmt_norm(row["artefact_type"]) != t:
+                    raise SdlcError("VALIDATION_FAILED", f"{t}: '{row['name']}' is a template for {row['artefact_type']}, not {t}")
+
+    def _format_catalog(self, stage: dict, formworks: list[dict], attachments: list[Any],
+                        formats: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
+        """What the plan screen offers per artifact (and what is currently chosen)."""
+        out = []
+        for entry in format_catalog(self._stage_output_types(stage)):
+            t = entry["type"]
+            mine = [f for f in formworks if fmt_norm(f["artefactType"]) == t]
+            entry["formworks"] = [{"id": f["id"], "name": f["name"], "scope": f["scope"],
+                                   "outputFormat": f["outputFormat"],
+                                   "sections": list((f.get("analysis") or {}).get("sections") or [])[:12]} for f in mine]
+            # The house template used automatically when the artifact stays on the system standard.
+            house = next((f for f in mine if f["scope"] == "project"), None) or (mine[0] if mine else None)
+            entry["houseTemplate"] = house["name"] if house else None
+            entry["attachments"] = ([{"id": a["id"], "filename": a["filename"]} for a in attachments if a["is_text"]]
+                                    if ATTACHMENT in entry["sources"] else [])
+            cur = formats.get(t) or {}
+            native = next(ft["value"] for ft in entry["fileTypes"] if ft["native"])
+            entry["selected"] = {"source": cur.get("source", "system"), "refId": cur.get("refId"),
+                                 "fileType": cur.get("fileType") or native}
+            out.append(entry)
+        return out
 
     async def _assert_own_references(self, project_id: str, overlay: dict) -> None:
         """A plan may only reference this project's artefacts, attachments and templates (platform templates are
@@ -1339,6 +1450,7 @@ class ChatService:
             "referencedArtifactIds": (row["referenced_artifact_ids"] if row else []) or [],
             "attachmentIds": (row["attachment_ids"] if row else []) or [],
             "formworkIds": (row["formwork_ids"] if row else []) or [],
+            "artifactFormats": self._formats_of(row),
         }
         prompt_overlay = overlay["promptOverlay"].strip()
         if prompt_overlay:
@@ -1399,6 +1511,7 @@ class ChatService:
             context_window=list(context), amend_comments=None,
             tech_stack=stack_of(project), tech_stack_source=stack_source(project),
             model_role=stage.get("modelRole") or "",
+            **await self._resolve_formats(project_id, phase, overlay["artifactFormats"], emit),
             project_profile=self._project_profile(project),
             has_codebase=(await self._db.count_codebase_files(project_id)) > 0, extra_context=extra_context,
             model_overrides=self._model_overrides_from(self._step_overrides(row)),  # per-step model (D-68)

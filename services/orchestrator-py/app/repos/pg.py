@@ -533,22 +533,26 @@ class Database:
         self, *, project_id: str, phase: int, prompt_overlay: str,
         referenced_artifact_ids: list[str], attachment_ids: list[str],
         formwork_ids: list[str], origin: str, updated_by: str | None,
-        step_overrides: dict | None = None,
+        step_overrides: dict | None = None, artifact_formats: dict | None = None,
     ) -> None:
+        """Insert/update a stage's plan. `artifact_formats=None` KEEPS the stored per-artifact
+        formats (several callers rewrite a plan without knowing them); pass {} to clear."""
         assert self.pool
         import json as _json
         await self.pool.execute(
             "INSERT INTO stage_plans "
             "(project_id, phase, prompt_overlay, referenced_artifact_ids, attachment_ids, formwork_ids, "
-            " step_overrides, origin, updated_by, updated_at) "
-            "VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6::jsonb,$7::jsonb,$8,$9, now()) "
+            " step_overrides, origin, updated_by, artifact_formats, updated_at) "
+            "VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6::jsonb,$7::jsonb,$8,$9, COALESCE($10::jsonb, '{}'::jsonb), now()) "
             "ON CONFLICT (project_id, phase) DO UPDATE SET "
             "prompt_overlay=EXCLUDED.prompt_overlay, referenced_artifact_ids=EXCLUDED.referenced_artifact_ids, "
             "attachment_ids=EXCLUDED.attachment_ids, formwork_ids=EXCLUDED.formwork_ids, "
             "step_overrides=EXCLUDED.step_overrides, "
+            "artifact_formats=COALESCE($10::jsonb, stage_plans.artifact_formats), "
             "origin=EXCLUDED.origin, updated_by=EXCLUDED.updated_by, updated_at=now()",
             project_id, phase, prompt_overlay, referenced_artifact_ids, attachment_ids,
             formwork_ids, _json.dumps(step_overrides or {}), origin, updated_by,
+            None if artifact_formats is None else _json.dumps(artifact_formats),
         )
 
     async def delete_stage_plan(self, project_id: str, phase: int) -> None:
