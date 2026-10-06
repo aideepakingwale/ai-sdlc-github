@@ -22,6 +22,30 @@ Output tokens dominate: generation time is roughly output tokens / the model's s
 | **Parallel context compression** | older artifacts are summarised concurrently (4 at a time) in the smallest batch expected to fit the budget, instead of one after another. |
 | **`GENERATION_WORKERS` 2 -> 4** | more stage runs execute at once. Lower it if your model provider rate-limits (429s). |
 
+## Multi-model routing (mix fast and reasoning models)
+Different work wants different models. A super-admin sets a **chain of models per role** in
+*Observability -> Model routing* (live, no restart):
+
+| Role | Serves | Typical choice |
+|---|---|---|
+| Reasoning | solution + technical architecture, and the retry when the validator still finds problems | strongest model |
+| Generation | requirements, tests, pipelines, code | balanced model |
+| Fast | validator, fact-check, clarification, trait detection, context compression | small, fast model |
+| Planning | the "Review plan" proposal | fast or balanced |
+| Vision | pictures, diagram pages, scans, slides | a vision-capable model |
+
+* Each chain is `provider/model` entries tried in order; a model that fails is skipped for 5
+  minutes and the next is used, ending on the normal gateway chain, so a wrong id degrades speed
+  instead of breaking a run. Up to 4 per role. An empty role keeps today's behaviour.
+* Built-in design stages (Solution / Technical Architect) use *Reasoning*, the others *Generation*.
+  A stage can choose its own tier in the Workflow Designer (**Model**: Automatic / Reasoning /
+  Generation / Fast); custom stages default to *Generation*.
+* **Escalation:** when the validator rejects a stage's first attempt, the rework runs on *Reasoning*
+  (if configured) - strong-model cost only where quality is at risk.
+* A per-step model pinned by a user (the model picker) still wins over everything.
+* `LIGHT_MODEL` / `PLAN_MODEL` in `.env` remain as defaults for those two roles; an admin's routes override them.
+* API: `GET/PUT /api/admin/model-routes` (super-admin; audited as `model_routes.changed`).
+
 ## Setting it up
 ```bash
 ./deploy.sh --model-id <big-model> --light-model-id <fast-model> --region <r>

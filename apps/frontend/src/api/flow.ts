@@ -79,6 +79,8 @@ export interface StageConfig {
   contextSources?: string[];
   /** Free-text instructions/metadata for the stage's agent. */
   agentNotes?: string;
+  /** Which model role generates this stage (multi-model routing). Omitted = by stage type. */
+  modelRole?: 'reason' | 'generate' | 'light';
 }
 
 /** Per-user access on a stage (D-90). Write implies read. */

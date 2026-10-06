@@ -34,6 +34,7 @@ from ..services.prompt_library import render as render_prompt
 from ..services.steering import resolve_steering
 from ..services.rag import RagService
 from ..services.scaffold import quality_gate_files
+from ..services.model_routes import role_for_stage
 from ..services.stack import decide_from_text, is_stack_owner, record_decision, stack_of, stack_source
 from .prompts import build_phase_prompt, openapi_fix_prompt, render_stack
 from .schemas import (
@@ -294,7 +295,7 @@ def _add(artifacts: list[ContextArtifact], a: ContextArtifact | None) -> None:
 async def _generate_phase_split(
     *, deps: "AgentDeps", state: "AgentState", system: str, user: str,
     schema: type[BaseModel], base_tag: str, intent: str, max_tokens: int,
-    model: str | None, emit: Emit,
+    model: str | None, emit: Emit, role: str | None = None,
 ) -> tuple[BaseModel, LlmResult]:
     """D-98/D-107 — per-artifact PARALLEL generation, resilient to partial failure.
 
@@ -340,7 +341,7 @@ async def _generate_phase_split(
             intent=intent, tag=f"{base_tag}:{field_name}",
             messages=[{"role": "system", "content": system, "cache": True},
                       {"role": "user", "content": instruction}],
-            schema=wrapper, max_tokens=max_tokens, model=model,
+            schema=wrapper, max_tokens=max_tokens, model=model, role=role,
         )
         return field_name, getattr(inst, field_name), res
 
@@ -813,6 +814,7 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
     _tag = f"stage{state.current_phase}_template{state.stage_template}_agent"
     _max_tokens = getattr(deps.settings, "PHASE_MAX_TOKENS", 16_000)  # D-95 output budget
     _model = state.model_overrides.get("generate") or None  # per-step model override (D-68)
+    _role = state.model_role or role_for_stage(state.stage_template)  # multi-model routing
     data: BaseModel | None = None
     result: LlmResult | None = None
     # D-98 v1: try per-artifact PARALLEL generation; fall back to one combined call on
@@ -823,7 +825,7 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
             data, result = await _generate_phase_split(
                 deps=deps, state=state, system=system, user=user,
                 schema=PHASE_SCHEMAS[state.stage_template], base_tag=_tag,
-                intent=_intent, max_tokens=_max_tokens, model=_model, emit=emit,
+                intent=_intent, max_tokens=_max_tokens, model=_model, emit=emit, role=_role,
             )
         except Exception as err:  # noqa: BLE001
             log.warning("per-artifact split failed (%s); falling back to combined generation", err)
@@ -837,6 +839,7 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
             schema=PHASE_SCHEMAS[state.stage_template],
             max_tokens=_max_tokens,
             model=_model,
+            role=_role,
         )
         # Save every artifact as a part too, so any stage — however it was generated —
         # supports selective regeneration later (the split path saves parts itself).
@@ -1088,6 +1091,17 @@ async def _persist_validation_feedback(
         log.warning("could not persist validation feedback: %s", err)
 
 
+async def _has_route(deps: AgentDeps, role: str) -> bool:
+    """Whether a model chain is configured for `role` (False for clients without routing)."""
+    probe = getattr(deps.llm, "has_route", None)
+    if probe is None:
+        return False
+    try:
+        return bool(await probe(role))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _norm_key(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (text or "").lower())
 
@@ -1156,15 +1170,21 @@ async def _generate_validated(deps: AgentDeps, state: AgentState, emit: Emit) ->
         # Rework only the artifacts the validator flagged when it can tell which (the others
         # are reused from the parts the first run saved); otherwise regenerate everything.
         flagged = failing_fields(state, out, errors) if getattr(deps.settings, "VALIDATION_LOCALISED_REWORK", True) else None
+        # Escalate: the first attempt did not pass the validator, so the retry runs on the
+        # reasoning model (when one is configured) - strong-model cost only where quality is at risk.
+        rework_state = state
+        if (state.model_role or role_for_stage(state.stage_template)) != "reason" and await _has_route(deps, "reason"):
+            rework_state = state.model_copy(update={"model_role": "reason"})
+            emit({"type": "node", "node": "validator", "label": "Validator: retrying on the reasoning model"})
         if flagged:
             emit({"type": "node", "node": "validator",
                   "label": f"Validator: reworking only {', '.join(flagged)} "
                            f"({len(flagged)} of {len(type(out).model_fields)} artifacts) - the rest is kept"})
             out = await _generate(
-                deps, state.model_copy(update={"retrigger_fields": flagged, "per_artifact": True}),
+                deps, rework_state.model_copy(update={"retrigger_fields": flagged, "per_artifact": True}),
                 emit, rework=_rework_text(verdict))
         else:
-            out = await _generate(deps, state, emit, rework=_rework_text(verdict))
+            out = await _generate(deps, rework_state, emit, rework=_rework_text(verdict))
     return out
 
 
@@ -2099,6 +2119,7 @@ async def _run_custom(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         intent="generation", tag=f"custom_stage{state.current_phase}",
         temperature=0.2, max_tokens=6144, schema=CustomPhaseOutput,
         model=state.model_overrides.get("generate") or None,
+        role=state.model_role or role_for_stage(7),
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
     )
     deps.audit.record(
@@ -2261,6 +2282,7 @@ async def _run_custom_format(deps: AgentDeps, state: AgentState, emit: Emit) -> 
         on_delta=_on_delta,
         max_tokens=getattr(deps.settings, "PHASE_MAX_TOKENS", 16_000),
         model=state.model_overrides.get("generate") or None,
+        role=state.model_role or role_for_stage(state.stage_template),
     )
     emit({"type": "content_end", "part": "document"})
     state.last_provider, state.last_model = result.provider, result.model

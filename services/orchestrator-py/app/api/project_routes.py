@@ -1732,6 +1732,7 @@ LLM_SETTING_KEYS = (
     "llm_debug_trace",  # D-104: capture request/response bodies into llm_traces
     "per_artifact_generation",  # D-106: split each stage artifact into its own parallel call
     "plan_max_tokens",  # D-112: output budget for the LLM stage-planner proposal
+    "model_routes",  # multi-model routing: role -> ordered model chain (JSON)
 )
 
 
@@ -1830,6 +1831,68 @@ async def set_llm_config(
             detail={"changed": changed},  # values omitted (may be secrets)
         )
     return await _llm_config_view(container)
+
+
+# ------------------------------------------------------ multi-model routing
+class ModelRoutesRequest(BaseModel):
+    # role -> ordered chain of 'provider/model'. A role missing from the body (or with an
+    # empty chain) is cleared and falls back to the env default / the normal chain.
+    routes: dict[str, list[str]] = Field(default_factory=dict)
+
+
+async def _model_routes_view(container: Container) -> dict:
+    from ..services import model_routes as mr
+    from ..services.plan_model import build_model_catalog
+
+    stored = mr.parse_routes(await container.db.get_setting(mr.SETTING_KEY))
+    env = mr.env_defaults(container.settings)
+    catalog = build_model_catalog(await container.llm.providers())
+    roles = []
+    for role in mr.ROLES:
+        admin_chain, env_chain = stored.get(role, []), env.get(role, [])
+        roles.append({
+            "role": role, **mr.ROLE_INFO[role],
+            "stageSelectable": role in mr.STAGE_ROLES,
+            "models": admin_chain,                                   # what the admin set
+            "envDefault": env_chain,                                 # LIGHT_MODEL / PLAN_MODEL
+            "effective": admin_chain or env_chain,                   # what actually serves ([] = normal chain)
+            "source": "admin" if admin_chain else ("env" if env_chain else "default"),
+        })
+    return {
+        "roles": roles, "providers": list(mr.PROVIDERS), "maxChain": mr.MAX_CHAIN,
+        "stageDefaults": {str(t): r for t, r in mr.STAGE_DEFAULT_ROLE.items()},
+        "catalog": catalog["models"],
+    }
+
+
+@router.get("/api/admin/model-routes")
+async def get_model_routes(
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    if user.role != "SUPER_ADMIN":
+        raise SdlcError("FORBIDDEN", "Only a super admin can view model routing")
+    return await _model_routes_view(container)
+
+
+@router.put("/api/admin/model-routes")
+async def set_model_routes(
+    body: ModelRoutesRequest,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Set which models serve which role (live, no restart). The whole map is replaced."""
+    if user.role != "SUPER_ADMIN":
+        raise SdlcError("FORBIDDEN", "Only a super admin can change model routing")
+    import json as _json
+
+    from ..services import model_routes as mr
+
+    clean = mr.validate_routes(body.routes)
+    await _apply_setting(container, mr.SETTING_KEY, _json.dumps(clean) if clean else "", user.email)
+    container.audit.record(
+        project_id="_platform", phase=0, agent_role="Admin",
+        event="model_routes.changed", human_reviewer=user.email, detail={"routes": clean},
+    )
+    return await _model_routes_view(container)
 
 
 # Back-compat aliases (the earlier generation-mode-only endpoints).

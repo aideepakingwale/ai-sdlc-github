@@ -129,6 +129,8 @@ class AgentState(BaseModel):
     final_response: str = ""
     gate_status: PhaseStatus = "IN_PROGRESS"
     amend_comments: str | None = None
+    # Model role this stage generates with (reason | generate | light); "" = by stage template.
+    model_role: str = ""
     tech_stack_source: str = ""  # "" undecided | "ta" decided by the Technical Architect | "user"
     tech_stack: str = ""  # "" = not decided yet (the Technical Architect stage decides)
     # Compact project profile (name, stack, integrations) threaded into every

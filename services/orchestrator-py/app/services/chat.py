@@ -199,6 +199,7 @@ class ChatService:
                 stage_reviewer=stage["reviewerRole"],
                 user_input=message, context_window=list(context), amend_comments=amend,
                 tech_stack=stack_of(project), tech_stack_source=stack_source(project),
+                model_role=stage.get("modelRole") or "",
                 project_profile=self._project_profile(project),
                 has_codebase=has_codebase, extra_context=extra_context,
                 model_overrides=self._model_overrides_from(self._step_overrides(sp_row)),  # per-step model (D-68)
@@ -1378,6 +1379,7 @@ class ChatService:
             user_input=prompt_overlay or f"Generate {', '.join(stage.get('outputs') or [])} for '{stage['name']}'.",
             context_window=list(context), amend_comments=None,
             tech_stack=stack_of(project), tech_stack_source=stack_source(project),
+            model_role=stage.get("modelRole") or "",
             project_profile=self._project_profile(project),
             has_codebase=(await self._db.count_codebase_files(project_id)) > 0, extra_context=extra_context,
             model_overrides=self._model_overrides_from(self._step_overrides(row)),  # per-step model (D-68)

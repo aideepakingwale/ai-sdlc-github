@@ -255,7 +255,7 @@ async def describe_image_llm(
         # 'recommendation' intent → vision-filtered chain leads with Bedrock, then Gemini.
         result = await llm.generate(
             intent="recommendation", messages=messages,
-            temperature=0.1, max_tokens=4096, tag=tag or "attachment.vision",
+            temperature=0.1, max_tokens=4096, tag=tag or "attachment.vision", role="vision",
         )
     except Exception as err:  # noqa: BLE001 — provider exhausted / gateway down
         log.warning("vision LLM call failed: %s", err)

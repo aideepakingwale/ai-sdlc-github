@@ -19,6 +19,7 @@ from .auth.keycloak import KeycloakAuth
 from .config import get_settings
 from .domain.errors import SdlcError
 from .domain.models import UserPublic
+from .services.model_routes import env_defaults
 from .integrations.llm import LlmClient
 from .integrations.mcp_client import McpServer, McpToolClient
 from .repos.aws import DynamoStore, S3Store
@@ -86,10 +87,10 @@ async def lifespan(app: FastAPI):
         redis=redis,  # D-104: read the runtime llm_debug_trace toggle
         debug_env_default=settings.LLM_DEBUG_TRACE,
         debug_max_chars=settings.LLM_DEBUG_TRACE_MAX_CHARS,
-        role_models={"light": settings.LIGHT_MODEL, "plan": settings.PLAN_MODEL},
+        role_models=env_defaults(settings),
     )
-    if settings.LIGHT_MODEL:
-        log.info("light calls (validate / fact-check / clarify / traits / compression) -> %s", settings.LIGHT_MODEL)
+    if env_defaults(settings):
+        log.info("model routes from env: %s (an admin's live routes override these)", env_defaults(settings))
     mcp = McpToolClient(settings.TOOLS_MCP_URL, extra_servers=_external_mcp_servers(settings))
     for s in mcp._servers[1:]:
         log.info("external MCP server enabled: %s -> %s", s.prefix, s.url)
