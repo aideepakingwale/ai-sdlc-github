@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { api, streamStageProgress } from '../api/client';
 import { PartTabs } from './PartTabs';
@@ -19,6 +19,10 @@ import { streamKey, useApp, useStream, type ActivityItem } from '../store';
 import ArtifactViewer from './ArtifactViewer';
 import FeedbackPanel from './FeedbackPanel';
 import GatePanel from './GatePanel';
+import ContextPanel from './ContextPanel';
+import CodeExplorer from './CodeExplorer';
+import { PromptEditor, type PromptEditorHandle } from './PromptEditor';
+import type { Mention } from '../lib/mentions';
 
 
 /** Plain-language names + icons for the AI-judged project traits. */
@@ -45,6 +49,19 @@ function fmtTime(iso: string): string {
     : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+/** One artifact's output format: where its layout comes from and what file it is delivered as. */
+interface ArtifactFormat { source: 'system' | 'attachment' | 'formwork'; refId?: string; fileType?: string }
+interface FormatOption {
+  output: string; type: string; kind: 'narrative' | 'structured' | 'code' | 'diagram';
+  sources: Array<'system' | 'attachment' | 'formwork'>;
+  fileTypes: Array<{ value: string; label: string; native: boolean }>;
+  houseTemplate: string | null;
+  formworks: Array<{ id: string; name: string; scope: string; sections?: string[] }>;
+  attachments: Array<{ id: string; filename: string }>;
+  selected: ArtifactFormat;
+}
+const fmtKey = (o: string) => o.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+
 // D-56 Plan Review & Edit gate
 interface StagePlan {
   phase: number;
@@ -63,6 +80,7 @@ interface StagePlan {
     options?: Array<{ label: string; description?: string }>;
     multiSelect?: boolean;
     rationale?: string;
+    needsDocument?: boolean;
   }> | null;
   // Intelligent, context-aware plan (D-105); null when disabled/unavailable.
   // AI-judged project traits (code enforces them); a project lead can override each.
@@ -92,7 +110,9 @@ interface StagePlan {
     ragSnippets: number;
     curatedInjectedChars: number;
   };
-  overlay: { promptOverlay: string; referencedArtifactIds: string[]; attachmentIds: string[]; formworkIds: string[]; origin: string };
+  overlay: { promptOverlay: string; referencedArtifactIds: string[]; attachmentIds: string[]; formworkIds: string[]; artifactFormats?: Record<string, ArtifactFormat>; origin: string };
+  /** Per artifact: what layouts and file types it supports, and the current choice. */
+  formatCatalog?: FormatOption[];
   prompt: { system: string; user: string };
 }
 
@@ -180,13 +200,9 @@ export default function StageWorkspace({
     threadEndRef.current?.scrollIntoView({ block: 'nearest' });
   }, [thread]);
   // Reset the discussion when the selected stage changes.
-  useEffect(() => { setThread([]); setRefineText(''); setFormatMode(null); }, [projectId, selectedSeq]);
-  // Inline "@" mention autosuggest (D-56).
-  const [mention, setMention] = useState<{ open: boolean; query: string; at: number }>({
-    open: false, query: '', at: 0,
-  });
+  useEffect(() => { setThread([]); setRefineText(''); }, [projectId, selectedSeq]);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = useRef<PromptEditorHandle>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const reconnectKeyRef = useRef<string | null>(null); // guards double-attach (D-97 L2)
 
@@ -201,11 +217,16 @@ export default function StageWorkspace({
     enabled: Boolean(projectId),
   });
   const attachments = attachmentsQ.data?.attachments ?? [];
-  // D-112: explicit output-format CHOICE (no prose inference). null = use the default
-  // (follow the attachment when one is present, else the system template).
-  const [formatMode, setFormatMode] = useState<'system' | 'attached' | null>(null);
-  const effectiveFormatMode: 'system' | 'attached' =
-    formatMode ?? (attachments.length > 0 ? 'attached' : 'system');
+  // Per-artifact output format. null = nothing edited yet: show what the plan has saved.
+  // Attached files are context only unless the reviewer points an artifact at one.
+  const [fmtSel, setFmtSel] = useState<Record<string, ArtifactFormat> | null>(null);
+  useEffect(() => setFmtSel(null), [selectedSeq, projectId]);
+  const formatOf = (o: string): ArtifactFormat => {
+    const k = fmtKey(o);
+    return (fmtSel ?? plan?.overlay.artifactFormats ?? {})[k] ?? { source: 'system' };
+  };
+  const setFormat = (o: string, f: ArtifactFormat) =>
+    setFmtSel((cur) => ({ ...(cur ?? plan?.overlay.artifactFormats ?? {}), [fmtKey(o)]: f }));
 
   // D-56: templates (formworks) available to @-reference — project + platform.
   const formworksQ = useQuery({
@@ -256,7 +277,6 @@ export default function StageWorkspace({
     setPrompt('');
     setRefIds([]);
     setFormworkIds([]);
-    setMention({ open: false, query: '', at: 0 });
     setPlan(null);
     setShowSystemPrompt(false);
   }, [projectId, selectedSeq]);
@@ -271,17 +291,18 @@ export default function StageWorkspace({
     const base = `/api/projects/${projectId}/phase/${selectedSeq}/plan`;
     (async () => {
       try {
-        let st = await api.get<{ building: boolean; ready: boolean }>(`${base}/state`);
+        let st = await api.get<PlanState>(`${base}/state`);
         const wasBuilding = st.building;
         if (st.building) {
           markedBusy = true;
           setPlanBusy(true);
           while (!cancelled && st.building) {
             await new Promise((r) => setTimeout(r, 2000));
-            st = await api.get<{ building: boolean; ready: boolean }>(`${base}/state`);
+            st = await api.get<PlanState>(`${base}/state`);
           }
         }
-        if (cancelled || (!st.ready && !wasBuilding)) return;
+        // A plan that was built (its analysis is kept server-side) or already reviewed is restored on refresh.
+        if (cancelled || (!st.ready && !st.planned && !wasBuilding)) return;
         const p = await api.get<StagePlan>(`${base}?cached=true`);
         if (cancelled) return;
         setPlan(p);
@@ -304,7 +325,6 @@ export default function StageWorkspace({
     setPrompt('');
     setRefIds([]);
     setFormworkIds([]);
-    setMention({ open: false, query: '', at: 0 });
     setShowSystemPrompt(false);
     setPlan(null);
   }
@@ -347,6 +367,13 @@ export default function StageWorkspace({
     referencedArtifactIds: refIds,
     attachmentIds: attachments.map((a) => a.id),
     formworkIds,
+    // only artifacts this stage can produce, and only those the reviewer kept
+    artifactFormats: Object.fromEntries(
+      (plan?.formatCatalog ?? [])
+        .filter((c) => produceSel[c.output] ?? plan?.intel?.willProduce?.find((w) => fmtKey(w.output) === c.type)?.include ?? true)
+        .map((c) => [c.type, formatOf(c.output)] as const)
+        .filter(([, f]) => f.source !== 'system' || f.fileType),
+    ),
   });
 
   // D-112: the reviewer's decision (which outputs to produce + the format) as an
@@ -366,15 +393,109 @@ export default function StageWorkspace({
     if (exclude.length) lines.push(`Do NOT produce: ${exclude.join(', ')}.`);
     const extras = (intel.suggestedArtifacts ?? []).filter((x) => suggestSel[x.name]).map((x) => x.name);
     if (extras.length) lines.push(`Also include (approved additions to the standard template): ${extras.join(', ')}.`);
-    // D-112: the format is an explicit reviewer CHOICE, not inferred from prose. We emit
-    // a deterministic machine token the backend switches on — ATTACHED_DOCUMENT (follow
-    // the uploaded file's structure) or SYSTEM_DEFAULT (the stage's recommended template).
-    if (effectiveFormatMode === 'attached' && attachments.length) {
-      lines.push(`Follow this output format: ATTACHED_DOCUMENT — ${attachments.map((a) => a.filename).join(', ')}`);
-    } else {
-      lines.push('Follow this output format: SYSTEM_DEFAULT');
-    }
+    // Layout and file type are chosen per artifact (artifactFormats) — never stage-wide.
     return lines.length ? `\n\n## Production scope (confirmed by the reviewer)\n${lines.map((l) => `- ${l}`).join('\n')}` : '';
+  };
+
+  // ONE list of the artifacts: tick what to generate and, on the same row, choose the layout it follows and the
+  // file type it is delivered as. (Layout and delivery apply only to ticked rows.)
+  const renderArtifacts = () => {
+    const rows = plan?.intel?.willProduce ?? [];
+    if (rows.length === 0) return null;
+    const catalog = new Map((plan?.formatCatalog ?? []).map((c) => [c.type, c]));
+    const isOn = (a: { output: string; include?: boolean; recommended?: boolean }) => produceSel[a.output] ?? a.include ?? a.recommended;
+    const cat = rows.filter(isOn).map((a) => catalog.get(fmtKey(a.output))).filter((c): c is FormatOption => Boolean(c));
+    const layoutValue = (f: ArtifactFormat) => (f.source === 'system' ? 'system' : `${f.source}:${f.refId ?? ''}`);
+    const parse = (v: string): ArtifactFormat => {
+      const [source, ...rest] = v.split(':');
+      return source === 'system' ? { source: 'system' } : { source: source as 'attachment' | 'formwork', refId: rest.join(':') };
+    };
+    const applyAll = (v: string) => {
+      const next: Record<string, ArtifactFormat> = { ...(fmtSel ?? plan?.overlay.artifactFormats ?? {}) };
+      for (const c of cat) {
+        const f = parse(v);
+        const ok = f.source === 'system'
+          || (f.source === 'attachment' && c.attachments.some((a) => a.id === f.refId))
+          || (f.source === 'formwork' && c.formworks.some((w) => w.id === f.refId));
+        next[c.type] = ok ? { ...f, fileType: formatOf(c.output).fileType } : formatOf(c.output);
+      }
+      setFmtSel(next);
+    };
+    const attachmentChoices = Array.from(new Map(cat.flatMap((c) => c.attachments).map((a) => [a.id, a])).values());
+    const cols = 'sm:grid-cols-[minmax(0,1.5fr)_minmax(0,1.3fr)_minmax(0,0.8fr)]';
+    return (
+      <div>
+        <SectionLabel icon="tasks" hint={`${rows.filter(isOn).length} of ${rows.length} selected — tick what you want, then pick each one’s layout and file type`}>
+          Artifacts to generate
+        </SectionLabel>
+        {attachmentChoices.length > 0 && (
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+            <span>Apply to all:</span>
+            <select aria-label="Apply layout to all artifacts" disabled={locked} value="" onChange={(e) => e.target.value && applyAll(e.target.value)}
+              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-brand-400 focus:outline-none">
+              <option value="">Choose a layout…</option>
+              <option value="system">System standard</option>
+              {attachmentChoices.map((a) => <option key={a.id} value={`attachment:${a.id}`}>Follow “{a.filename}” (where supported)</option>)}
+            </select>
+            <span className="text-slate-400">Artifacts that cannot follow it keep their own choice.</span>
+          </div>
+        )}
+        <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+          <div className={`hidden gap-2 bg-slate-50 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400 sm:grid ${cols}`}>
+            <span>Artifact</span><span>Layout follows</span><span>Delivered as</span>
+          </div>
+          {rows.map((a) => {
+            const on = Boolean(isOn(a));
+            const c = catalog.get(fmtKey(a.output));
+            const f = c ? formatOf(c.output) : null;
+            const ft = f && c ? f.fileType ?? c.fileTypes.find((x) => x.native)?.value ?? '' : '';
+            const off = locked || !on;
+            return (
+              <div key={a.output} data-testid={`artifact-row-${fmtKey(a.output)}`}
+                className={`grid items-start gap-2 px-3 py-2 transition ${cols} ${on ? 'bg-brand-50/30' : 'bg-white'}`}>
+                <label className="flex min-w-0 cursor-pointer items-start gap-2.5">
+                  <input type="checkbox" className="mt-1 h-4 w-4 shrink-0 accent-brand-600" checked={on} disabled={locked} aria-label={`Generate ${a.output}`}
+                    onChange={(e) => setProduceSel((p) => ({ ...p, [a.output]: e.target.checked }))} />
+                  <span className="min-w-0">
+                    <span className="flex flex-wrap items-center gap-1.5">
+                      <span className={`text-[13px] font-semibold ${on ? 'text-slate-800' : 'text-slate-500'}`}>{a.output}</span>
+                      {a.recommended
+                        ? <Badge tone="success" icon="check">Recommended</Badge>
+                        : <Badge title="Not needed for this request, but you can still include it">Optional</Badge>}
+                    </span>
+                    {a.reason && <span className="mt-0.5 block text-xs text-slate-500">{a.reason}</span>}
+                  </span>
+                </label>
+                {c && f ? (
+                  <>
+                    <select aria-label={`Layout for ${c.output}`} disabled={off || c.sources.length === 1} value={layoutValue(f)}
+                      onChange={(e) => setFormat(c.output, { ...parse(e.target.value), fileType: f.fileType })}
+                      className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-brand-400 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400">
+                      <option value="system">System standard{c.houseTemplate ? ` (${c.houseTemplate})` : ''}</option>
+                      {c.sources.includes('attachment') && c.attachments.length > 0 && (
+                        <optgroup label="Follow an attached file">
+                          {c.attachments.map((x) => <option key={x.id} value={`attachment:${x.id}`}>{x.filename}</option>)}
+                        </optgroup>
+                      )}
+                      {c.sources.includes('formwork') && c.formworks.length > 0 && (
+                        <optgroup label="Follow a template">
+                          {c.formworks.map((w) => <option key={w.id} value={`formwork:${w.id}`}>{w.name}{w.scope === 'platform' ? ' (platform)' : ''}</option>)}
+                        </optgroup>
+                      )}
+                    </select>
+                    <select aria-label={`Delivered file type for ${c.output}`} disabled={off || c.fileTypes.length === 1} value={ft}
+                      onChange={(e) => setFormat(c.output, { ...f, fileType: e.target.value })}
+                      className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-brand-400 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400">
+                      {c.fileTypes.map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}
+                    </select>
+                  </>
+                ) : <><span className="text-xs text-slate-300">—</span><span className="text-xs text-slate-300">—</span></>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
   };
 
   // D-112 Phase C: a concise, chat-style summary of what the agent proposed, logged
@@ -409,7 +530,6 @@ export default function StageWorkspace({
     e?.preventDefault();
     if (planBusy || locked || promptError) return;
     setPlanBusy(true);
-    setMention({ open: false, query: '', at: 0 });
     const append = opts?.append?.trim();
     const nextPrompt = append ? (prompt.trim() ? `${prompt.trim()}\n${append}` : append) : prompt;
     if (append) setPrompt(nextPrompt);
@@ -653,40 +773,21 @@ export default function StageWorkspace({
   // --- inline "@" mention autosuggest (D-56) ---
   // Every referenceable thing, in one list: prior generated content, templates,
   // and already-uploaded files. Selecting one pins it into the next run.
-  type Mention =
-    | { kind: 'artifact'; id: string; label: string; sub: string }
-    | { kind: 'template'; id: string; label: string; sub: string }
-    | { kind: 'file'; id: string; label: string; sub: string };
   const allMentions: Mention[] = [
     ...priorArtefacts.map((a) => ({ kind: 'artifact' as const, id: a.id, label: a.title, sub: `P${a.phase} · ${a.type}` })),
     ...formworks.map((f) => ({ kind: 'template' as const, id: f.id, label: f.name, sub: `Template · ${f.artefactType}` })),
     ...attachments.map((a) => ({ kind: 'file' as const, id: a.id, label: a.filename, sub: 'Uploaded file' })),
   ];
-  const mentionMatches = mention.open
-    ? allMentions.filter((m) => m.label.toLowerCase().includes(mention.query.toLowerCase())).slice(0, 8)
-    : [];
 
-  function onPromptChange(e: ChangeEvent<HTMLTextAreaElement>) {
-    const value = e.target.value;
-    setPrompt(value);
-    const caret = e.target.selectionStart ?? value.length;
-    // find an "@token" ending at the caret with no whitespace inside the token
-    const before = value.slice(0, caret);
-    const m = before.match(/@([\w.-]*)$/);
-    if (m) setMention({ open: true, query: m[1] ?? '', at: caret - (m[1]?.length ?? 0) - 1 });
-    else if (mention.open) setMention({ open: false, query: '', at: 0 });
-  }
-
+  // Choosing a reference pins outputs and templates to the stage (files are already included); the editor
+  // shows it as a chip. Removing the chip - its ✕ or Backspace - unpins it again (a file stays attached).
   function pickMention(m: Mention) {
     if (m.kind === 'artifact') setRefIds((prev) => (prev.includes(m.id) ? prev : [...prev, m.id]));
     if (m.kind === 'template') setFormworkIds((prev) => (prev.includes(m.id) ? prev : [...prev, m.id]));
-    // files are already auto-included; selecting is a no-op beyond the mention text.
-    // Replace the "@query" fragment with a readable mention token.
-    const caret = textareaRef.current?.selectionStart ?? prompt.length;
-    const token = `@${m.label.replace(/\s+/g, '_')} `;
-    setPrompt((p) => p.slice(0, mention.at) + token + p.slice(caret));
-    setMention({ open: false, query: '', at: 0 });
-    setTimeout(() => textareaRef.current?.focus(), 0);
+  }
+  function unpickMention(m: { kind: Mention['kind']; id: string }) {
+    if (m.kind === 'artifact') setRefIds((prev) => prev.filter((id) => id !== m.id));
+    if (m.kind === 'template') setFormworkIds((prev) => prev.filter((id) => id !== m.id));
   }
 
   const selectedRefChips = refIds
@@ -940,6 +1041,22 @@ export default function StageWorkspace({
                   onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (isLast) submitClarification(); else setClarifyStep(step + 1); } }}
                   className="mt-2 w-full rounded-md border border-slate-300 px-2 py-1 text-[12px] focus:border-brand-400 focus:outline-none"
                 />
+                {/* Forgot a document? Upload it right here — it joins this stage's context
+                    and is used when the answers are submitted. */}
+                <div className={`mt-2 flex flex-wrap items-center gap-2 rounded-md border px-2 py-1.5 text-[11px] ${
+                  q.needsDocument ? 'border-brand-300 bg-brand-50 text-brand-800' : 'border-dashed border-slate-300 text-slate-500'
+                }`}>
+                  <button
+                    type="button" data-testid="clarify-upload" disabled={streaming || uploading || locked}
+                    onClick={() => fileInputRef.current?.click()}
+                    className="rounded border border-current px-2 py-0.5 font-semibold hover:bg-white/60 disabled:opacity-40"
+                  >📎 {uploading ? 'Uploading…' : q.needsDocument ? 'Upload the missing document' : 'Forgot a document? Upload it'}</button>
+                  <span>
+                    {attachments.length > 0
+                      ? `${attachments.length} attached — new files are added to this stage's context.`
+                      : 'Added to this stage’s context and used when you submit.'}
+                  </span>
+                </div>
               </div>
 
               <div className="mt-3 flex items-center gap-2">
@@ -988,49 +1105,20 @@ export default function StageWorkspace({
               </Callout>
             )}
             <form onSubmit={onReviewSubmit}>
-              <div className="relative">
-                <textarea
-                  ref={textareaRef}
-                  className="w-full rounded-lg border border-slate-300 p-3 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-200"
-                  rows={3}
-                  placeholder={
-                    stage.phase === 1
-                      ? 'Describe what to build. Type @ to reference generated content, templates or uploaded files.'
-                      : `Add guidance for the ${stage.persona} (optional). Type @ to pull in prior outputs, templates or files.`
-                  }
-                  value={prompt}
-                  onChange={onPromptChange}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Escape' && mention.open) setMention({ open: false, query: '', at: 0 });
-                  }}
-                  disabled={locked}
-                />
-                {/* inline @ autosuggest (D-56) */}
-                {mention.open && mentionMatches.length > 0 && (
-                  <div className="absolute left-2 top-full z-30 mt-1 max-h-64 w-80 overflow-auto rounded-lg border border-slate-200 bg-white shadow-xl">
-                    <div className="border-b border-slate-100 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-                      Reference — generated content, templates &amp; files
-                    </div>
-                    {mentionMatches.map((m) => (
-                      <button
-                        type="button"
-                        key={`${m.kind}-${m.id}`}
-                        onClick={() => pickMention(m)}
-                        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-slate-50"
-                      >
-                        <span className="text-sm">{m.kind === 'artifact' ? '📄' : m.kind === 'template' ? '📐' : '📎'}</span>
-                        <span className="min-w-0 flex-1 truncate text-slate-700">{m.label}</span>
-                        <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">{m.sub}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {mention.open && mentionMatches.length === 0 && (
-                  <div className="absolute left-2 top-full z-30 mt-1 w-80 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-400 shadow-xl">
-                    No references match “{mention.query}”. Attach a file or generate upstream stages first.
-                  </div>
-                )}
-              </div>
+              <PromptEditor
+                ref={textareaRef}
+                value={prompt}
+                onChange={setPrompt}
+                mentions={allMentions}
+                onPick={pickMention}
+                onUnpick={unpickMention}
+                disabled={locked}
+                placeholder={
+                  stage.phase === 1
+                    ? 'Describe what to build. Type @ to reference generated content, templates or uploaded files.'
+                    : `Add guidance for the ${stage.persona} (optional). Type @ to pull in prior outputs, templates or files.`
+                }
+              />
 
               {/* ---- attach + selected-context chips (D-54/D-56) ---- */}
               <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -1098,6 +1186,8 @@ export default function StageWorkspace({
               </div>
             </form>
 
+            <ContextPanel projectId={projectId} seq={selectedSeq} refreshKey={`${locked}|${attachments.length}|${plan?.planState?.fresh ?? ''}|${(plan?.overlay.promptOverlay ?? '').length}`} />
+
             {/* ---- Step 2 · Review the plan ---- */}
             {plan && (
               <div className="mt-5 rounded-xl border border-brand-200 bg-white" id="plan-card">
@@ -1127,36 +1217,7 @@ export default function StageWorkspace({
                         </div>
                       )}
 
-                      {(plan.intel.willProduce?.length ?? 0) > 0 && (
-                        <div>
-                          <SectionLabel icon="tasks" hint={`${plan.intel.willProduce.filter((a) => produceSel[a.output] ?? a.include ?? a.recommended).length} of ${plan.intel.willProduce.length} selected — tick what you want, untick to skip`}>
-                            Artifacts to generate
-                          </SectionLabel>
-                          <div className="space-y-1.5">
-                            {plan.intel.willProduce.map((a) => {
-                              const on = produceSel[a.output] ?? a.include ?? a.recommended;
-                              return (
-                                <label key={a.output} className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 transition ${on ? 'border-brand-300 bg-brand-50/40' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
-                                  <input
-                                    type="checkbox" className="mt-1 h-4 w-4 accent-brand-600"
-                                    checked={on} disabled={locked}
-                                    onChange={(e) => setProduceSel((p) => ({ ...p, [a.output]: e.target.checked }))}
-                                  />
-                                  <span className="min-w-0 flex-1">
-                                    <span className="flex flex-wrap items-center gap-2">
-                                      <span className="text-[13px] font-semibold text-slate-800">{a.output}</span>
-                                      {a.recommended
-                                        ? <Badge tone="success" icon="check">Recommended</Badge>
-                                        : <Badge title="Not needed for this request, but you can still include it">Optional</Badge>}
-                                    </span>
-                                    {a.reason && <span className="mt-0.5 block text-xs text-slate-500">{a.reason}</span>}
-                                  </span>
-                                </label>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
+                      {renderArtifacts()}
 
                       {(plan.intel.promptChecks?.length ?? 0) > 0 && (
                         <Callout tone="advice" title="Left out — not applicable to this project">
@@ -1228,29 +1289,6 @@ export default function StageWorkspace({
                           </div>
                         </div>
                       )}
-
-                      {/* Output format — an explicit choice (no prose inference) */}
-                      <div>
-                        <SectionLabel icon="file" hint="choose one">Output format</SectionLabel>
-                        <div className="grid gap-2 sm:grid-cols-2">
-                          <label className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 ${effectiveFormatMode === 'system' ? 'border-brand-300 bg-brand-50/40' : 'border-slate-200 hover:border-slate-300'}`}>
-                            <input type="radio" name="formatMode" className="mt-1 h-4 w-4 accent-brand-600" disabled={locked} checked={effectiveFormatMode === 'system'} onChange={() => setFormatMode('system')} />
-                            <span className="text-xs">
-                              <span className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-800"><Icon name="sparkles" size={13} />System’s recommended format</span>
-                              <span className="text-slate-500">The standard template for this stage.</span>
-                            </span>
-                          </label>
-                          <label className={`flex items-start gap-3 rounded-lg border px-3 py-2 ${attachments.length ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'} ${effectiveFormatMode === 'attached' ? 'border-brand-300 bg-brand-50/40' : 'border-slate-200 hover:border-slate-300'}`}>
-                            <input type="radio" name="formatMode" className="mt-1 h-4 w-4 accent-brand-600" disabled={!attachments.length || locked} checked={effectiveFormatMode === 'attached'} onChange={() => setFormatMode('attached')} />
-                            <span className="text-xs">
-                              <span className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-800"><Icon name="paperclip" size={13} />Follow my attached document</span>
-                              <span className="text-slate-500">
-                                {attachments.length ? `Mirror ${attachments.map((a) => a.filename).join(', ')} exactly.` : 'Attach a document above to enable this.'}
-                              </span>
-                            </span>
-                          </label>
-                        </div>
-                      </div>
 
                       {plan.intel.recommendation && (
                         <Callout tone="advice" title="Advice">{plan.intel.recommendation}</Callout>
@@ -1404,10 +1442,13 @@ export default function StageWorkspace({
             )}
           </section>
         ) : blockedReason.length > 0 ? (
-          <Callout tone="warning" icon="lock" title="This stage is waiting for an earlier one">
-            It runs once the upstream gate{blockedReason.length > 1 ? 's are' : ' is'} approved:{' '}
-            <span className="font-semibold">{blockedReason.join(', ')}</span>.
-          </Callout>
+          <>
+            <Callout tone="warning" icon="lock" title="This stage is waiting for an earlier one">
+              It runs once the upstream gate{blockedReason.length > 1 ? 's are' : ' is'} approved:{' '}
+              <span className="font-semibold">{blockedReason.join(', ')}</span>.
+            </Callout>
+            <ContextPanel projectId={projectId} seq={selectedSeq} refreshKey={`blocked|${attachments.length}`} />
+          </>
         ) : null}
 
         {/* ---- live generation ---- */}
@@ -1438,6 +1479,9 @@ export default function StageWorkspace({
           </section>
         )}
 
+        {/* ---- two-step code generation: structure → approval → code → commit (implementation stage) ---- */}
+        {stage.template === 6 && <CodeExplorer projectId={projectId} phase={selectedSeq} />}
+
         {/* ---- gate review ---- */}
         {pendingGate && pendingGate.phase === selectedSeq && (
           <div id="gate-review" className="scroll-mt-4">
@@ -1456,6 +1500,8 @@ export default function StageWorkspace({
             projectId={projectId}
             phase={selectedSeq}
             user={user}
+            onUploadMissing={() => fileInputRef.current?.click()}
+            uploading={uploading}
             canResolve={
               user.role === 'SUPER_ADMIN' ||
               user.role === 'PROJECT_MANAGER' ||

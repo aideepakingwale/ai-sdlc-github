@@ -105,7 +105,8 @@ class PublishService:
                     log.warning("url back-patch failed for %s: %s", tool, err)
             results.append({"tool": tool, "ref": result.get("epicKey") or result.get("storyKey")
                             or result.get("xrayTestKey") or result.get("pageId")
-                            or result.get("commitSha"), "url": real_url})
+                            or result.get("commitSha") or result.get("prNumber"), "url": real_url,
+                            "prNumber": result.get("prNumber")})
 
         self._audit.record(
             project_id=project_id, phase=phase, agent_role="Publisher",

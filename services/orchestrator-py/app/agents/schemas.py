@@ -347,6 +347,7 @@ class ValidationIssue(BaseModel):
     area: str = ""          # e.g. "intent", "completeness", "correctness", a field name
     problem: str            # what is wrong
     fix: str = ""           # the concrete change the reworking agent should make
+    missingDocument: bool = False   # the gap is a document the requester could upload
 
 
 class ValidationVerdict(BaseModel):
@@ -477,6 +478,10 @@ class ClarificationQuestion(BaseModel):
     )
     multiSelect: bool = Field(default=False, description="True if several options may apply.")
     rationale: str = Field(default="", description="One line: why this matters to the outcome.")
+    needsDocument: bool = Field(
+        default=False,
+        description="True when the gap is a document/file the requester may simply have forgotten to attach; "
+                    "the UI then offers an upload in the same card.")
 
 
 class ClarificationOutput(BaseModel):
@@ -485,3 +490,36 @@ class ClarificationOutput(BaseModel):
     to ask if not."""
     needs_clarification: bool = False
     questions: list[ClarificationQuestion] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------- two-step code generation
+class PlannedDirectory(BaseModel):
+    path: str
+    purpose: str = ""
+
+
+class PlannedFile(BaseModel):
+    path: str
+    purpose: str                                       # one line: what this file is for
+    kind: Literal["source", "test", "config", "docs", "build"] = "source"
+    layer: str = ""                                    # e.g. api, domain, persistence, infra, ui
+    covers: list[str] = Field(default_factory=list)    # story / requirement keys this file helps satisfy
+
+
+class CodeStructureOutput(BaseModel):
+    """Step 1: the proposed repository layout, for approval BEFORE any code is written."""
+    summary: str = ""                                  # architecture of the codebase in a few sentences
+    conventions: list[str] = Field(default_factory=list, min_length=1)   # naming + layout rules the code will follow
+    directories: list[PlannedDirectory] = Field(default_factory=list)
+    files: list[PlannedFile] = Field(min_length=2)
+    branch: str
+    commitMessage: str
+    prTitle: str
+    prBody: str
+    checklist: list[str] = Field(default_factory=list)
+
+
+class CodeBatchOutput(BaseModel):
+    """Step 2: the contents of an agreed batch of files (paths must come from the approved structure)."""
+    files: list[FileEntry] = Field(min_length=1)
+    designNotes: str = ""

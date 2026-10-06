@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     ATTACHMENT_FIGURE_CONCURRENCY: int = 3       # parallel vision calls per upload
     ATTACHMENT_PARSE_SECONDS: int = 90           # wall-clock budget for parsing one file
     ATTACHMENT_ANALYSIS_SECONDS: int = 120       # wall-clock budget for describing its figures
-    ATTACHMENT_STORE_CHARS: int = 300_000        # extracted Markdown kept per attachment
+    ATTACHMENT_STORE_CHARS: int = 1_000_000        # extracted Markdown kept per attachment
     # Render slides / diagram pages to images for the vision model through
     # LibreOffice (when installed). 'off' keeps the structural text extraction only.
     ATTACHMENT_RENDER_PAGES: Literal["auto", "off"] = "auto"
@@ -197,6 +197,9 @@ class Settings(BaseSettings):
     # validator. Set QUALITY_GATE_ENABLED=false to disable the gate entirely.
     QUALITY_GATE_ENABLED: bool = True
     COVERAGE_MIN_PERCENT: int = 80
+    # Two-step code generation: the implementation stage first proposes the repository structure for human
+    # approval, and writes code only after it is approved. false = the previous single-step behaviour.
+    CODE_TWO_STEP_ENABLED: bool = True
     LINT_REQUIRED: bool = True
     # Optional override for the project-creation technology catalog (language →
     # version → frameworks). Point at a JSON file to reconfigure without a

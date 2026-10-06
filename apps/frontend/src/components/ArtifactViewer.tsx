@@ -267,6 +267,19 @@ export default function ArtifactViewer({
               >
                 ⬇ Open externally
               </a>
+              {a.type === 'OPENAPI' && (
+                <select
+                  aria-label="Download the API spec as"
+                  value=""
+                  onChange={(e) => { if (e.target.value) window.location.href = `/api/projects/${projectId}/artefacts/${a.id}/download?as=${e.target.value}`; }}
+                  className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-600"
+                  title="Convert deterministically between YAML and JSON"
+                >
+                  <option value="">⬇ Download as…</option>
+                  <option value="yaml">YAML</option>
+                  <option value="json">JSON</option>
+                </select>
+              )}
               {a.url && (
                 <a href={a.url} target="_blank" rel="noreferrer" className="text-xs text-brand-600 underline">
                   Open in tool ↗

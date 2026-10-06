@@ -43,7 +43,7 @@ KIND_DOCUMENT = "document"
 KIND_IMAGE = "image"
 KIND_BINARY = "binary"
 
-_MAX_CHARS = 300_000  # cap extracted text so one attachment can't blow the context
+_MAX_CHARS = 1_000_000  # cap extracted text so one attachment can't blow the context
 # The vision instructions live in the central prompt library (D-48): templates
 # `attachment.vision.user` (a standalone image) and `attachment.vision.figure.user`
 # (a figure taken from a document).

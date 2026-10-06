@@ -8,7 +8,7 @@ import json
 from typing import Literal
 
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from ..agents.phase_agents import _part_text
@@ -1078,11 +1078,12 @@ def _file_response(content: str, filename: str) -> Response:
 
 @router.get("/api/projects/{project_id}/artefacts/{artefact_id}/download")
 async def artefact_download(
-    project_id: str, artefact_id: str,
+    project_id: str, artefact_id: str, as_: str | None = Query(None, alias="as"),
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> Response:
     """Download the artifact as a real file (correct name + MIME) so the user
-    can open it with an application installed on their desktop."""
+    can open it with an application installed on their desktop. `?as=json|yaml`
+    converts an OpenAPI spec deterministically to the delivered type chosen for it."""
     await container.authz.assert_project_access(project_id, user)
     row = await container.db.get_artefact(artefact_id)
     if not row or row["project_id"] != project_id:
@@ -1093,6 +1094,9 @@ async def artefact_download(
         if stored is not None:
             content = stored
     filename = (row["storage_key"] or "").rsplit("/", 1)[-1] or f"{row['type']}-{row['id']}.txt"
+    if as_:
+        from ..services.artifact_formats import convert_file
+        content, filename = convert_file(row["type"], content, filename, as_)
     return _file_response(content, filename)
 
 
@@ -1217,6 +1221,63 @@ def _attachment_extraction(row) -> dict:  # noqa: ANN001
     return raw if isinstance(raw, dict) else {}
 
 
+# ------------------------------------------------------------------ two-step code generation
+@router.get("/api/projects/{project_id}/phase/{phase_id}/code")
+async def stage_code(
+    project_id: str, phase_id: int, user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """The proposed/approved code structure as a tree, per-file generation state and commit info (project read access)."""
+    return await container.code_gen.view(project_id=project_id, phase=phase_id, user=user)
+
+
+class CodeResetBody(BaseModel):
+    reason: str = Field(default="", max_length=300)
+
+
+@router.post("/api/projects/{project_id}/phase/{phase_id}/code/reset")
+async def reset_stage_code(
+    project_id: str, phase_id: int, body: CodeResetBody, user: UserPublic = Depends(current_user),
+    container: Container = Depends(get_container),
+) -> dict:
+    """Discard the current structure so the next run proposes a new one (stage writers; not after the commit)."""
+    return await container.code_gen.reset(project_id=project_id, phase=phase_id, user=user, reason=body.reason)
+
+
+@router.get("/api/projects/{project_id}/phase/{phase_id}/code.zip")
+async def stage_code_zip(
+    project_id: str, phase_id: int, user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> Response:
+    """The generated codebase as one .zip (project read access; recorded in the audit trail)."""
+    data, name = await container.code_gen.zip(project_id=project_id, phase=phase_id, user=user)
+    return Response(content=data, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+# ------------------------------------------------------------------ context visualizer
+@router.get("/api/projects/{project_id}/phase/{phase_id}/context")
+async def stage_context(
+    project_id: str, phase_id: int,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """What a stage knows: the preview built from its saved plan, and the manifest of its last run."""
+    return await container.chat.context_view(project_id=project_id, phase=phase_id, user=user)
+
+
+@router.get("/api/projects/{project_id}/context/graph")
+async def project_context_graph(
+    project_id: str, user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """The project-level context graph: shared context, stages, attached files, artifacts and who builds on them."""
+    return await container.chat.project_context_graph(project_id=project_id, user=user)
+
+
+@router.get("/api/projects/{project_id}/context/overview")
+async def context_overview(
+    project_id: str, user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Per stage, the size and shape of the context its latest run was given."""
+    return await container.chat.context_overview(project_id=project_id, user=user)
+
+
 # ------------------------------------------------------------------ stage attachments (D-54)
 @router.post("/api/projects/{project_id}/phase/{phase_id}/attachments", status_code=201)
 async def upload_attachment(
@@ -1304,6 +1365,52 @@ async def list_attachments(
          "extraction": _attachment_extraction(r)}
         for r in rows
     ]}
+
+
+async def _attachment_text(container: Container, project_id: str, attachment_id: str) -> tuple[dict, str]:
+    rows = await container.db.get_attachments_by_ids([attachment_id])
+    row = rows[0] if rows else None
+    if not row or row["project_id"] != project_id:        # another project's file looks like a missing one
+        raise SdlcError("NOT_FOUND", "Attachment not found")
+    if not row["is_text"]:
+        raise SdlcError("VALIDATION_FAILED", "this attachment has no readable text")
+    return row, (await container.content.get(row["storage_key"])) or ""
+
+
+@router.get("/api/projects/{project_id}/attachments/{attachment_id}/outline")
+async def attachment_outline(
+    project_id: str, attachment_id: str,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Table of contents of an attached document: every section with its size, pages, tables and figures."""
+    await container.authz.assert_project_access(project_id, user)
+    from ..services.documents.reader import outline
+    row, text = await _attachment_text(container, project_id, attachment_id)
+    return {"id": row["id"], "filename": row["filename"], **outline(text)}
+
+
+@router.get("/api/projects/{project_id}/attachments/{attachment_id}/read")
+async def attachment_read(
+    project_id: str, attachment_id: str, sections: str = "", pages: str = "", q: str = "",
+    max_chars: int = Query(20_000, ge=500, le=60_000),
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Verbatim text of chosen parts of an attached document: `sections=3,7` (ids from the outline),
+    `pages=12-18`, and/or `q=` words to find. The reply lists what did not fit in `next`."""
+    await container.authz.assert_project_access(project_id, user)
+    from ..services.documents.reader import read
+    try:
+        ids = [int(x) for x in sections.split(",") if x.strip()]
+        span = None
+        if pages.strip():
+            lo, _, hi = pages.partition("-")
+            span = (int(lo), int(hi or lo))
+    except ValueError as err:
+        raise SdlcError("VALIDATION_FAILED", "sections must be ids like 3,7 and pages a range like 12-18") from err
+    if not (ids or span or q.strip()):
+        raise SdlcError("VALIDATION_FAILED", "ask for sections, pages or a search; see /outline for what exists")
+    row, text = await _attachment_text(container, project_id, attachment_id)
+    return {"id": row["id"], "filename": row["filename"], **read(text, sections=ids, pages=span, search=q, max_chars=max_chars)}
 
 
 @router.delete("/api/projects/{project_id}/phase/{phase_id}/attachments/{attachment_id}")

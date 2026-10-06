@@ -189,8 +189,29 @@ class FormworkService:
                 chosen[t] = r
         return [self._row(r) for r in chosen.values()]
 
-    async def render_block(self, project_id: str, artefact_types: list[str]) -> str:
-        formworks = await self.resolve(project_id, artefact_types)
+    async def resolve_selected(self, project_id: str, selected: dict[str, str]) -> dict[str, dict]:
+        """The templates a reviewer pointed specific artifacts at: {TYPE: formwork}. Only this
+        project's or platform-wide templates for that very type count; anything else (deleted,
+        another project's, wrong type) is dropped so the artifact falls back to the default."""
+        if not selected:
+            return {}
+        rows = {r["id"]: r for r in await self._db.get_formworks_by_ids(list(selected.values()))}
+        out: dict[str, dict] = {}
+        for t, fid in selected.items():
+            r = rows.get(fid)
+            if r and r["project_id"] in (None, project_id) and r["artefact_type"] == t.upper():
+                out[t.upper()] = self._row(r)
+        return out
+
+    async def render_block(self, project_id: str, artefact_types: list[str], *,
+                           selected: dict[str, str] | None = None, skip: set[str] | None = None) -> str:
+        """The mandatory-template block for a stage's artifacts. By default each type uses its
+        resolved house template (project over platform). `selected` pins specific artifacts to a
+        specific template; `skip` leaves artifacts out (they follow another layout source)."""
+        skip_t = {s.upper() for s in (skip or set())}
+        pinned = await self.resolve_selected(project_id, selected or {})
+        types = [t for t in artefact_types if t.upper() not in skip_t and t.upper() not in pinned]
+        formworks = [*await self.resolve(project_id, types), *pinned.values()]
         if not formworks:
             return ""
         lines = [

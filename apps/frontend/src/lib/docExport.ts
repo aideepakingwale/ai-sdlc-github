@@ -203,14 +203,59 @@ export function downloadBlob(blob: Blob, filename: string): void {
 }
 
 // ------------------------------------------------------------------ PDF (browser print)
-/** Print only the document (see the @media print rules in index.css) → "Save as PDF". */
+const PRINT_CSS = `
+@page{size:A4;margin:14mm}
+*{box-sizing:border-box}
+html,body{height:auto!important;overflow:visible!important}
+body{margin:0;font-family:Calibri,Arial,Helvetica,sans-serif;font-size:10.5pt;line-height:1.45;color:#111;background:#fff}
+h1{font-size:22pt;margin:0 0 4pt}h2{font-size:15pt;margin:18pt 0 6pt;border-bottom:1px solid #ccc;padding-bottom:2pt}
+h3{font-size:12.5pt;margin:12pt 0 4pt}h1,h2,h3,h4{break-after:avoid;color:#0b2a4a}
+p{margin:0 0 6pt;orphans:3;widows:3}ul,ol{margin:0 0 6pt;padding-left:18pt}
+table{border-collapse:collapse;width:100%;margin:6pt 0;font-size:9.5pt}
+td,th{border:1px solid #999;padding:3px 6px;vertical-align:top;word-break:break-word}th{background:#eee}tr{break-inside:avoid}
+pre{background:#f4f4f4;border:1px solid #ddd;padding:6px 8px;font-family:Consolas,"Courier New",monospace;font-size:8.5pt;white-space:pre-wrap;word-break:break-word}
+code{font-family:Consolas,"Courier New",monospace}
+img,svg{max-width:100%;height:auto;break-inside:avoid}
+section{margin-bottom:14pt}
+a{color:#0b5cad;text-decoration:none}`;
+
+/** A self-contained print document (own styles, diagrams already embedded as images): nothing from the
+ *  app's layout or CSS can hide, clip or collapse it, which is what made the PDF come out empty. */
+export function printHtml(clone: HTMLElement, title: string): string {
+  const esc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
+  clone.querySelectorAll('[data-export-skip]').forEach((n) => n.remove());
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>${PRINT_CSS}</style></head>`
+    + `<body><h1>${esc(title)}</h1>${clone.innerHTML}</body></html>`;
+}
+
+/** Print the document (→ "Save as PDF") from a hidden, self-contained frame instead of the live page. */
 export async function printDocument(root: HTMLElement, title: string): Promise<void> {
-  await waitForDiagrams(root);
-  const prev = document.title;
-  document.title = title;
-  const restore = () => { document.title = prev; window.removeEventListener('afterprint', restore); };
-  window.addEventListener('afterprint', restore);
-  window.print();
+  const clone = await prepareExportRoot(root);
+  clone.querySelectorAll('[data-docx-skip]').forEach((n) => n.remove());   // the page's own title block: the print title replaces it
+  const html = printHtml(clone, title);
+  const frame = document.createElement('iframe');
+  frame.setAttribute('aria-hidden', 'true');
+  frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
+  document.body.appendChild(frame);
+  const doc = frame.contentDocument;
+  const win = frame.contentWindow;
+  if (!doc || !win) { frame.remove(); throw new Error('Could not open the print view'); }
+  doc.open();
+  doc.write(html);
+  doc.close();
+  await new Promise<void>((resolve) => {
+    const imgs = Array.from(doc.images).filter((i) => !i.complete);
+    if (!imgs.length) return resolve();
+    let left = imgs.length;
+    const done = () => { if (--left <= 0) resolve(); };
+    imgs.forEach((i) => { i.addEventListener('load', done); i.addEventListener('error', done); });
+    setTimeout(resolve, 5_000);
+  });
+  const cleanup = () => { frame.remove(); };
+  win.addEventListener('afterprint', cleanup);
+  setTimeout(cleanup, 120_000);              // never leave the frame behind if the dialog is dismissed oddly
+  win.focus();
+  win.print();
 }
 
 // ------------------------------------------------------------------ DOM → blocks → .docx

@@ -81,6 +81,14 @@ ENTERPRISE_STANDARDS: list[dict[str, str]] = [
 ]
 
 
+_PHASE_TAG = re.compile(r"^\[P(\d+)\]")
+
+
+def _artifact_phase(title: str) -> int | None:
+    m = _PHASE_TAG.match(title or "")
+    return int(m.group(1)) if m else None
+
+
 class RagService:
     def __init__(self, db: Database, settings: Settings, embedder: Embedder | None = None) -> None:
         self._db = db
@@ -123,11 +131,18 @@ class RagService:
             embedding=self.embedder.embed(body),
         )
 
-    async def retrieve(self, query: str, project_id: str | None, top_k: int | None = None) -> list[dict]:
-        """Top-k snippets across the enterprise KB + this project's artifacts."""
+    async def retrieve(self, query: str, project_id: str | None, top_k: int | None = None,
+                       artifact_phases: set[int] | None = None) -> list[dict]:
+        """Top-k snippets across the enterprise KB + this project's artifacts.
+
+        `artifact_phases`: when given, project artifacts count only if they come from one of these stages
+        (the stage's upstream). Without it a stage would retrieve its own earlier output and the output
+        of stages that come after it as "knowledge"; standards and codebase files are never filtered."""
         k = top_k or self._settings.RAG_TOP_K
         scopes = ["global"] + ([project_id] if project_id else [])
         docs = await self._db.fetch_kb_docs(scopes)
+        if artifact_phases is not None:
+            docs = [d for d in docs if d["source"] != "artifact" or _artifact_phase(d["title"]) in artifact_phases]
         query_vec = self.embedder.embed(query)
         scored = sorted(
             (

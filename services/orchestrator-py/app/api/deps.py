@@ -39,6 +39,7 @@ class Container:
     telemetry: Any = None
     canon: Any = None
     formworks: Any = None
+    code_gen: Any = None  # two-step code generation: structure approval, explorer view, zip
     gen_jobs: Any = None  # durable background stage generation (D-97 L2)
     extras: dict[str, Any] = field(default_factory=dict)
 
