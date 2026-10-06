@@ -445,3 +445,18 @@ def test_openapi_converts_between_yaml_and_json_without_a_model():
         af.convert_file("EPIC", "x", "e.md", "pdf")
     with pytest.raises(SdlcError, match="not valid"):
         af.convert_file("OPENAPI", "a: [unclosed", "api.yaml", "json")
+
+
+async def test_the_chosen_artefacts_and_formats_are_described_by_name_for_audit_and_history():
+    svc = _svc([ATT], [{"id": "f1", "project_id": None, "artefact_type": "OPENAPI", "name": "Std API"}])
+    stage = {"outputs": ["PRD", "OpenAPI"], "template": 7}
+    rows = await svc._describe_formats(stage, {
+        "PRD": {"source": "attachment", "refId": "a1", "fileType": "docx"},
+        "OPENAPI": {"source": "formwork", "refId": "f1", "fileType": "yaml"}})
+    by = {r["artifact"]: r for r in rows}
+    assert by["PRD"] == {"artifact": "PRD", "layout": "attached file: template.docx", "deliveredAs": "Word (.docx)"}
+    assert by["OpenAPI"]["layout"] == "template: Std API" and by["OpenAPI"]["deliveredAs"] == "YAML"
+    plain = await svc._describe_formats(stage, {})
+    assert all(r["layout"] == "system standard" for r in plain)
+    text = svc._format_lines(rows)
+    assert "- PRD — layout: attached file: template.docx; delivered as Word (.docx)" in text

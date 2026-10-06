@@ -32,7 +32,8 @@ from ..repos.pg import Database
 from .audit import AuditService
 from .authz import AuthzService
 from .artifact_formats import (
-    ATTACHMENT, FORMWORK, catalog as format_catalog, norm_type as fmt_norm, parse_formats, validate_formats,
+    ATTACHMENT, FILE_LABELS, FORMWORK, catalog as format_catalog, native_file_type, norm_type,
+    norm_type as fmt_norm, parse_formats, validate_formats,
 )
 from .stack import build_stack_question, is_stack_owner, mentions_stack, stack_already_asked, stack_of, stack_source
 from .flow import STALE_STATUSES, transitive_downstream_seqs
@@ -1475,11 +1476,39 @@ class ChatService:
             artifact_formats=formats,
             origin=(row["origin"] if row else "new"), updated_by=user.id,
         )
+        detail: dict[str, Any] = {"stage": stage["key"]}
+        try:
+            detail["artifacts"] = await self._describe_formats(stage, formats if formats is not None else self._formats_of(row))
+        except Exception:  # noqa: BLE001 — an audit detail must never block saving the plan
+            log.warning("could not describe artefact formats", exc_info=True)
         self._audit.record(project_id=project_id, phase=phase, agent_role="Orchestrator",
-                           event="plan.updated", human_reviewer=user.email, detail={"stage": stage["key"]})
+                           event="plan.updated", human_reviewer=user.email, detail=detail)
         # D-109: a save is a persist, not a display — don't pay the ~30s planner here;
         # reuse the cached intel. The explicit GET /plan recomputes it when needed.
         return await self.build_plan(project_id=project_id, phase=phase, user=user, run_intel=False)
+
+    async def _describe_formats(self, stage: dict, formats: dict[str, dict[str, str]]) -> list[dict[str, str]]:
+        """What the user chose for each artefact the stage produces: its name, where its layout
+        comes from (system standard / an attached file / a template, by name) and the file type it is
+        delivered as. Recorded in the audit and the chat history."""
+        att_ids = [f["refId"] for f in formats.values() if f.get("source") == ATTACHMENT and f.get("refId")]
+        fw_ids = [f["refId"] for f in formats.values() if f.get("source") == FORMWORK and f.get("refId")]
+        att = {r["id"]: r["filename"] for r in await self._db.get_attachments_by_ids(att_ids)} if att_ids else {}
+        fws = {r["id"]: r["name"] for r in await self._db.get_formworks_by_ids(fw_ids)} if fw_ids else {}
+        rows: list[dict[str, str]] = []
+        for out in self._stage_output_types(stage):
+            f = formats.get(norm_type(out)) or {}
+            src = f.get("source") or "system"
+            layout = ("attached file: " + att.get(f.get("refId"), "(removed)") if src == ATTACHMENT
+                      else "template: " + fws.get(f.get("refId"), "(removed)") if src == FORMWORK
+                      else "system standard")
+            ft = f.get("fileType") or native_file_type(out)
+            rows.append({"artifact": out, "layout": layout, "deliveredAs": FILE_LABELS.get(ft, ft)})
+        return rows
+
+    @staticmethod
+    def _format_lines(rows: list[dict[str, str]]) -> str:
+        return "\n".join(f"- {r['artifact']} — layout: {r['layout']}; delivered as {r['deliveredAs']}" for r in rows)
 
     @staticmethod
     def _formats_of(row: Any) -> dict[str, dict[str, str]]:
@@ -1698,6 +1727,15 @@ class ChatService:
         set_run_context(project_id, phase)
         emit({"type": "session", "projectId": project_id, "sessionId": session["id"], "phase": phase})
         emit({"type": "node", "node": "executor", "label": f"Triggering reviewed plan — {stage['name']}"})
+        try:
+            chosen_formats = await self._describe_formats(stage, overlay["artifactFormats"])
+        except Exception:  # noqa: BLE001
+            log.warning("could not describe artefact formats", exc_info=True)
+            chosen_formats = []
+        self._audit.record(project_id=project_id, phase=phase, agent_role="Orchestrator",
+                           event="stage.generation_started", human_reviewer=user.email,
+                           detail={"stage": stage["key"], "artifacts": chosen_formats,
+                                   "attachments": len(overlay["attachmentIds"]), "references": len(overlay["referencedArtifactIds"])})
 
         trig_traits = await self.resolve_project_traits(
             project=project, phase=phase, user_text=prompt_overlay,
@@ -1771,7 +1809,8 @@ class ChatService:
         if masked:
             self._audit.record(project_id=project_id, phase=phase, agent_role="OutputGuardrail",
                                event="guardrail.output_masked", detail={"rules": masked})
-        turn_msg = f"▶ Plan triggered — {stage['name']}" + (f"\n\nInstructions: {prompt_overlay}" if prompt_overlay else "")
+        turn_msg = (f"▶ Plan triggered — {stage['name']}" + (f"\n\nInstructions: {prompt_overlay}" if prompt_overlay else "")
+                    + (f"\n\nArtefacts and formats selected:\n{self._format_lines(chosen_formats)}" if chosen_formats else ""))
         await self._db.insert_chat_turn(session["id"], phase, turn_msg, safe_response)
         emit({"type": "done", "finalResponse": safe_response, "phase": phase, "gateStatus": last_gate})
 

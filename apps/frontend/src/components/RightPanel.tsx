@@ -218,6 +218,15 @@ export default function RightPanel({
                   {e.promptTokens != null ? ` · ${e.promptTokens}→${e.completionTokens} tok` : ''}
                 </div>
                 {e.humanReviewer && <div className="mt-0.5 text-emerald-700">👤 {e.humanReviewer}</div>}
+                {Array.isArray(e.detail?.artifacts) && (e.detail.artifacts as Array<Record<string, string>>).length > 0 && (
+                  <ul className="mt-1 space-y-0.5 rounded bg-slate-50 p-1.5 text-[11px] text-slate-600" aria-label="Artefacts and formats selected">
+                    {(e.detail.artifacts as Array<Record<string, string>>).map((a) => (
+                      <li key={a.artifact}>
+                        <span className="font-medium text-slate-700">{a.artifact}</span> — {a.layout} · {a.deliveredAs}
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 {e.artefactHash && (
                   <div className="mt-0.5 truncate font-mono text-[10px] text-slate-400" title={e.artefactHash}>
                     #{e.artefactHash.slice(0, 16)}…
