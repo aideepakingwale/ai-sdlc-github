@@ -437,6 +437,9 @@ export default function StageWorkspace({
           <span className="text-slate-400">Artifacts that cannot follow it keep their own choice. Attached files are used as context only unless you pick one here.</span>
         </div>
         <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+          <div className="hidden gap-2 bg-slate-50 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400 sm:grid sm:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,0.8fr)]">
+            <span>Artifact</span><span>Layout follows</span><span>Delivered as</span>
+          </div>
           {cat.map((c) => {
             const f = formatOf(c.output);
             const ft = f.fileType ?? c.fileTypes.find((x) => x.native)?.value ?? '';
