@@ -290,17 +290,18 @@ export default function StageWorkspace({
     const base = `/api/projects/${projectId}/phase/${selectedSeq}/plan`;
     (async () => {
       try {
-        let st = await api.get<{ building: boolean; ready: boolean }>(`${base}/state`);
+        let st = await api.get<PlanState>(`${base}/state`);
         const wasBuilding = st.building;
         if (st.building) {
           markedBusy = true;
           setPlanBusy(true);
           while (!cancelled && st.building) {
             await new Promise((r) => setTimeout(r, 2000));
-            st = await api.get<{ building: boolean; ready: boolean }>(`${base}/state`);
+            st = await api.get<PlanState>(`${base}/state`);
           }
         }
-        if (cancelled || (!st.ready && !wasBuilding)) return;
+        // A plan that was built (its analysis is kept server-side) or already reviewed is restored on refresh.
+        if (cancelled || (!st.ready && !st.planned && !wasBuilding)) return;
         const p = await api.get<StagePlan>(`${base}?cached=true`);
         if (cancelled) return;
         setPlan(p);

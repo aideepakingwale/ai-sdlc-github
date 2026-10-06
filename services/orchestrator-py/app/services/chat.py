@@ -965,6 +965,17 @@ class ChatService:
         except Exception:
             pass
 
+        # Redis missed (expired, restarted, another node): the analysis kept with the stage plan still counts.
+        try:
+            stored = self._stored_intel(await self._db.get_stage_plan(project["id"], phase))
+        except Exception:  # noqa: BLE001
+            stored = None
+        if stored:
+            if stored.get("sig") == sig:
+                return {**stored["plan"], "cached": True}
+            if not allow_compute:
+                return {**stored["plan"], "cached": True, "stale": True}
+
         # Persist paths (save/trigger) never pay the ~30s planner cost (D-109): the
         # planner runs only on the explicit plan display.
         if not allow_compute:
@@ -1046,7 +1057,7 @@ class ChatService:
         generating = await self._is_generating(project_id, phase)
         return {
             "building": bool(await self._redis.exists(f"sdlc:planbuild:{project_id}:{phase}")),
-            "ready": bool(await self._redis.exists(f"sdlc:planintel:{project_id}:{phase}")),
+            "ready": bool(await self._redis.exists(f"sdlc:planintel:{project_id}:{phase}")) or bool(self._stored_intel(row)),
             "planned": planned, "stale": planned and row["plan_sig"] != sig,
             "fresh": planned and row["plan_sig"] == sig, "generating": generating, "locked": generating,
             "_sig": sig,
@@ -1132,11 +1143,32 @@ class ChatService:
         except Exception as err:  # noqa: BLE001 — planning is best-effort; never break Review
             log.info("intelligent planner unavailable (%s); using deterministic plan", err)
             return None
-        try:
-            await self._redis.set(ckey, json.dumps({"sig": sig, "plan": plan}), ex=3600)
-        except Exception:
-            pass
+        await self._store_intel(ckey, sig, plan)
         return {**plan, "cached": False}
+
+    async def _store_intel(self, ckey: str, sig: str, plan: dict[str, Any]) -> None:
+        """Keep the analysis: in Redis (fast, expires) AND with the stage plan in the database, so a page refresh,
+        the cache expiring or a Redis restart no longer throws away what the planner worked out."""
+        obj = {"sig": sig, "plan": plan}
+        try:
+            await self._redis.set(ckey, json.dumps(obj), ex=3600)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            _, project_id, phase = ckey.rsplit(":", 2)
+            await self._db.set_stage_plan_intel(project_id, int(phase), obj)
+        except Exception:  # noqa: BLE001 - best-effort
+            log.warning("could not persist the plan analysis", exc_info=True)
+
+    @staticmethod
+    def _stored_intel(row: Any) -> dict[str, Any] | None:
+        raw = row["plan_intel"] if row and "plan_intel" in row.keys() else None  # noqa: SIM118 - asyncpg Record / dict
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                return None
+        return raw if isinstance(raw, dict) and isinstance(raw.get("plan"), dict) else None
 
     # ------------------------------------------------------------------ context visualizer
     async def _formwork_items(self, project_id: str, stage: dict, overlay: dict) -> list[dict[str, Any]]:

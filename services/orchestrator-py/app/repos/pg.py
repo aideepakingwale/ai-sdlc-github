@@ -526,6 +526,14 @@ class Database:
             "SELECT * FROM stage_plans WHERE project_id=$1 AND phase=$2", project_id, phase
         )
 
+    async def set_stage_plan_intel(self, project_id: str, phase: int, obj: dict | None) -> None:
+        """Persist {sig, plan} - the AI's analysis of the stage plan - beside the plan row."""
+        assert self.pool
+        await self.pool.execute(
+            """INSERT INTO stage_plans (project_id, phase, plan_intel) VALUES ($1,$2,$3::jsonb)
+               ON CONFLICT (project_id, phase) DO UPDATE SET plan_intel=EXCLUDED.plan_intel""",
+            project_id, phase, None if obj is None else json.dumps(obj))
+
     async def insert_context_manifest(self, project_id: str, phase: int, manifest: dict, created_by: str | None) -> str:
         """Store what a stage knew for one run; keep only the latest few per stage."""
         assert self.pool

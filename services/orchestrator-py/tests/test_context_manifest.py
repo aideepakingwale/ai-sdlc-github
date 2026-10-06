@@ -294,3 +294,64 @@ async def test_retrieval_counts_only_upstream_artifacts_but_never_filters_standa
     assert ids(await svc.retrieve("payments", "p")) == ["art-1", "art-2", "art-3", "code-1", "kb-std"]          # unrestricted: as before
     assert ids(await svc.retrieve("payments", "p", artifact_phases={1})) == ["art-1", "code-1", "kb-std"]       # stage 2: only stage 1's output
     assert ids(await svc.retrieve("payments", "p", artifact_phases=set())) == ["code-1", "kb-std"]              # the entry stage: no artifacts
+
+
+# ---------------------------------------------------------------- the plan analysis survives a refresh
+async def test_the_ai_analysis_of_a_plan_is_kept_in_the_database_when_the_cache_is_gone():
+    import json
+    from types import SimpleNamespace
+
+    from app.services.chat import ChatService
+
+    class Redis:
+        def __init__(self):
+            self.kv = {}
+
+        async def get(self, k):
+            return self.kv.get(k)
+
+        async def set(self, k, v, nx=False, ex=None):
+            if nx and k in self.kv:
+                return None
+            self.kv[k] = v
+            return True
+
+        async def delete(self, k):
+            self.kv.pop(k, None)
+
+        async def exists(self, k):
+            return int(k in self.kv)
+
+    class Db:
+        def __init__(self):
+            self.row = None
+
+        async def get_stage_plan(self, pid, phase):
+            return self.row
+
+        async def set_stage_plan_intel(self, pid, phase, obj):
+            self.row = {"plan_intel": json.dumps(obj), "plan_sig": "s"}          # as a JSONB column comes back
+
+    svc = ChatService.__new__(ChatService)
+    svc._redis, svc._db = Redis(), Db()
+    svc._settings = SimpleNamespace(INTELLIGENT_PLANNING=True)
+    analysis = {"understood": "A payments platform with idempotent retries.", "willProduce": [{"output": "PRD", "recommended": True, "include": True, "reason": "r"}]}
+
+    async def compute(self, *, ckey, sig, **kw):
+        await self._store_intel(ckey, sig, analysis)
+        return {**analysis, "cached": False}
+
+    ChatService._compute_intelligent_plan = compute            # the planner itself is not under test
+    args = dict(project={"id": "p1", "tech_stack": "Py", "name": "n"}, phase=1, stage={"template": 1, "outputs": ["PRD"], "persona": "BA"},
+                overlay={"promptOverlay": "Build payments"}, available_tools=[], skills=[], prior_arts=[], canon_applied=False)
+    first = await svc._intelligent_plan(**args)
+    assert first["cached"] is False and first["understood"].startswith("A payments")
+
+    svc._redis.kv.clear()                                       # the cache expired / Redis restarted / page refreshed
+    again = await svc._intelligent_plan(**args, allow_compute=False)
+    assert again["cached"] is True and again["understood"] == analysis["understood"]          # the analysis is still there
+
+    stale = await svc._intelligent_plan(**{**args, "overlay": {"promptOverlay": "Build payments, now with refunds"}}, allow_compute=False)
+    assert stale["stale"] is True and stale["understood"] == analysis["understood"]            # edited since: shown, marked stale
+    assert svc._stored_intel(svc._db.row)["plan"]["understood"] == analysis["understood"]
+    assert svc._stored_intel(None) is None and svc._stored_intel({"plan_intel": "{bad"}) is None
