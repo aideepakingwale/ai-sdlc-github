@@ -226,6 +226,8 @@ class Database:
             if not exists:
                 return False
             await conn.execute("DELETE FROM llm_traces WHERE project_id=$1", project_id)
+            # The project's retrieval corpus (approved artefacts, uploaded code): scope = project id, no FK.
+            await conn.execute("DELETE FROM kb_documents WHERE scope=$1", project_id)
             await conn.execute("DELETE FROM projects WHERE id=$1", project_id)
         return True
 
@@ -450,13 +452,14 @@ class Database:
             project_id, limit,
         )
 
-    async def mark_notification_read(self, notification_id: str, user_id: str) -> None:
-        """Append the user to read_by (idempotent — `?` is jsonb array containment)."""
+    async def mark_notification_read(self, notification_id: str, user_id: str, project_id: str) -> None:
+        """Append the user to read_by (idempotent — `?` is jsonb array containment). Only a notification of the
+        project the caller is acting in."""
         assert self.pool
         await self.pool.execute(
             "UPDATE notifications SET read_by = read_by || to_jsonb($2::text) "
-            "WHERE id=$1 AND NOT (read_by ? $2)",
-            notification_id, user_id,
+            "WHERE id=$1 AND project_id=$3 AND NOT (read_by ? $2)",
+            notification_id, user_id, project_id,
         )
 
     # ------------------------------------------------------------ stage attachments (D-54)
@@ -495,10 +498,12 @@ class Database:
             return []
         return await self.pool.fetch("SELECT * FROM stage_attachments WHERE id = ANY($1::text[])", ids)
 
-    async def delete_attachment(self, attachment_id: str) -> asyncpg.Record | None:
+    async def delete_attachment(self, attachment_id: str, project_id: str) -> asyncpg.Record | None:
+        """Delete an attachment of THIS project (an id from another project matches nothing)."""
         assert self.pool
         return await self.pool.fetchrow(
-            "DELETE FROM stage_attachments WHERE id=$1 RETURNING id, storage_key", attachment_id
+            "DELETE FROM stage_attachments WHERE id=$1 AND project_id=$2 RETURNING id, storage_key",
+            attachment_id, project_id,
         )
 
     async def get_artefacts_by_ids(self, ids: list[str]) -> list[asyncpg.Record]:

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Redis } from 'ioredis';
 import { SdlcError, type ToolsEnv } from '@sdlc/shared';
+import { targetOf } from '../target.js';
 
 interface FileInput {
   path: string;
@@ -24,6 +25,8 @@ const MOCK_TTL = 604_800; // 7d
  */
 export function githubImpl(deps: GithubDeps) {
   const { env, redis, live } = deps;
+  /** The repository of the project the current call belongs to (platform default when none). */
+  const repoOf = (): string => targetOf().githubRepo ?? env.GITHUB_REPO ?? '';
 
   const gh = async (path: string, init?: RequestInit): Promise<Response> => {
     const res = await fetch(`https://api.github.com${path}`, {
@@ -43,7 +46,7 @@ export function githubImpl(deps: GithubDeps) {
   };
 
   async function liveCommitFiles(branch: string, files: FileInput[], message: string) {
-    const repo = env.GITHUB_REPO;
+    const repo = repoOf();
     let lastSha = '';
     for (const file of files) {
       const existing = await gh(`/repos/${repo}/contents/${file.path}?ref=${branch}`);
@@ -67,13 +70,13 @@ export function githubImpl(deps: GithubDeps) {
   }
 
   async function liveLatestRunId(branch: string): Promise<string> {
-    const res = await gh(`/repos/${env.GITHUB_REPO}/actions/runs?branch=${branch}&per_page=1`);
+    const res = await gh(`/repos/${repoOf()}/actions/runs?branch=${branch}&per_page=1`);
     const data = (await res.json()) as { workflow_runs?: Array<{ id: number }> };
     return String(data.workflow_runs?.[0]?.id ?? '0');
   }
 
   // ---------- mock world ----------
-  const branchKey = (b: string) => `mock:gh:branch:${b}`;
+  const branchKey = (b: string) => `mock:gh:branch:${repoOf() || 'default'}:${b}`;   // one simulated tree per repository
   const runKey = (r: string) => `mock:gh:run:${r}`;
 
   async function mockCommit(branch: string, files: FileInput[], message: string) {
@@ -115,7 +118,7 @@ export function githubImpl(deps: GithubDeps) {
   return {
     async createBranch(input: { branch: string; from: string }) {
       if (live) {
-        const repo = env.GITHUB_REPO;
+        const repo = repoOf();
         const base = await gh(`/repos/${repo}/git/ref/heads/${input.from}`);
         if (base.status === 404) throw new SdlcError('TOOL_ERROR', `Base branch ${input.from} not found`);
         const baseSha = ((await base.json()) as { object: { sha: string } }).object.sha;
@@ -137,7 +140,7 @@ export function githubImpl(deps: GithubDeps) {
       return {
         commitSha,
         branch: input.branch,
-        htmlUrl: `https://github.mock.local/${env.GITHUB_REPO || 'org/repo'}/commit/${commitSha}`,
+        htmlUrl: `https://github.mock.local/${repoOf() || 'org/repo'}/commit/${commitSha}`,
       };
     },
 
@@ -153,18 +156,18 @@ export function githubImpl(deps: GithubDeps) {
       return {
         commitSha,
         branch: input.branch,
-        htmlUrl: `https://github.mock.local/${env.GITHUB_REPO || 'org/repo'}/commit/${commitSha}`,
+        htmlUrl: `https://github.mock.local/${repoOf() || 'org/repo'}/commit/${commitSha}`,
         runId,
       };
     },
 
     async pollRunStatus(input: { runId: string }) {
       if (live) {
-        const res = await gh(`/repos/${env.GITHUB_REPO}/actions/runs/${input.runId}`);
+        const res = await gh(`/repos/${repoOf()}/actions/runs/${input.runId}`);
         const run = (await res.json()) as { status: string; conclusion: string | null };
         let failedJobIds: string[] = [];
         if (run.conclusion === 'failure') {
-          const jobsRes = await gh(`/repos/${env.GITHUB_REPO}/actions/runs/${input.runId}/jobs`);
+          const jobsRes = await gh(`/repos/${repoOf()}/actions/runs/${input.runId}/jobs`);
           const jobs = (await jobsRes.json()) as { jobs?: Array<{ id: number; conclusion: string | null }> };
           failedJobIds = (jobs.jobs ?? []).filter((j) => j.conclusion === 'failure').map((j) => String(j.id));
         }
@@ -190,7 +193,7 @@ export function githubImpl(deps: GithubDeps) {
     async fetchBuildLogs(input: { runId: string }) {
       if (live) {
         // Job-level annotations give the actionable failure text without the logs zip.
-        const jobsRes = await gh(`/repos/${env.GITHUB_REPO}/actions/runs/${input.runId}/jobs`);
+        const jobsRes = await gh(`/repos/${repoOf()}/actions/runs/${input.runId}/jobs`);
         const jobs = (await jobsRes.json()) as {
           jobs?: Array<{ name: string; conclusion: string | null; steps?: Array<{ name: string; conclusion: string | null }> }>;
         };
@@ -210,7 +213,7 @@ export function githubImpl(deps: GithubDeps) {
     async createPullRequest(input: { branch: string; title: string; body: string; checklist: string[] }) {
       const bodyWithChecklist = `${input.body}\n\n## Review checklist\n${input.checklist.map((c) => `- [ ] ${c}`).join('\n')}`;
       if (live) {
-        const res = await gh(`/repos/${env.GITHUB_REPO}/pulls`, {
+        const res = await gh(`/repos/${repoOf()}/pulls`, {
           method: 'POST',
           body: JSON.stringify({ title: input.title, head: input.branch, base: 'main', body: bodyWithChecklist }),
         });
@@ -219,7 +222,7 @@ export function githubImpl(deps: GithubDeps) {
       }
       const n = await redis.incr('mock:gh:prseq');
       await redis.set(`mock:gh:pr:${n}`, JSON.stringify({ ...input, body: bodyWithChecklist }), 'EX', MOCK_TTL);
-      return { prNumber: n, url: `https://github.mock.local/${env.GITHUB_REPO || 'org/repo'}/pull/${n}` };
+      return { prNumber: n, url: `https://github.mock.local/${repoOf() || 'org/repo'}/pull/${n}` };
     },
   };
 }

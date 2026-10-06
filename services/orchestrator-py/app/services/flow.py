@@ -364,6 +364,7 @@ class FlowService:
         files_removed = 0
         try:
             files_removed = await self._content.delete_prefix(f"content-store/{project_id}")
+            files_removed += await self._content.delete_prefix(f"formworks/{project_id}")   # the project's own templates
         except Exception as err:  # noqa: BLE001
             log.error("content-store purge failed for %s: %s", project_id, err)
         try:

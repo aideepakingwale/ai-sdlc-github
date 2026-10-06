@@ -92,6 +92,22 @@ async def lifespan(app: FastAPI):
     if env_defaults(settings):
         log.info("model routes from env: %s (an admin's live routes override these)", env_defaults(settings))
     mcp = McpToolClient(settings.TOOLS_MCP_URL, extra_servers=_external_mcp_servers(settings))
+    _targets: dict[str, tuple[float, dict[str, str]]] = {}
+
+    async def _project_target(project_id: str) -> dict[str, str]:
+        """Where THIS project publishes (its repository, Confluence space, Jira project). Short cache: it is read per tool call."""
+        import time as _t
+        hit = _targets.get(project_id)
+        if hit and _t.monotonic() - hit[0] < 30:
+            return hit[1]
+        p = await db.get_project(project_id)
+        target = {k: v for k, v in {"githubRepo": (p or {}).get("github_repo"), "confluenceSpaceKey": (p or {}).get("confluence_space_key"),
+                                     "jiraProjectKey": (p or {}).get("jira_project_key")}.items() if v}
+        _targets[project_id] = (_t.monotonic(), target)
+        return target
+
+    from .services.telemetry import _run_context as _rc
+    mcp.bind_targets(_project_target, lambda: (_rc.get() or {}).get("projectId"))
     for s in mcp._servers[1:]:
         log.info("external MCP server enabled: %s -> %s", s.prefix, s.url)
     rag = RagService(db, settings)

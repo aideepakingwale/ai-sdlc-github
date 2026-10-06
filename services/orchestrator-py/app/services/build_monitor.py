@@ -103,7 +103,7 @@ class BuildMonitor:
             return {"state": done_state, "iterations": int(tracker.get("iterationCount", 0)) if tracker else 0}
 
         while True:
-            status = await self._mcp.call("github_poll_run_status", {"runId": meta["currentRunId"]})
+            status = await self._mcp.call("github_poll_run_status", {"runId": meta["currentRunId"]}, project_id=meta["projectId"])
             if status["status"] != "completed":
                 current = await self._dynamo.get_build_tracker(tracker_id)
                 return {"state": "PIPELINE_RUNNING", "iterations": int(current.get("iterationCount", 0)) if current else 0}
@@ -121,7 +121,7 @@ class BuildMonitor:
 
             logs = await self._mcp.call("github_fetch_build_logs", {
                 "runId": meta["currentRunId"], "failedJobIds": status.get("failedJobIds", []),
-            })
+            }, project_id=meta["projectId"])
             analysis = await self._mcp.call("amazonq_analyse_failure", {
                 "rawLogText": logs["rawLogText"], "failedStep": logs["failedStep"],
             })
@@ -146,7 +146,7 @@ class BuildMonitor:
             push = await self._mcp.call("github_commit_fix", {
                 "branch": meta["branch"], "files": fix["files"],
                 "message": f"{fix['message']} (iter-{iteration})",
-            })
+            }, project_id=meta["projectId"])
             send({"type": "tool_call", "tool": "github_commit_fix", "status": "success",
                   "summary": f"iter-{iteration} -> run {push['runId']}"})
 
@@ -159,7 +159,7 @@ class BuildMonitor:
         pr = await self._mcp.call("github_create_pull_request", {
             "branch": meta["branch"], "title": meta["prTitle"],
             "body": meta["prBody"], "checklist": meta["checklist"],
-        })
+        }, project_id=meta["projectId"])
         await self._dynamo.set_build_state(tracker_id, "SUCCEEDED")
         await self._redis.srem(ACTIVE_SET, tracker_id)
         tracker = await self._dynamo.get_build_tracker(tracker_id)

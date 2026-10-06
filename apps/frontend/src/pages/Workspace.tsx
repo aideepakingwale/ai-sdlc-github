@@ -366,6 +366,7 @@ export default function Workspace() {
         <div className="min-h-0 flex-1">
           {activeProjectId && flow.data && user ? (
             <StageWorkspace
+              key={activeProjectId}              // a different project is a different workspace: nothing typed or selected carries over
               projectId={activeProjectId}
               flow={flow.data}
               selectedSeq={activeStage}

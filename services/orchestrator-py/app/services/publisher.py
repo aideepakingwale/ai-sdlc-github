@@ -75,7 +75,7 @@ class PublishService:
                 if isinstance(args.get(kf), str) and args[kf] in key_map:
                     args[kf] = key_map[args[kf]]
             try:
-                result = await self._mcp.call(tool, args)
+                result = await self._mcp.call(tool, args, project_id=project_id)
             except Exception as err:  # noqa: BLE001 — surfaced to the approver
                 self._audit.record(
                     project_id=project_id, phase=phase, agent_role="Publisher",

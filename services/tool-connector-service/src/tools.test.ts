@@ -224,3 +224,50 @@ describe('SDLC toolchain tools', () => {
     expect(s3.url).toContain('s3://');
   });
 });
+
+describe('per-project integration target', () => {
+  const commit = (rt: ReturnType<typeof createToolRuntime>, target: unknown, content: string) =>
+    rt.execute('github_commit_diagrams', { branch: 'main', files: [{ path: 'docs/a.dsl', content }], message: 'm', ...(target ? { target } : {}) });
+
+  it('keeps one simulated repository per project: the same branch and path never collide', async () => {
+    const redis = fakeRedis();
+    const rt = createToolRuntime(env, redis, log);
+    await commit(rt, { githubRepo: 'acme/orders' }, 'ORDERS-ONLY');
+    await commit(rt, { githubRepo: 'acme/billing' }, 'BILLING-ONLY');
+    const trees = await Promise.all(['acme/orders', 'acme/billing'].map(async (r) => JSON.parse((await redis.get(`mock:gh:branch:${r}:main`)) as string)));
+    expect(trees[0]['docs/a.dsl']).toBe('ORDERS-ONLY');
+    expect(trees[1]['docs/a.dsl']).toBe('BILLING-ONLY');
+  });
+
+  it('does not let concurrent calls of different projects see each other\'s target', async () => {
+    const redis = fakeRedis();
+    const rt = createToolRuntime(env, redis, log);
+    await Promise.all([1, 2, 3, 4, 5, 6].map((n) => commit(rt, { githubRepo: `acme/p${n % 2}` }, `C${n}`)));
+    const p0 = JSON.parse((await redis.get('mock:gh:branch:acme/p0:main')) as string);
+    const p1 = JSON.parse((await redis.get('mock:gh:branch:acme/p1:main')) as string);
+    expect(['C2', 'C4', 'C6']).toContain(p0['docs/a.dsl']);
+    expect(['C1', 'C3', 'C5']).toContain(p1['docs/a.dsl']);
+  });
+
+  it('rejects a malformed target instead of falling back to another project\'s default', async () => {
+    const rt = createToolRuntime(env, fakeRedis(), log);
+    for (const target of [{ githubRepo: '../../etc' }, { githubRepo: 'no-slash' }, { jiraProjectKey: 'lower' }, { confluenceSpaceKey: '' + 'x'.repeat(300) }, 'oops']) {
+      await expect(commit(rt, target, 'x')).rejects.toThrow();
+    }
+  });
+
+  it('a project\'s Jira project is authoritative over a key the model picked', async () => {
+    const rt = createToolRuntime(env, fakeRedis(), log);
+    const withKey = await rt.execute('jira_create_epic', { title: 't', description: 'd', priority: 'High', projectKey: 'OTHER', target: { jiraProjectKey: 'ORDERS' } }) as { epicKey: string };
+    expect(withKey.epicKey.startsWith('ORDERS-')).toBe(true);
+    const without = await rt.execute('jira_create_epic', { title: 't', description: 'd', priority: 'High', projectKey: 'OTHER' }) as { epicKey: string };
+    expect(without.epicKey.startsWith('OTHER-')).toBe(true);        // no target: the old behaviour
+  });
+
+  it('only accepts repositories of the organisation the platform is connected to', async () => {
+    const { parseTarget } = await import('./target.js');
+    expect(parseTarget({ githubRepo: 'acme/orders' }, 'acme/platform')).toEqual({ githubRepo: 'acme/orders' });
+    expect(() => parseTarget({ githubRepo: 'evil/orders' }, 'acme/platform')).toThrow(/organisation/);
+    expect(parseTarget(undefined)).toEqual({});
+  });
+});

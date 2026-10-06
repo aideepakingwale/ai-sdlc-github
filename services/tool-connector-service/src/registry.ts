@@ -6,6 +6,7 @@ import { atlassianImpl } from './impl/atlassian.js';
 import { githubImpl } from './impl/github.js';
 import { lintOpenapi } from './impl/openapi-lint.js';
 import { personaImpl } from './impl/personas.js';
+import { parseTarget, withTarget } from './target.js';
 import { sdlcToolchainImpl } from './impl/sdlc-toolchain.js';
 
 export interface ToolRuntime {
@@ -118,13 +119,16 @@ export function createToolRuntime(env: ToolsEnv, redis: Redis, log: Logger): Too
       const handler = handlers[name];
       if (!handler) throw new SdlcError('TOOL_ERROR', `Tool ${name} has no handler`);
 
-      const input = def.input.safeParse(args);
+      // The project's integration target travels beside the tool input (it is not part of any tool's schema).
+      const { target: rawTarget, ...toolArgs } = (args ?? {}) as Record<string, unknown>;
+      const target = parseTarget(rawTarget, env.GITHUB_REPO);
+      const input = def.input.safeParse(toolArgs);
       if (!input.success) {
         throw new SdlcError('VALIDATION_FAILED', `Invalid input for ${name}: ${input.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
       }
 
       if (def.cacheable) {
-        const hit = await cache.get(name, input.data);
+        const hit = await cache.get(name, { input: input.data, target });
         if (hit !== null) {
           log.debug({ tool: name }, 'tool cache hit');
           return hit;
@@ -134,7 +138,7 @@ export function createToolRuntime(env: ToolsEnv, redis: Redis, log: Logger): Too
       const started = Date.now();
       let raw: unknown;
       try {
-        raw = await handler(input.data as never);
+        raw = await withTarget(target, () => handler(input.data as never));
       } catch (err) {
         const wrapped = toSdlcError(err, `Tool ${name} failed`);
         log.error({ tool: name, err: wrapped.message }, 'tool execution failed');
@@ -147,7 +151,7 @@ export function createToolRuntime(env: ToolsEnv, redis: Redis, log: Logger): Too
       }
       log.info({ tool: name, ms: Date.now() - started }, 'tool ok');
 
-      if (def.cacheable) await cache.set(name, input.data, output.data);
+      if (def.cacheable) await cache.set(name, { input: input.data, target }, output.data);
       return output.data;
     },
   };

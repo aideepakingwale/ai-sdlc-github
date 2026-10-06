@@ -621,6 +621,7 @@ async def gate_states(
     project_id: str, user: UserPublic = Depends(current_user),
     container: Container = Depends(get_container),
 ) -> dict:
+    await container.authz.assert_project_access(project_id, user)      # another project's stages are not yours to read
     states = await container.gates.list_states(project_id, user)
     return {"states": [s.model_dump() for s in states]}
 
@@ -725,7 +726,7 @@ async def read_notification(
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
     await container.authz.assert_project_access(project_id, user)
-    await container.db.mark_notification_read(notification_id, user.id)
+    await container.db.mark_notification_read(notification_id, user.id, project_id)
     return {"ok": True}
 
 
@@ -1312,7 +1313,7 @@ async def delete_attachment(
 ) -> dict:
     await container.authz.assert_project_access(project_id, user)
     await container.chat.assert_not_generating(project_id, phase_id)
-    row = await container.db.delete_attachment(attachment_id)
+    row = await container.db.delete_attachment(attachment_id, project_id)   # only this project's attachment
     if row and row["storage_key"]:
         try:
             await container.content.put(row["storage_key"], "")  # tombstone the body (D-24 pattern)

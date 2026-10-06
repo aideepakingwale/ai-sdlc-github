@@ -1249,6 +1249,7 @@ class ChatService:
         if not await self._can_write_stage(project_id, stage, user):
             raise SdlcError("FORBIDDEN", f"Editing the '{stage['name']}' plan requires write permission ({' or '.join(self._stage_writers(stage))})")
         await self.assert_not_generating(project_id, phase)
+        await self._assert_own_references(project_id, overlay)
         row = await self._db.get_stage_plan(project_id, phase)
         await self._db.upsert_stage_plan(
             project_id=project_id, phase=phase, prompt_overlay=overlay.get("promptOverlay", ""),
@@ -1263,6 +1264,24 @@ class ChatService:
         # D-109: a save is a persist, not a display — don't pay the ~30s planner here;
         # reuse the cached intel. The explicit GET /plan recomputes it when needed.
         return await self.build_plan(project_id=project_id, phase=phase, user=user, run_intel=False)
+
+    async def _assert_own_references(self, project_id: str, overlay: dict) -> None:
+        """A plan may only reference this project's artefacts, attachments and templates (platform templates are
+        shared). Another project's id is refused, never stored: it would be injected into this project's prompt."""
+        refs = list(overlay.get("referencedArtifactIds") or [])
+        atts = list(overlay.get("attachmentIds") or [])
+        forms = list(overlay.get("formworkIds") or [])
+        if len(refs) + len(atts) + len(forms) > 200:
+            raise SdlcError("VALIDATION_FAILED", "A plan can reference at most 200 items")
+        foreign: list[str] = []
+        if refs:
+            foreign += [r["id"] for r in await self._db.get_artefacts_by_ids(refs) if r["project_id"] != project_id]
+        if atts:
+            foreign += [r["id"] for r in await self._db.get_attachments_by_ids(atts) if r["project_id"] != project_id]
+        if forms:
+            foreign += [r["id"] for r in await self._db.get_formworks_by_ids(forms) if r["project_id"] not in (None, project_id)]
+        if foreign:
+            raise SdlcError("VALIDATION_FAILED", "The plan references items that belong to another project", {"items": foreign[:10]})
 
     async def trigger_stage(self, *, project_id: str, phase: int, user: UserPublic, emit: Emit) -> None:
         """Run ONE stage using its reviewed plan overlay (D-56). Nothing generates
