@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# AI-SDLC — single-host PoC deploy on Linux (EC2). Two model backends:
+# DevMind — single-host PoC deploy on Linux (EC2). Two model backends:
 #   • bedrock (default): Amazon Bedrock via the EC2 INSTANCE ROLE (no API keys).
 #   • keys:              Groq -> Gemini -> xAI from .env (for accounts where
 #                        Bedrock is blocked). You paste the keys into .env.
@@ -25,6 +25,7 @@ set -euo pipefail
 # ---- defaults ----------------------------------------------------------------
 PROVIDER="bedrock"        # bedrock (instance-role) | keys (Groq/Gemini/xAI)
 MODEL_ID="${BEDROCK_MODEL_ID:-}"
+LIGHT_MODEL_ID="${BEDROCK_LIGHT_MODEL_ID:-}"
 REGION="${BEDROCK_REGION:-${AWS_REGION:-}}"
 PUBIP="${PUBIP:-}"
 CTX_THRESHOLD="${CONTEXT_TOKEN_THRESHOLD:-16000}"
@@ -42,7 +43,7 @@ die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-AI-SDLC — single-host PoC deploy on Linux (EC2) with Amazon Bedrock.
+DevMind — single-host PoC deploy on Linux (EC2) with Amazon Bedrock.
 
 Run this ON the instance, from the repo root, after `git clone`. It configures
 .env for Bedrock (instance-role auth, no API keys), writes the ai-client
@@ -64,6 +65,10 @@ Options:
   --model-id <id>     Bedrock model / inference-profile id (required for bedrock).
                       e.g. us.anthropic.claude-3-5-sonnet-20241022-v2:0
   --region <region>   AWS/Bedrock region. Auto-detected from IMDS if omitted.
+  --light-model-id <id>  Optional FAST Bedrock model (e.g. a Haiku inference profile) for the
+                      small judging calls - validator, fact-check, clarification, trait
+                      detection, context compression. Cuts several seconds from every run.
+                      Falls back to --model-id automatically if it is wrong or unavailable.
   --pubip <ip|host>   Public address for APP_PUBLIC_URL. Auto-detected if omitted.
   --ctx <n>           CONTEXT_TOKEN_THRESHOLD (default 16000).
   --bootstrap         Also add a 4G swapfile and install Docker (needs sudo).
@@ -84,6 +89,7 @@ while [[ $# -gt 0 ]]; do
     --provider)   PROVIDER="${2:?}"; shift 2 ;;
     --model-id)   MODEL_ID="${2:?}"; shift 2 ;;
     --region)     REGION="${2:?}"; shift 2 ;;
+    --light-model-id) LIGHT_MODEL_ID="${2:?}"; shift 2 ;;
     --pubip)      PUBIP="${2:?}"; shift 2 ;;
     --ctx)        CTX_THRESHOLD="${2:?}"; shift 2 ;;
     --bootstrap)  DO_BOOTSTRAP=1; shift ;;
@@ -97,7 +103,7 @@ done
 
 cd "$(dirname "$0")"
 [[ -f docker-compose.yml ]] || die "Run this from the repo root (docker-compose.yml not found)."
-[[ -f .env.example ]]       || die ".env.example missing — is this the AI-SDLC repo?"
+[[ -f .env.example ]]       || die ".env.example missing — is this the DevMind repo?"
 
 # ---- IMDSv2 helper (best-effort; empty if not on EC2) ------------------------
 imds() {
@@ -208,6 +214,12 @@ if [[ "$PROVIDER" == "bedrock" ]]; then
     -e "s|^BEDROCK_REGION=.*|BEDROCK_REGION=${REGION}|" \
     -e "s|^AWS_REGION=.*|AWS_REGION=${REGION}|" \
     .env
+  if [[ -n "$LIGHT_MODEL_ID" ]]; then
+    # Written as provider/model - the gateway pins that provider + model for light calls.
+    grep -q '^LIGHT_MODEL=' .env || echo 'LIGHT_MODEL=' >> .env
+    sed -i -e "s|^LIGHT_MODEL=.*|LIGHT_MODEL=bedrock/${LIGHT_MODEL_ID}|" .env
+    log "light model: bedrock/${LIGHT_MODEL_ID}"
+  fi
   log ".env configured (bedrock; model=${MODEL_ID}, region=${REGION}, url=http://${PUBIP}:3000)"
   # ai-client override: .env ships AWS_ACCESS_KEY_ID=local for DynamoDB/S3 emulators;
   # that dummy value would shadow the instance role, so blank it JUST for ai-client.
@@ -224,7 +236,7 @@ else
   # Key-based providers: clear Bedrock so the router uses Groq -> Gemini -> xAI
   # from .env. Do NOT touch AWS_REGION (that would break the local DynamoDB/S3
   # emulators / audit bucket). No instance-role override is needed.
-  sed -i -e "s|^BEDROCK_MODEL_ID=.*|BEDROCK_MODEL_ID=|" .env
+  sed -i -e "s|^BEDROCK_MODEL_ID=.*|BEDROCK_MODEL_ID=|" -e "s|^LIGHT_MODEL=.*|LIGHT_MODEL=|" .env
   rm -f docker-compose.override.yml
   log ".env configured (keys; Bedrock disabled; provider chain = Groq -> Gemini -> xAI; url=http://${PUBIP}:3000)"
 

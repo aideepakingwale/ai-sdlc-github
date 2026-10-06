@@ -11,10 +11,11 @@ import { Button } from './ui/Button';
 import { SectionLabel } from './ui/Card';
 import { Stepper } from './ui/Stepper';
 import { deriveGuide } from '../lib/stageGuide';
+import { summariseExtraction, type AttachmentExtraction } from '../lib/attachmentSummary';
 import { useStickToBottom } from '../hooks/useStickToBottom';
 import type { ProjectFlow } from '../api/flow';
 import type { ChatMessage, PhaseStateView, User } from '../api/types';
-import { useApp, type ActivityItem } from '../store';
+import { streamKey, useApp, useStream, type ActivityItem } from '../store';
 import ArtifactViewer from './ArtifactViewer';
 import FeedbackPanel from './FeedbackPanel';
 import GatePanel from './GatePanel';
@@ -139,12 +140,18 @@ export default function StageWorkspace({
   artefacts: Array<{ id: string; phase: number; type: string; title: string; url: string | null }>;
 }) {
   const qc = useQueryClient();
-  const { streaming, activity, liveResponse, liveParts, beginStream, pushEvent, endStream } = useApp();
+  const { beginStream, pushEvent, endStream } = useApp();
+  // Only THIS project's stage: a run elsewhere (another project, another stage) never shows up here.
+  const runKey = streamKey(projectId, selectedSeq);
+  const { active: streaming, activity, liveResponse, liveParts } = useStream(runKey);
   const [prompt, setPrompt] = useState('');
   const [viewArtefactId, setViewArtefactId] = useState<string | null>(null);
   const [refIds, setRefIds] = useState<string[]>([]);
   const [formworkIds, setFormworkIds] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
+  // Per-file outcome of the last upload batch: what failed, and what was only partly read.
+  const [uploadNotes, setUploadNotes] = useState<Array<{ name: string; tone: 'error' | 'warn'; text: string }>>([]);
+  const [uploadProgress, setUploadProgress] = useState('');
   const [plan, setPlan] = useState<StagePlan | null>(null);
   const [planBusy, setPlanBusy] = useState(false);
   // D-112: the reviewer's decision on which outputs to produce (defaults to the
@@ -173,7 +180,7 @@ export default function StageWorkspace({
     threadEndRef.current?.scrollIntoView({ block: 'nearest' });
   }, [thread]);
   // Reset the discussion when the selected stage changes.
-  useEffect(() => { setThread([]); setRefineText(''); setFormatMode(null); }, [selectedSeq]);
+  useEffect(() => { setThread([]); setRefineText(''); setFormatMode(null); }, [projectId, selectedSeq]);
   // Inline "@" mention autosuggest (D-56).
   const [mention, setMention] = useState<{ open: boolean; query: string; at: number }>({
     open: false, query: '', at: 0,
@@ -188,7 +195,7 @@ export default function StageWorkspace({
   const attachmentsQ = useQuery({
     queryKey: ['attachments', projectId, selectedSeq],
     queryFn: () =>
-      api.get<{ attachments: Array<{ id: string; filename: string; sizeBytes: number; isText: boolean }> }>(
+      api.get<{ attachments: Array<{ id: string; filename: string; sizeBytes: number; isText: boolean; extraction?: AttachmentExtraction }> }>(
         `/api/projects/${projectId}/phase/${selectedSeq}/attachments`,
       ),
     enabled: Boolean(projectId),
@@ -252,7 +259,7 @@ export default function StageWorkspace({
     setMention({ open: false, query: '', at: 0 });
     setPlan(null);
     setShowSystemPrompt(false);
-  }, [selectedSeq]);
+  }, [projectId, selectedSeq]);
 
   // The plan lives on the SERVER (building flag + cached result), not in this tab: opening
   // the same project in another tab/session shows the same state — "Building plan…" while a
@@ -321,7 +328,7 @@ export default function StageWorkspace({
     () => messages.filter((m) => m.phase === selectedSeq),
     [messages, selectedSeq],
   );
-  const streamingHere = streaming && stage?.phase === flow.currentPhase;
+  const streamingHere = streaming;          // the run of the stage on screen (keyed by project + stage)
 
   // Follow new output only while the user is already at the bottom — never yank them down
   // while they are reading a tab/log higher up (this used to scroll on every streamed update).
@@ -464,8 +471,8 @@ export default function StageWorkspace({
     // below (save overlay + enqueue) leave the plan sitting unchanged for a beat,
     // then a flash of the empty "not started" composer — which reads as "nothing
     // happened / no artifacts". beginStream() also guards re-clicks (streaming=true).
-    beginStream();
-    pushEvent({ type: 'node', node: 'queue', label: 'Starting the run…' } as never);
+    beginStream(runKey);
+    pushEvent(runKey, { type: 'node', node: 'queue', label: 'Starting the run…' } as never);
     // persist the latest overlay (with the reviewer's production-scope decision) first,
     // then enqueue the reviewed run.
     try {
@@ -475,18 +482,18 @@ export default function StageWorkspace({
     try {
       await api.post(`/api/projects/${projectId}/phase/${selectedSeq}/plan/trigger`, {});
     } catch (err) {
-      endStream();
+      endStream(runKey);
       window.alert(err instanceof Error ? err.message : 'Could not start generation');
       return;
     }
     resetComposer(); // the run is queued; clear the composer
     try {
-      await streamStageProgress(projectId, selectedSeq, pushEvent);
+      await streamStageProgress(projectId, selectedSeq, (ev) => pushEvent(runKey, ev));
     } finally {
       // Refresh the stage status BEFORE dropping the streaming view, so it flips
       // straight from "Generating…" to "pending review" with no not-started flash.
       try { await qc.refetchQueries({ queryKey: ['flow', projectId] }); } catch { /* ignore */ }
-      endStream();
+      endStream(runKey);
       void qc.invalidateQueries({ queryKey: ['project', projectId] });
       void qc.invalidateQueries({ queryKey: ['artefacts', projectId] });
       void qc.invalidateQueries({ queryKey: ['flow', projectId] });
@@ -500,20 +507,20 @@ export default function StageWorkspace({
   // watch its progress. Only the chosen parts are regenerated; the rest are reused.
   async function runPartsJob(label: string, url: string, body: unknown) {
     if (streaming) return;
-    beginStream();
-    pushEvent({ type: 'node', node: 'queue', label } as never);
+    beginStream(runKey);
+    pushEvent(runKey, { type: 'node', node: 'queue', label } as never);
     try {
       await api.post(url, body);
     } catch (err) {
-      endStream();
+      endStream(runKey);
       window.alert(err instanceof Error ? err.message : 'Could not start generation');
       return;
     }
     try {
-      await streamStageProgress(projectId, selectedSeq, pushEvent);
+      await streamStageProgress(projectId, selectedSeq, (ev) => pushEvent(runKey, ev));
     } finally {
       try { await qc.refetchQueries({ queryKey: ['flow', projectId] }); } catch { /* ignore */ }
-      endStream();
+      endStream(runKey);
       void qc.invalidateQueries({ queryKey: ['parts', projectId, selectedSeq] });
       void qc.invalidateQueries({ queryKey: ['artefacts', projectId] });
       void qc.invalidateQueries({ queryKey: ['project', projectId] });
@@ -547,21 +554,21 @@ export default function StageWorkspace({
       if (a.other.trim()) parts_.push(a.other.trim());
       return { question: q.question, answer: parts_.join('; ') };
     });
-    beginStream();
-    pushEvent({ type: 'node', node: 'queue', label: 'Applying your answers…' } as never);
+    beginStream(runKey);
+    pushEvent(runKey, { type: 'node', node: 'queue', label: 'Applying your answers…' } as never);
     try {
       await api.post(`/api/projects/${projectId}/phase/${selectedSeq}/clarify`, { answers });
     } catch (err) {
-      endStream();
+      endStream(runKey);
       window.alert(err instanceof Error ? err.message : 'Could not submit answers');
       return;
     }
     setClarifyAns({});
     try {
-      await streamStageProgress(projectId, selectedSeq, pushEvent);
+      await streamStageProgress(projectId, selectedSeq, (ev) => pushEvent(runKey, ev));
     } finally {
       try { await qc.refetchQueries({ queryKey: ['flow', projectId] }); } catch { /* ignore */ }
-      endStream();
+      endStream(runKey);
       void qc.invalidateQueries({ queryKey: ['clarification', projectId, selectedSeq] });
       void qc.invalidateQueries({ queryKey: ['project', projectId] });
       void qc.invalidateQueries({ queryKey: ['artefacts', projectId] });
@@ -585,11 +592,11 @@ export default function StageWorkspace({
         const job = await api.get<{ running: boolean }>(`/api/projects/${projectId}/phase/${selectedSeq}/job`);
         if (cancelled || !job.running || streaming) return;
         reconnectKeyRef.current = attachKey;
-        beginStream();
+        beginStream(runKey);
         try {
-          await streamStageProgress(projectId, selectedSeq, pushEvent, ctrl.signal);
+          await streamStageProgress(projectId, selectedSeq, (ev) => pushEvent(runKey, ev), ctrl.signal);
         } finally {
-          endStream();
+          endStream(runKey);
           reconnectKeyRef.current = null;
           void qc.invalidateQueries({ queryKey: ['flow', projectId] });
           void qc.invalidateQueries({ queryKey: ['artefacts', projectId] });
@@ -607,13 +614,28 @@ export default function StageWorkspace({
 
   async function onAttach(files: FileList | null) {
     if (!files?.length) return;
+    const batch = Array.from(files);
     setUploading(true);
+    setUploadNotes([]);
+    const notes: Array<{ name: string; tone: 'error' | 'warn'; text: string }> = [];
     try {
-      for (const file of Array.from(files)) {
-        await api.upload(`/api/projects/${projectId}/phase/${selectedSeq}/attachments`, file);
+      // One at a time: each file is analysed (text, tables, pictures, diagrams) server-side,
+      // and a failure in one must not hide the others.
+      for (const [i, file] of batch.entries()) {
+        setUploadProgress(batch.length > 1 ? `Analysing ${i + 1} of ${batch.length} — ${file.name}` : `Analysing ${file.name}`);
+        try {
+          const res = await api.upload<{ warnings?: string[]; note?: string; stats?: Record<string, number> }>(
+            `/api/projects/${projectId}/phase/${selectedSeq}/attachments`, file);
+          const warnings = res.warnings ?? [];
+          if (warnings.length) notes.push({ name: file.name, tone: 'warn', text: warnings.join(' · ') });
+        } catch (err) {
+          notes.push({ name: file.name, tone: 'error', text: err instanceof Error ? err.message : 'Upload failed' });
+        }
+        await qc.invalidateQueries({ queryKey: ['attachments', projectId, selectedSeq] });
       }
-      await qc.invalidateQueries({ queryKey: ['attachments', projectId, selectedSeq] });
     } finally {
+      setUploadNotes(notes);
+      setUploadProgress('');
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
@@ -678,11 +700,14 @@ export default function StageWorkspace({
   // Stage 1 must be told what to build; any stage that DOES get a prompt needs a
   // usable one (not a stray character). Later stages may run with no prompt at all.
   const trimmedPrompt = prompt.trim();
-  const promptRequired = stage.phase === 1;
+  // Attached documents (or pinned references) ARE the brief: analysing a requirements
+  // document needs no typed description, so only an empty stage 1 with nothing attached is blocked.
+  const hasBrief = attachments.length > 0 || refIds.length > 0;
+  const promptRequired = stage.phase === 1 && !hasBrief;
   const promptMissing = promptRequired && trimmedPrompt.length === 0;
   const promptTooShort = trimmedPrompt.length > 0 && trimmedPrompt.length < 12;
   const promptError = promptMissing
-    ? 'Describe what to build before reviewing the plan.'
+    ? 'Describe what to build — or attach a requirements document — before reviewing the plan.'
     : promptTooShort
       ? 'Add a bit more detail — at least 12 characters — so the agent has something to work with.'
       : '';
@@ -1011,8 +1036,8 @@ export default function StageWorkspace({
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => onAttach(e.target.files)} />
                 <Button size="sm" icon="paperclip" loading={uploading} disabled={locked} onClick={() => fileInputRef.current?.click()}
-                  title="Attach a document the agent should read — or follow the format of">
-                  {uploading ? 'Uploading…' : 'Attach files'}
+                  title="Attach any documents the agent should read — or follow the format of: PDF, Word, PowerPoint, Excel, draw.io, Visio, SVG, images (diagrams and screenshots are read), HTML, Markdown, CSV, JSON…">
+                  {uploading ? (uploadProgress || 'Analysing…') : 'Attach files'}
                 </Button>
                 <span className="text-xs text-slate-400">or type <kbd className="rounded bg-slate-100 px-1 font-mono text-slate-500">@</kbd> to reference earlier outputs and templates</span>
               </div>
@@ -1032,10 +1057,26 @@ export default function StageWorkspace({
                     </span>
                   ))}
                   {attachments.map((a) => (
-                    <span key={`a-${a.id}`} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600" title={a.isText ? 'Inlined into the prompt' : 'Binary — kept but not inlined'}>
-                      <Icon name="paperclip" size={11} /> {a.filename}{!a.isText && <span className="text-amber-600">(binary)</span>}
+                    <span key={`a-${a.id}`} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600"
+                      title={a.isText
+                        ? `Inlined into the prompt${(a.extraction?.warnings ?? []).length ? ` — note: ${(a.extraction?.warnings ?? []).join('; ')}` : ''}`
+                        : 'Binary — kept but not inlined'}>
+                      <Icon name="paperclip" size={11} /> {a.filename}
+                      {summariseExtraction(a.extraction?.stats) && <span className="text-slate-400">· {summariseExtraction(a.extraction?.stats)}</span>}
+                      {(a.extraction?.warnings ?? []).length > 0 && <span className="text-amber-600" aria-label="Partly read">⚠</span>}
+                      {!a.isText && <span className="text-amber-600">(binary)</span>}
                       <button type="button" aria-label={`Remove ${a.filename}`} onClick={() => removeAttachment(a.id)} disabled={locked} className="ml-0.5 text-slate-400 hover:text-red-600 disabled:opacity-30"><Icon name="x" size={11} /></button>
                     </span>
+                  ))}
+                </div>
+              )}
+
+              {uploadNotes.length > 0 && (
+                <div className="mt-2 space-y-1" role="status" data-testid="upload-notes">
+                  {uploadNotes.map((n) => (
+                    <Callout key={n.name} tone={n.tone === 'error' ? 'error' : 'warning'} compact>
+                      <strong>{n.name}</strong> — {n.tone === 'error' ? `could not be attached: ${n.text}` : `attached, but only partly read: ${n.text}`}
+                    </Callout>
                   ))}
                 </div>
               )}

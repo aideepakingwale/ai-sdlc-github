@@ -21,7 +21,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: { code?: string; message?: string } } | null;
-    throw new ApiError(body?.error?.code ?? 'HTTP_ERROR', body?.error?.message ?? `Request failed (${res.status})`, res.status);
+    // Proxy-level failures come back as HTML, not our JSON envelope - say what they mean.
+    const proxyMessage: Record<number, string> = {
+      413: 'That file is larger than the server accepts.',
+      502: 'The server is restarting or unavailable - try again in a moment.',
+      504: 'The server took too long to respond - try again, or use a smaller file.',
+    };
+    throw new ApiError(
+      body?.error?.code ?? 'HTTP_ERROR',
+      body?.error?.message ?? proxyMessage[res.status] ?? `Request failed (${res.status})`,
+      res.status,
+    );
   }
   return (await res.json()) as T;
 }

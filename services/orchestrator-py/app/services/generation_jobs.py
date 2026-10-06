@@ -27,6 +27,7 @@ from typing import Any, Awaitable, Callable
 
 from redis import exceptions as redis_exceptions
 
+from .telemetry import set_run_context
 from ..domain.errors import SdlcError
 
 log = logging.getLogger("generation_jobs")
@@ -191,6 +192,7 @@ class GenerationJobs:
         project_id = payload["projectId"]
         phase = int(payload["phase"])
         actor = payload.get("actor") or ""
+        set_run_context(project_id, phase)   # this long-lived worker must not attribute spans to the PREVIOUS job's project
         pkey = self._progress_key(project_id, phase)
         queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
 

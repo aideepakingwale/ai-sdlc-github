@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Redis } from 'ioredis';
 import { SdlcError } from '@sdlc/shared';
 import type { ToolsEnv } from '@sdlc/shared';
+import { targetOf } from '../target.js';
 
 export interface AtlassianDeps {
   env: ToolsEnv;
@@ -52,11 +53,15 @@ function projectKeyOf(supplied: string | undefined, fallback: string): string {
 
 export function atlassianImpl(deps: AtlassianDeps) {
   const { env, redis, live } = deps;
-  const defaultKey = env.JIRA_PROJECT_KEY;
+  /** The Jira project of the project the current call belongs to (platform default when none). */
+  const keyOf = (): string => targetOf().jiraProjectKey ?? env.JIRA_PROJECT_KEY;
+  /** A project's configured Jira project is AUTHORITATIVE: a key the model picked never overrides it. */
+  const pickKey = (supplied: string | undefined): string => targetOf().jiraProjectKey ?? projectKeyOf(supplied, keyOf());
+  const spaceOf = (): string => targetOf().confluenceSpaceKey ?? env.CONFLUENCE_SPACE_KEY;
 
   return {
     async createEpic(input: { title: string; description: string; priority: string; projectKey?: string }) {
-      const projectKey = projectKeyOf(input.projectKey, defaultKey);
+      const projectKey = pickKey(input.projectKey);
       if (live) {
         const issue = await jiraCreateIssue(env, {
           project: { key: projectKey },
@@ -75,7 +80,7 @@ export function atlassianImpl(deps: AtlassianDeps) {
     async createStory(input: { epicKey: string; storyText: string; gherkinCriteria: string[]; storyPoints?: number; projectKey?: string }) {
       // Prefer the epic's own prefix so a story sits under its epic's project.
       const epicPrefix = input.epicKey.split('-')[0];
-      const projectKey = projectKeyOf(input.projectKey ?? epicPrefix, defaultKey);
+      const projectKey = pickKey(input.projectKey ?? epicPrefix);
       if (live) {
         const issue = await jiraCreateIssue(env, {
           project: { key: projectKey },
@@ -93,7 +98,7 @@ export function atlassianImpl(deps: AtlassianDeps) {
 
     async createXrayTest(input: { storyKey: string; title: string; steps: Array<{ action: string; expectedResult: string }> }) {
       // Keep the test in the same project as the story it verifies.
-      const projectKey = projectKeyOf(input.storyKey.split('-')[0], defaultKey);
+      const projectKey = pickKey(input.storyKey.split('-')[0]);
       if (live) {
         const issue = await jiraCreateIssue(env, {
           project: { key: projectKey },
@@ -118,7 +123,7 @@ export function atlassianImpl(deps: AtlassianDeps) {
           body: JSON.stringify({
             type: 'page',
             title: input.title,
-            space: { key: env.CONFLUENCE_SPACE_KEY },
+            space: { key: spaceOf() },
             body: { storage: { value: `<pre>${escapeHtml(input.body)}</pre>`, representation: 'storage' } },
           }),
           signal: AbortSignal.timeout(30_000),

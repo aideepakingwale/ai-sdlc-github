@@ -1,7 +1,7 @@
 {
   "realm": "sdlc",
   "enabled": true,
-  "displayName": "AI-SDLC Platform",
+  "displayName": "DevMind",
   "sslRequired": "none",
   "registrationAllowed": false,
   "loginWithEmailAllowed": true,
@@ -24,7 +24,7 @@
   "clients": [
     {
       "clientId": "sdlc-orchestrator",
-      "name": "AI-SDLC Orchestrator (BFF confidential client)",
+      "name": "DevMind Orchestrator (BFF confidential client)",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,

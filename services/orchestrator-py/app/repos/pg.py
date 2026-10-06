@@ -167,7 +167,7 @@ class Database:
 
     # ------------------------------------------------------------ projects & sessions
     async def create_project(
-        self, *, name: str, created_by: str, tech_stack: str = "Node.js + TypeScript",
+        self, *, name: str, created_by: str, tech_stack: str = "",
         integrations: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         assert self.pool
@@ -194,6 +194,14 @@ class Database:
         assert self.pool
         return await self.pool.fetchrow("SELECT * FROM projects WHERE id=$1", project_id)
 
+    async def set_project_stack(self, project_id: str, tech_stack: str, source: str) -> None:
+        """Record the project's decided technology stack and who decided it."""
+        assert self.pool
+        await self.pool.execute(
+            "UPDATE projects SET tech_stack=$2, tech_stack_source=$3 WHERE id=$1",
+            project_id, tech_stack, source,
+        )
+
     async def update_project_integrations(self, project_id: str, integrations: dict[str, Any]) -> None:
         """Edit a project's GitHub/Atlassian targets after creation (D-62)."""
         assert self.pool
@@ -218,6 +226,8 @@ class Database:
             if not exists:
                 return False
             await conn.execute("DELETE FROM llm_traces WHERE project_id=$1", project_id)
+            # The project's retrieval corpus (approved artefacts, uploaded code): scope = project id, no FK.
+            await conn.execute("DELETE FROM kb_documents WHERE scope=$1", project_id)
             await conn.execute("DELETE FROM projects WHERE id=$1", project_id)
         return True
 
@@ -442,20 +452,21 @@ class Database:
             project_id, limit,
         )
 
-    async def mark_notification_read(self, notification_id: str, user_id: str) -> None:
-        """Append the user to read_by (idempotent — `?` is jsonb array containment)."""
+    async def mark_notification_read(self, notification_id: str, user_id: str, project_id: str) -> None:
+        """Append the user to read_by (idempotent — `?` is jsonb array containment). Only a notification of the
+        project the caller is acting in."""
         assert self.pool
         await self.pool.execute(
             "UPDATE notifications SET read_by = read_by || to_jsonb($2::text) "
-            "WHERE id=$1 AND NOT (read_by ? $2)",
-            notification_id, user_id,
+            "WHERE id=$1 AND project_id=$3 AND NOT (read_by ? $2)",
+            notification_id, user_id, project_id,
         )
 
     # ------------------------------------------------------------ stage attachments (D-54)
     async def insert_attachment(
         self, *, project_id: str, phase: int, filename: str, content_type: str,
         size_bytes: int, is_text: bool, storage_key: str, created_by: str | None,
-        attachment_id: str | None = None,
+        attachment_id: str | None = None, extraction: dict[str, Any] | None = None,
     ) -> str:
         assert self.pool
         # Caller may supply the id so the DB row, the content-store key and the
@@ -463,10 +474,10 @@ class Database:
         attachment_id = attachment_id or new_id()
         await self.pool.execute(
             "INSERT INTO stage_attachments "
-            "(id, project_id, phase, filename, content_type, size_bytes, is_text, storage_key, created_by) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+            "(id, project_id, phase, filename, content_type, size_bytes, is_text, storage_key, created_by, extraction) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)",
             attachment_id, project_id, phase, filename, content_type, size_bytes,
-            is_text, storage_key, created_by,
+            is_text, storage_key, created_by, json.dumps(extraction or {}),
         )
         return attachment_id
 
@@ -487,10 +498,12 @@ class Database:
             return []
         return await self.pool.fetch("SELECT * FROM stage_attachments WHERE id = ANY($1::text[])", ids)
 
-    async def delete_attachment(self, attachment_id: str) -> asyncpg.Record | None:
+    async def delete_attachment(self, attachment_id: str, project_id: str) -> asyncpg.Record | None:
+        """Delete an attachment of THIS project (an id from another project matches nothing)."""
         assert self.pool
         return await self.pool.fetchrow(
-            "DELETE FROM stage_attachments WHERE id=$1 RETURNING id, storage_key", attachment_id
+            "DELETE FROM stage_attachments WHERE id=$1 AND project_id=$2 RETURNING id, storage_key",
+            attachment_id, project_id,
         )
 
     async def get_artefacts_by_ids(self, ids: list[str]) -> list[asyncpg.Record]:

@@ -178,10 +178,10 @@ class FakeDb:
         if project_id in self.projects:
             return self.projects[project_id]
         return {"id": project_id, "name": "P", "created_by": "u-pm",
-                "current_phase": 1, "status": "ACTIVE", "tech_stack": "Node.js + TypeScript"}
+                "current_phase": 1, "status": "ACTIVE", "tech_stack": ""}
 
     # Project creation + per-project integration targets
-    async def create_project(self, *, name, created_by, tech_stack="Node.js + TypeScript", integrations=None):
+    async def create_project(self, *, name, created_by, tech_stack="", integrations=None):
         import datetime as _dt
         ig = integrations or {}
         pid = f"proj-{len(self.projects) + 1}"
@@ -193,6 +193,11 @@ class FakeDb:
         }
         self.projects[pid] = row
         return row
+
+    async def set_project_stack(self, project_id, tech_stack, source):
+        row = self.projects.get(project_id)
+        if row is not None:
+            row["tech_stack"], row["tech_stack_source"] = tech_stack, source
 
     async def update_project_integrations(self, project_id, integrations):
         row = self.projects.get(project_id)
@@ -232,9 +237,9 @@ class FakeDb:
     async def list_notifications(self, project_id, limit=50):
         return [n for n in self.notifications if n["project_id"] == project_id][:limit]
 
-    async def mark_notification_read(self, notification_id, user_id):
+    async def mark_notification_read(self, notification_id, user_id, project_id=None):
         for n in self.notifications:
-            if n["id"] == notification_id and user_id not in n["read_by"]:
+            if n["id"] == notification_id and (project_id is None or n["project_id"] == project_id) and user_id not in n["read_by"]:
                 n["read_by"].append(user_id)
 
     # Stage plan drafts

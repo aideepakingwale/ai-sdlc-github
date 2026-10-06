@@ -22,7 +22,7 @@ export default function App() {
   if (me.isLoading) {
     return (
       <div className="flex h-full items-center justify-center text-slate-400">
-        <div className="animate-pulse text-sm">Loading AI-SDLC Platform…</div>
+        <div className="animate-pulse text-sm">Loading DevMind…</div>
       </div>
     );
   }

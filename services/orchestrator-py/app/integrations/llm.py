@@ -18,6 +18,9 @@ from ..services.prompt_library import render as render_prompt
 
 log = logging.getLogger("llm")
 
+# How long a role's pinned model is bypassed after it fails (seconds).
+ROLE_COOLDOWN_SECONDS = 300
+
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -83,8 +86,18 @@ class LlmClient:
         redis: Any = None,
         debug_env_default: bool = False,
         debug_max_chars: int = 200_000,
+        role_models: dict[str, Any] | None = None,
     ) -> None:
         self._base = base_url.rstrip("/")
+        # role -> ordered chain of 'provider/model' (env defaults; an admin's live routes in
+        # Redis override them). See `role=` on generate().
+        self._role_models: dict[str, list[str]] = {}
+        for k, v in (role_models or {}).items():
+            chain = [m.strip() for m in ([v] if isinstance(v, str) else list(v or [])) if m and m.strip()]
+            if chain:
+                self._role_models[k] = chain
+        self._route_cache: tuple[dict[str, list[str]], float] = ({}, 0.0)
+        self._model_disabled_until: dict[tuple[str, str], float] = {}
         # The gateway streams real provider calls (Bedrock) that can run for
         # minutes on a large artifact; the generate POST must therefore outlast
         # the gateway's own provider ceiling (600s, D-96). If httpx gives up first
@@ -147,6 +160,78 @@ class LlmClient:
         return {"mode": "auto", "effectiveMock": True, "activeProviders": [], "providers": []}
 
     async def generate(
+        self,
+        *,
+        intent: str,
+        messages: list[dict[str, Any]],
+        json_mode: bool = False,
+        temperature: float = 0.2,
+        max_tokens: int = 4096,
+        tag: str | None = None,
+        tier: str = "auto",
+        model: str | None = None,
+        role: str | None = None,
+    ) -> LlmResult:
+        """One generation. `role` ('reason' | 'generate' | 'light' | 'plan' | 'vision') routes
+        the call through the models configured for that role (see services/model_routes.py).
+        An explicit `model` always wins. A model that fails is skipped for
+        ROLE_COOLDOWN_SECONDS and the next in the role's chain is tried, ending on the
+        normal gateway chain - a mistyped model id costs one slow call, never a failed run."""
+        return await self._routed(
+            role, model,
+            lambda m: self._generate(
+                intent=intent, messages=messages, json_mode=json_mode, temperature=temperature,
+                max_tokens=max_tokens, tag=tag, tier=tier, model=m))
+
+    async def _live_routes(self) -> dict[str, list[str]]:
+        """The admin's live routes (Redis `sdlc:settings:model_routes`), cached briefly so
+        the hot path stays off Redis. Never raises."""
+        cached, at = self._route_cache
+        if time.monotonic() - at < 5.0:
+            return cached
+        routes: dict[str, list[str]] = {}
+        if self._redis is not None:
+            try:
+                from ..services.model_routes import SETTING_KEY, parse_routes
+                routes = parse_routes(await self._redis.get(f"sdlc:settings:{SETTING_KEY}"))
+            except Exception:  # noqa: BLE001
+                routes = {}
+        self._route_cache = (routes, time.monotonic())
+        return routes
+
+    async def route_chain(self, role: str | None) -> list[str]:
+        """The models configured for `role`, admin routes first then the env default
+        (empty when nothing is configured: the normal chain serves)."""
+        if not role:
+            return []
+        live = await self._live_routes()
+        return list(live.get(role) or self._role_models.get(role) or [])
+
+    async def has_route(self, role: str | None) -> bool:
+        return bool(await self.route_chain(role))
+
+    async def _routed(self, role: str | None, model: str | None, call: Callable[[str | None], Any]) -> Any:
+        """Run `call(model)` through the role's model chain. An explicit `model` always wins.
+        Each model in the chain is tried in order; one that fails with a provider error is
+        skipped for ROLE_COOLDOWN_SECONDS and the next is tried; when the chain is exhausted
+        the call runs on the normal gateway chain. A mistyped model id therefore costs one
+        slow call, never a failed run."""
+        if model is None and role:
+            now = time.monotonic()
+            for pinned in await self.route_chain(role):
+                if now < self._model_disabled_until.get((role, pinned), 0.0):
+                    continue
+                try:
+                    return await call(pinned)
+                except SdlcError as err:
+                    if err.code != "PROVIDER_ERROR":
+                        raise
+                    self._model_disabled_until[(role, pinned)] = time.monotonic() + ROLE_COOLDOWN_SECONDS
+                    log.warning("role '%s' model %s failed (%s); trying the next for %ss",
+                                role, pinned, err, ROLE_COOLDOWN_SECONDS)
+        return await call(model)
+
+    async def _generate(
         self,
         *,
         intent: str,
@@ -227,10 +312,29 @@ class LlmClient:
         tag: str | None = None,
         tier: str = "auto",
         model: str | None = None,
+        role: str | None = None,
     ) -> LlmResult:
         """Stream a plain-text generation (D-112): calls `on_delta(text)` for each
         chunk as the model produces it, and returns the final assembled LlmResult.
         Falls back to a single delta for providers that can't stream."""
+        return await self._routed(
+            role, model,
+            lambda m: self._generate_stream(
+                intent=intent, messages=messages, on_delta=on_delta, temperature=temperature,
+                max_tokens=max_tokens, tag=tag, tier=tier, model=m))
+
+    async def _generate_stream(
+        self,
+        *,
+        intent: str,
+        messages: list[dict[str, Any]],
+        on_delta: Callable[[str], Any],
+        temperature: float = 0.2,
+        max_tokens: int = 16000,
+        tag: str | None = None,
+        tier: str = "auto",
+        model: str | None = None,
+    ) -> LlmResult:
         started = time.perf_counter()
         debug = await self._debug_enabled()
         req_body = self._cap(_sanitize_for_trace(messages)) if debug else None
@@ -305,6 +409,7 @@ class LlmClient:
         tier: str = "auto",
         model: str | None = None,
         max_attempts: int = 3,
+        role: str | None = None,
     ) -> tuple[T, LlmResult]:
         """JSON-mode generation validated against `schema`, with truncation-aware retries.
 
@@ -328,6 +433,7 @@ class LlmClient:
             result = await self.generate(
                 intent=intent, messages=msgs, json_mode=True,
                 temperature=temperature, max_tokens=effective_max, tag=tag, tier=tier, model=model,
+                role=role,
             )
             # Provider says it hit the cap → grow the budget and retry before parsing
             # (parsing truncated JSON is pointless).

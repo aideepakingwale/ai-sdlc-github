@@ -1,4 +1,4 @@
-"""AI-SDLC Orchestration Hub — Python/FastAPI/LangGraph (D-18).
+"""DevMind Orchestration Hub — Python/FastAPI/LangGraph (D-18).
 Composition root: builds every layer once, exposes the REST + SSE API."""
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from .auth.keycloak import KeycloakAuth
 from .config import get_settings
 from .domain.errors import SdlcError
 from .domain.models import UserPublic
+from .services.model_routes import env_defaults
 from .integrations.llm import LlmClient
 from .integrations.mcp_client import McpServer, McpToolClient
 from .repos.aws import DynamoStore, S3Store
@@ -86,8 +87,27 @@ async def lifespan(app: FastAPI):
         redis=redis,  # D-104: read the runtime llm_debug_trace toggle
         debug_env_default=settings.LLM_DEBUG_TRACE,
         debug_max_chars=settings.LLM_DEBUG_TRACE_MAX_CHARS,
+        role_models=env_defaults(settings),
     )
+    if env_defaults(settings):
+        log.info("model routes from env: %s (an admin's live routes override these)", env_defaults(settings))
     mcp = McpToolClient(settings.TOOLS_MCP_URL, extra_servers=_external_mcp_servers(settings))
+    _targets: dict[str, tuple[float, dict[str, str]]] = {}
+
+    async def _project_target(project_id: str) -> dict[str, str]:
+        """Where THIS project publishes (its repository, Confluence space, Jira project). Short cache: it is read per tool call."""
+        import time as _t
+        hit = _targets.get(project_id)
+        if hit and _t.monotonic() - hit[0] < 30:
+            return hit[1]
+        p = await db.get_project(project_id)
+        target = {k: v for k, v in {"githubRepo": (p or {}).get("github_repo"), "confluenceSpaceKey": (p or {}).get("confluence_space_key"),
+                                     "jiraProjectKey": (p or {}).get("jira_project_key")}.items() if v}
+        _targets[project_id] = (_t.monotonic(), target)
+        return target
+
+    from .services.telemetry import _run_context as _rc
+    mcp.bind_targets(_project_target, lambda: (_rc.get() or {}).get("projectId"))
     for s in mcp._servers[1:]:
         log.info("external MCP server enabled: %s -> %s", s.prefix, s.url)
     rag = RagService(db, settings)
@@ -193,7 +213,7 @@ async def lifespan(app: FastAPI):
     await db.close()
 
 
-app = FastAPI(title="AI-SDLC Orchestrator", lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json")
+app = FastAPI(title="DevMind Orchestrator", lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json")
 
 
 @app.exception_handler(SdlcError)

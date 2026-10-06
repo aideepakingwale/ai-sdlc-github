@@ -18,7 +18,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
 from ..agents.phase_agents import TEMPLATE_TOOLS, AgentDeps, PhaseAgentResult, run_phase_agent
-from ..agents.schemas import FactCheck, PlannerOutput
+from ..agents.schemas import FactCheck
 from ..domain.models import AgentState, PlanStep, get_phase
 from ..services.model_router import classify_tier
 from ..services.prompt_library import render as render_prompt
@@ -56,8 +56,20 @@ def _cfg(config: RunnableConfig) -> dict[str, Any]:
 _STATUS_RE = re.compile(r"\b(status|progress|where are we|which phase)\b", re.I)
 
 
+def _deterministic_plan(state: AgentState) -> list[PlanStep]:
+    """The stage run's steps, derived from its template (no model call)."""
+    name = state.stage_name or get_phase(state.stage_template).name
+    steps = [
+        PlanStep(id="generate", tool="auto", description=f"Generate the '{name}' artifacts"),
+        PlanStep(id="validate", tool="auto", description="Validate the output against your intent and for syntax errors"),
+    ]
+    steps += [PlanStep(id=f"tool_{i + 1}", tool=tool, description=f"Run {tool} (queued for publish on approval)")
+              for i, tool in enumerate(TEMPLATE_TOOLS.get(state.stage_template, []))]
+    steps.append(PlanStep(id="gate", tool="auto", description="Open the human review gate"))
+    return steps
+
+
 async def _planner(gs: GraphState, config: RunnableConfig) -> dict[str, Any]:
-    deps: AgentDeps = _cfg(config)["deps"]
     emit = _cfg(config)["emit"]
     state = gs["state"]
     text = state.user_input.strip()
@@ -80,26 +92,11 @@ async def _planner(gs: GraphState, config: RunnableConfig) -> dict[str, Any]:
     )
     emit({"type": "model", "tier": chosen_tier, "label": f"Model tier selected: {chosen_tier}"})
 
-    try:
-        data, _ = await deps.llm.generate_json(
-            intent="standard", tag="planner_node", temperature=0, max_tokens=1024, schema=PlannerOutput,
-            messages=[
-                {
-                    "role": "system",
-                    "content": render_prompt(
-                        "planner.system",
-                        stage_seq=state.current_phase,
-                        stage_name=state.stage_name or get_phase(state.stage_template).name,
-                    ),
-                },
-                {"role": "user", "content": text},
-            ],
-        )
-        plan = [PlanStep(**s.model_dump()) for s in data.steps]
-    except Exception:
-        # Planner failure is non-fatal: fall back to the canonical phase plan.
-        plan = [PlanStep(id="run_phase", tool="auto",
-                         description=f"Execute phase {state.current_phase} agent")]
+    # The execution plan is DETERMINISTIC: the stage template fixes what runs (generate ->
+    # validate -> its tools -> gate), and the reviewer already approved the intelligent plan
+    # in the Review step. Asking a model to restate it added a full LLM round trip to every
+    # run for no new information.
+    plan = _deterministic_plan(state)
     _emit_plan(emit, state, plan, chosen_tier)
     return {"state": state.model_copy(update={"plan": plan})}
 
@@ -181,6 +178,7 @@ async def _fact_check(gs: GraphState, config: RunnableConfig) -> dict[str, Any]:
         )[:8_000]
         data, _ = await deps.llm.generate_json(
             intent="standard", tag="fact_check_node", temperature=0, max_tokens=1024, schema=FactCheck,
+            role="light",
             messages=[
                 {"role": "system", "content": render_prompt("fact_check.system")},
                 {

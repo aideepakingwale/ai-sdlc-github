@@ -1,12 +1,13 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
 import { api } from '../api/client';
-import type { Project, TechCatalog } from '../api/types';
+import type { Project } from '../api/types';
 
 /**
  * Project creation as a focused modal (lifted out of the sidebar so the shell
- * stays a clean navigation surface). Collects name, a structured technology
- * stack (language → version → frameworks) and optional integration targets.
+ * stays a clean navigation surface). Collects the name, the pipeline and optional
+ * integration targets. The technology stack is deliberately NOT asked here: the
+ * Technical Architect stage decides it (and asks if the requirements don't say).
  */
 export default function NewProjectModal({
   onClose,
@@ -17,37 +18,12 @@ export default function NewProjectModal({
 }) {
   const qc = useQueryClient();
   const [name, setName] = useState('');
-  const [language, setLanguage] = useState('');
-  const [customLanguage, setCustomLanguage] = useState(false);
-  const [version, setVersion] = useState('');
-  const [frameworks, setFrameworks] = useState<string[]>([]);
-  const [customFramework, setCustomFramework] = useState('');
   const [integrations, setIntegrations] = useState({
     githubRepo: '', atlassianSiteUrl: '', jiraProjectKey: '', confluenceSpaceKey: '',
   });
   // Pipeline: the full SDLC template, or a custom pipeline the PM builds from a
   // single starter stage in the Workflow Designer (fully dynamic).
   const [pipeline, setPipeline] = useState<'default' | 'custom'>('default');
-
-  const techCatalog = useQuery({
-    queryKey: ['tech-catalog'],
-    queryFn: () => api.get<TechCatalog>('/api/meta/tech-catalog'),
-    staleTime: Infinity,
-  });
-  const languages = techCatalog.data?.languages ?? [];
-  const selectedLang = languages.find((l) => l.name === language);
-
-  useEffect(() => {
-    const first = languages[0];
-    if (!customLanguage && !language && first) {
-      setLanguage(first.name);
-      setVersion(first.versions[0] ?? '');
-    }
-  }, [languages, language, customLanguage]);
-
-  function toggleFramework(fw: string) {
-    setFrameworks((s) => (s.includes(fw) ? s.filter((f) => f !== fw) : [...s, fw]));
-  }
 
   const create = useMutation({
     mutationFn: () => {
@@ -66,9 +42,6 @@ export default function NewProjectModal({
         : undefined;
       return api.post<{ project: Project }>('/api/projects', {
         name: name.trim(),
-        language: language.trim() || undefined,
-        languageVersion: version.trim() || undefined,
-        frameworks,
         integrations: cleanIntegrations,
         ...(workflow ? { workflow } : {}),
       });
@@ -90,7 +63,7 @@ export default function NewProjectModal({
         <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
           <div>
             <h2 className="text-base font-semibold text-navy">New project</h2>
-            <p className="text-xs text-slate-500">Name it, set the technology stack, and connect delivery targets.</p>
+            <p className="text-xs text-slate-500">Name it, pick a pipeline and connect delivery targets. The technology stack is decided later by the Technical Architect.</p>
           </div>
           <button onClick={onClose} className="rounded-lg px-2 py-1 text-slate-400 hover:bg-slate-100 hover:text-navy" aria-label="Close">
             ✕
@@ -142,94 +115,6 @@ export default function NewProjectModal({
                 The Workflow Designer opens right after creation so you can add stages, set outputs and assign reviewers.
               </div>
             )}
-          </div>
-
-          {/* Technology stack — language → version → frameworks */}
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Technology stack</div>
-            <select
-              className="mb-2 w-full rounded-md border border-slate-300 bg-white px-2.5 py-2 text-sm text-navy focus:border-brand-500 focus:outline-none"
-              value={customLanguage ? '__other__' : language}
-              onChange={(e) => {
-                const v = e.target.value;
-                if (v === '__other__') {
-                  setCustomLanguage(true); setLanguage(''); setVersion(''); setFrameworks([]);
-                  return;
-                }
-                setCustomLanguage(false);
-                setLanguage(v);
-                const lang = languages.find((l) => l.name === v);
-                setVersion(lang?.versions[0] ?? '');
-                setFrameworks([]);
-              }}
-            >
-              {languages.map((l) => (
-                <option key={l.name} value={l.name}>{l.name}</option>
-              ))}
-              <option value="__other__">Other…</option>
-            </select>
-            {customLanguage && (
-              <input
-                autoFocus
-                className="mb-2 w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-sm text-navy placeholder:text-slate-400 focus:border-brand-500 focus:outline-none"
-                placeholder="Language name…"
-                value={language}
-                onChange={(e) => setLanguage(e.target.value)}
-              />
-            )}
-            <input
-              list="npm-tech-versions"
-              className="mb-2 w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-sm text-navy placeholder:text-slate-400 focus:border-brand-500 focus:outline-none"
-              placeholder="Version — e.g. 3.12"
-              value={version}
-              onChange={(e) => setVersion(e.target.value)}
-            />
-            <datalist id="npm-tech-versions">
-              {(selectedLang?.versions ?? []).map((v) => <option key={v} value={v} />)}
-            </datalist>
-            <div className="flex flex-wrap gap-1.5">
-              {(selectedLang?.frameworks ?? []).map((fw) => (
-                <button
-                  key={fw}
-                  type="button"
-                  onClick={() => toggleFramework(fw)}
-                  className={`rounded-full px-2.5 py-1 text-xs transition ${
-                    frameworks.includes(fw)
-                      ? 'bg-brand-500 text-white'
-                      : 'border border-slate-300 bg-white text-slate-600 hover:border-brand-400'
-                  }`}
-                >
-                  {fw}
-                </button>
-              ))}
-              {frameworks
-                .filter((fw) => !(selectedLang?.frameworks ?? []).includes(fw))
-                .map((fw) => (
-                  <button
-                    key={fw}
-                    type="button"
-                    onClick={() => toggleFramework(fw)}
-                    className="rounded-full bg-brand-500 px-2.5 py-1 text-xs text-white"
-                    title="Remove"
-                  >
-                    {fw} ✕
-                  </button>
-                ))}
-            </div>
-            <input
-              className="mt-2 w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-sm text-navy placeholder:text-slate-400 focus:border-brand-500 focus:outline-none"
-              placeholder="Add framework + Enter…"
-              value={customFramework}
-              onChange={(e) => setCustomFramework(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  const v = customFramework.trim();
-                  if (v && !frameworks.includes(v)) toggleFramework(v);
-                  setCustomFramework('');
-                }
-              }}
-            />
           </div>
 
           {/* Integration targets — optional */}

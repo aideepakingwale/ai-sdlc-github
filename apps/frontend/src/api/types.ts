@@ -58,11 +58,16 @@ export interface Project {
   currentPhase: number;
   createdAt: string;
   techStack?: string;
+  /** False until the Technical Architect stage (or a manager) decides the stack. */
+  techStackDecided?: boolean;
+  /** '' undecided · 'ta' decided by the Technical Architect · 'user' set by a manager. */
+  techStackSource?: string;
 }
 
 // Configurable technology catalog served by GET /api/meta/tech-catalog:
 // programming language → version(s) → framework(s). Replaces the old hardcoded
-// TECH_STACKS list; the New Project form builds a structured stack from this.
+// TECH_STACKS list; used by the project's stack editor (the stack is no longer
+// asked at creation).
 export interface TechCatalogLanguage {
   name: string;
   versions: string[];

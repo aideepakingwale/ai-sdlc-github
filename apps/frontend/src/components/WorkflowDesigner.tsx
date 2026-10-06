@@ -11,6 +11,7 @@ import {
 } from '../api/flow';
 import type { ProjectMember } from '../api/types';
 import WorkflowCanvas, { STAGE_PALETTE, type StagePreset } from './WorkflowCanvas';
+import { STAGE_ROLE_CHOICES } from '../lib/modelRoutes';
 
 /** Searchable user picker (D-90): search project members by name/email and add
  *  them as chips. Reused for stage access, per-output reviewers and stage
@@ -650,6 +651,22 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
                         );
                       })}
                     </div>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-semibold uppercase text-slate-400">
+                      Model <span className="normal-case text-slate-300">(which model tier writes this stage)</span>
+                    </label>
+                    <select
+                      aria-label="Model role"
+                      className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-xs focus:border-brand-400 focus:outline-none"
+                      value={selected.modelRole ?? ''}
+                      onChange={(e) => update(selectedIdx, { modelRole: (e.target.value || undefined) as StageConfig['modelRole'] })}
+                    >
+                      {STAGE_ROLE_CHOICES.map((c) => (
+                        <option key={c.value} value={c.value}>{c.label} — {c.hint}</option>
+                      ))}
+                    </select>
                   </div>
 
                   <div>

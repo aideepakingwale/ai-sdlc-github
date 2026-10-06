@@ -99,6 +99,22 @@ PHASE_JSON_SHAPES: dict[int, str] = {
 }
 
 
+def render_stack(tech_stack: str, *, owner: bool, source: str = "") -> str:
+    """The technology-stack + platform block. A decided stack pins everything to it;
+    an undecided one tells the Technical Architect (``owner``) to decide and every
+    other stage to stay technology-neutral until it has."""
+    stack = (tech_stack or "").strip()
+    if owner and source != "user":
+        # The Technical Architect decides, and may revise its own earlier decision
+        # (never a stack a manager set by hand).
+        head = render("phase.system.stack_decide", current=stack or "none yet")
+    elif stack:
+        head = render("phase.system.stack", tech_stack=stack)
+    else:
+        head = render("phase.system.stack_undecided")
+    return head + "\n\n" + render("phase.system.platform")
+
+
 def build_phase_prompt(
     *,
     phase: int,
@@ -106,7 +122,8 @@ def build_phase_prompt(
     rag_block: str,
     user_input: str,
     amend_comments: str | None,
-    tech_stack: str = "Node.js + TypeScript",
+    tech_stack: str = "",
+    tech_stack_source: str = "",
     project_profile: str = "",
     has_codebase: bool = False,
     canon_block: str = "",
@@ -140,7 +157,7 @@ def build_phase_prompt(
         # (not the phase number), so it also applies to reordered and custom stages.
         resolve_steering(phase_def.agent_persona),
         render("phase.system.produces", produces=", ".join(phase_def.produces)),
-        render("phase.system.stack", tech_stack=tech_stack),
+        render_stack(tech_stack, owner=phase_def.id == 3, source=tech_stack_source),
         # Project profile (#4): name, stack and integration targets, so every
         # stage generates against the same project configuration.
         (f"## Project profile\n{project_profile}" if project_profile else ""),

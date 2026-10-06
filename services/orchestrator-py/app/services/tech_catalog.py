@@ -74,14 +74,14 @@ def compose_stack(
     language: str | None,
     version: str | None,
     frameworks: list[str] | None,
-    fallback: str = "Node.js + TypeScript",
+    fallback: str = "",
 ) -> str:
     """Compose the free-text ``tech_stack`` string the agents' prompts consume
     from the structured selection, e.g. ``"Python 3.12 + FastAPI, Pytest"``.
     Falls back to the legacy single-string value when no language is given."""
     language = (language or "").strip()
     if not language:
-        return (fallback or "").strip() or "Node.js + TypeScript"
+        return (fallback or "").strip()
     version = (version or "").strip()
     fw = [f.strip() for f in (frameworks or []) if f and f.strip()]
     head = f"{language} {version}".strip()

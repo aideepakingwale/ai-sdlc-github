@@ -108,6 +108,10 @@ class StageConfig(BaseModel):
     outputSpecs: list[OutputSpec] = Field(default_factory=list)
     contextSources: list[str] = Field(default_factory=list)
     agentNotes: str = Field(default="", max_length=8000)
+    # Which model role this stage generates with (multi-model routing): reason = strongest
+    # reasoning, generate = balanced, light = fast. None = by stage type (design stages use
+    # reason, the rest generate). The role's models are set by a super-admin.
+    modelRole: Literal["reason", "generate", "light"] | None = None
 
     def reviewers(self) -> list[str]:
         """Roles allowed to approve/amend this stage's gate."""

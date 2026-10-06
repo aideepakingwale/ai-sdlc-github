@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '../api/client';
 import type { PlanPreview } from '../api/types';
-import { useApp } from '../store';
+import { useProjectStream } from '../store';
 
 /**
  * Run Visualizer: shows WHAT the agent workflow will do and what it is
@@ -66,7 +66,7 @@ function ToolLight({ name, state }: { name: string; state: 'expected' | 'start' 
 }
 
 export default function RunVisualizer({ projectId }: { projectId: string }) {
-  const { streaming, run } = useApp();
+  const { active: streaming, run } = useProjectStream(projectId);
   const [open, setOpen] = useState(false);
   const expanded = open || streaming;
 

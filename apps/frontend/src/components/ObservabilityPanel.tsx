@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
+import ModelRoutesControl from './ModelRoutesControl';
 
 /**
  * AI observability dashboard (D-35, SUPER_ADMIN): live view over every LLM
@@ -404,6 +405,7 @@ export default function ObservabilityPanel({ onClose }: { onClose: () => void })
 
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
           <LlmConfigControl />
+          <ModelRoutesControl />
           <LogsViewer />
 
           {t && (

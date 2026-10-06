@@ -103,7 +103,7 @@ export default function PipelineFlow({
           {retrigger.error instanceof Error ? retrigger.error.message : 'Retrigger failed'}
         </div>
       )}
-      {designerOpen && <WorkflowDesigner projectId={projectId} onClose={() => setDesignerOpen(false)} />}
+      {designerOpen && <WorkflowDesigner key={projectId} projectId={projectId} onClose={() => setDesignerOpen(false)} />}
     </div>
   );
 }

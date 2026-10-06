@@ -154,8 +154,8 @@ export default function Workspace() {
         )}
         <div className={leftCollapsed ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
         <div className="border-b border-white/10 p-4">
-          <div className="text-lg font-bold text-white">AI-SDLC</div>
-          <div className="text-xs text-slate-400">Agentic pipeline · HITL gates</div>
+          <div className="text-lg font-bold text-white">DevMind</div>
+          <div className="text-xs text-slate-400">Developer’s Mind</div>
         </div>
 
         {canManage && (
@@ -366,6 +366,7 @@ export default function Workspace() {
         <div className="min-h-0 flex-1">
           {activeProjectId && flow.data && user ? (
             <StageWorkspace
+              key={activeProjectId}              // a different project is a different workspace: nothing typed or selected carries over
               projectId={activeProjectId}
               flow={flow.data}
               selectedSeq={activeStage}
@@ -407,23 +408,25 @@ export default function Workspace() {
         </div>
       )}
       <aside
-        className="relative shrink-0 border-l border-slate-200 bg-slate-50 transition-[width]"
+        className="flex shrink-0 flex-col border-l border-slate-200 bg-slate-50 transition-[width]"
         style={{ width: rightCollapsed ? 40 : rightPanel.width }}
       >
-        <button
-          type="button" onClick={() => setRightCollapsed(!rightCollapsed)}
-          aria-label={rightCollapsed ? 'Expand details panel' : 'Collapse details panel'}
-          title={rightCollapsed ? 'Show team, artifacts, files & audit' : 'Hide this panel'}
-          className={`absolute top-2.5 z-10 rounded p-1 text-slate-500 hover:bg-slate-200 ${rightCollapsed ? 'left-1.5' : 'right-2'}`}
-        >
-          <Icon name={rightCollapsed ? 'chevron-left' : 'chevron-right'} size={16} />
-        </button>
+        <div className={`flex h-7 shrink-0 items-center border-b border-slate-200 ${rightCollapsed ? 'justify-center' : 'justify-end px-1.5'}`}>
+          <button
+            type="button" onClick={() => setRightCollapsed(!rightCollapsed)}
+            aria-label={rightCollapsed ? 'Expand details panel' : 'Collapse details panel'}
+            title={rightCollapsed ? 'Show team, artifacts, files & audit' : 'Hide this panel'}
+            className="rounded p-0.5 text-slate-500 hover:bg-slate-200"
+          >
+            <Icon name={rightCollapsed ? 'chevron-left' : 'chevron-right'} size={16} />
+          </button>
+        </div>
         {rightCollapsed && (
-          <div className="mt-14 flex justify-center">
+          <div className="mt-6 flex justify-center">
             <span className="select-none text-xs font-semibold tracking-widest text-slate-400 [writing-mode:vertical-rl]">ARTIFACTS · TEAM · FILES</span>
           </div>
         )}
-        <div className={rightCollapsed ? 'hidden' : 'h-full'}>
+        <div className={rightCollapsed ? 'hidden' : 'min-h-0 flex-1'}>
           <RightPanel
             projectId={activeProjectId}
             canManageTeam={detail.data?.me?.canManageTeam ?? false}
@@ -444,7 +447,14 @@ export default function Workspace() {
       {governanceOpen && <GovernancePanel onClose={() => setGovernanceOpen(false)} />}
       {obsOpen && <ObservabilityPanel onClose={() => setObsOpen(false)} />}
       {contextOpen && activeProjectId && (
-        <ProjectContextPanel projectId={activeProjectId} techStack={detail.data?.project.techStack} onClose={() => setContextOpen(false)} />
+        <ProjectContextPanel
+          projectId={activeProjectId}
+          techStack={detail.data?.project.techStack}
+          techStackDecided={detail.data?.project.techStackDecided}
+          techStackSource={detail.data?.project.techStackSource}
+          canSetStack={(detail.data?.me?.canManageTeam ?? false) || detail.data?.me?.membershipRole === 'TA'}
+          onClose={() => setContextOpen(false)}
+        />
       )}
       {newProjectOpen && (
         <NewProjectModal onClose={() => setNewProjectOpen(false)} onCreated={onProjectCreated} />

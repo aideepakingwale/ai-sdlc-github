@@ -105,7 +105,7 @@ class KeycloakAuth:
         roles = [r for r in payload.get("realm_access", {}).get("roles", []) if isinstance(r, str)]
         role = primary_role(roles)
         if role is None:
-            raise SdlcError("FORBIDDEN", "Account has no AI-SDLC platform role assigned in Keycloak")
+            raise SdlcError("FORBIDDEN", "Account has no DevMind platform role assigned in Keycloak")
         email = str(payload.get("email", "")).lower()
         if not payload.get("sub") or not email:
             raise SdlcError("AUTH_FAILED", "Token missing subject or email claim")

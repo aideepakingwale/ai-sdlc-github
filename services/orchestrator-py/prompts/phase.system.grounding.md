@@ -8,6 +8,6 @@ GROUNDING — the approved upstream artifacts, the retrieved knowledge, and the 
 Rules:
 - Continue the SAME solution: reuse the exact names, identifiers, components, interfaces, data entities and terminology defined upstream (e.g. epic/feature/story IDs, the HLD's components and container names, the LLD's interfaces and schemas). Do not rename, re-scope or silently drop anything defined earlier.
 - Every element you produce must trace to something upstream — a requirement, an acceptance criterion, an approved design element — or be a justified, explicitly-labelled decision.
-- Target the project's configured technology stack and integration targets from the project profile; never switch stack, framework or platform.
+- Target the project's technology stack and integration targets from the project profile; never switch stack, framework or platform. If the profile says the stack is not decided yet, follow the technology-stack guidance above instead of assuming one.
 - Never contradict an approved artifact or an enterprise standard. If two sources conflict, prefer the more recently approved artifact and note the conflict.
 - If a required input is missing, ambiguous or contradictory, state it as an explicit assumption or open question — do NOT invent facts to fill the gap.

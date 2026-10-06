@@ -24,6 +24,7 @@ from ..domain.models import (
     GateReviewRequest,
     ProjectIntegrations,
     ReviewAssignRequest,
+    SetTechStackRequest,
     SignOffRequest,
     StagePlanUpdate,
     StageReviewersRequest,
@@ -75,7 +76,9 @@ def _project_row(p) -> dict:  # noqa: ANN001
     return {
         "id": p["id"], "name": p["name"], "status": p["status"],
         "currentPhase": p["current_phase"], "createdAt": p["created_at"].isoformat(),
-        "techStack": p.get("tech_stack") or "Node.js + TypeScript",
+        "techStack": p.get("tech_stack") or "",
+        "techStackDecided": bool((p.get("tech_stack") or "").strip()),
+        "techStackSource": p.get("tech_stack_source") or "",
         "integrations": {  # per-project GitHub/Atlassian targets (D-62)
             "githubRepo": p.get("github_repo"),
             "atlassianSiteUrl": p.get("atlassian_site_url"),
@@ -158,6 +161,34 @@ async def update_integrations(
         human_reviewer=user.email, detail=body.model_dump(exclude_none=True),
     )
     return {"ok": True, "integrations": body.model_dump()}
+
+
+@router.put("/api/projects/{project_id}/tech-stack")
+async def set_tech_stack(
+    project_id: str, body: SetTechStackRequest,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Set (or clear) the project's technology stack by hand. Normally the Technical
+    Architect stage decides it; this lets the managing PM / super-admin / a TA member
+    pin or correct it. A stack set here is never overwritten by a later TA run."""
+    await container.authz.assert_project_access(project_id, user)
+    project = await container.db.get_project(project_id)
+    if not project:
+        raise SdlcError("NOT_FOUND", "Project not found")
+    is_manager = user.role == "SUPER_ADMIN" or (
+        user.role == "PROJECT_MANAGER" and project["created_by"] == user.id
+    )
+    if not is_manager and await container.authz.get_membership_role(project_id, user.id) != "TA":
+        raise SdlcError("FORBIDDEN", "only the managing PM, a super-admin or the project's Technical Architect can set the stack")
+    from ..services.stack import SOURCE_USER
+    from ..services.tech_catalog import compose_stack
+    stack = compose_stack(body.language, body.languageVersion, body.frameworks, fallback="")
+    await container.db.set_project_stack(project_id, stack, SOURCE_USER if stack else "")
+    container.audit.record(
+        project_id=project_id, phase=1, agent_role="Orchestrator", event="project.stack_set",
+        human_reviewer=user.email, detail={"techStack": stack or None},
+    )
+    return {"ok": True, "techStack": stack, "techStackDecided": bool(stack)}
 
 
 @router.get("/api/projects/{project_id}")
@@ -590,6 +621,7 @@ async def gate_states(
     project_id: str, user: UserPublic = Depends(current_user),
     container: Container = Depends(get_container),
 ) -> dict:
+    await container.authz.assert_project_access(project_id, user)      # another project's stages are not yours to read
     states = await container.gates.list_states(project_id, user)
     return {"states": [s.model_dump() for s in states]}
 
@@ -694,7 +726,7 @@ async def read_notification(
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
     await container.authz.assert_project_access(project_id, user)
-    await container.db.mark_notification_read(notification_id, user.id)
+    await container.db.mark_notification_read(notification_id, user.id, project_id)
     return {"ok": True}
 
 
@@ -1173,14 +1205,31 @@ async def project_audit(
     ]}
 
 
+def _attachment_extraction(row) -> dict:  # noqa: ANN001
+    """What document analysis found in an attachment (jsonb may arrive as a string)."""
+    import json as _json
+    raw = row["extraction"] if "extraction" in row.keys() else None  # noqa: SIM118 - asyncpg Record
+    if isinstance(raw, str):
+        try:
+            raw = _json.loads(raw or "{}")
+        except _json.JSONDecodeError:
+            raw = {}
+    return raw if isinstance(raw, dict) else {}
+
+
 # ------------------------------------------------------------------ stage attachments (D-54)
 @router.post("/api/projects/{project_id}/phase/{phase_id}/attachments", status_code=201)
 async def upload_attachment(
     project_id: str, phase_id: int, request: Request,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
-    """Attach a file to a stage's compose context (D-54). Text is decoded and
-    stored for inlining into the prompt; binary is kept but flagged not-inlined."""
+    """Attach a file to a stage's compose context (D-54). Any common document is
+    analysed (D-112): PDF / Word / PowerPoint / Excel text, tables and headings are
+    parsed; pictures, diagrams and scanned or diagram-bearing pages are read by the
+    vision model (OCR offline); draw.io / Visio / SVG structure is recovered from
+    the XML. The result is stored as Markdown and inlined into the prompt. A file
+    that is corrupt or unreadable is refused with the reason; an unsupported type
+    is kept as a reference but not inlined."""
     await container.chat.assert_not_generating(project_id, phase_id)
     from starlette.datastructures import UploadFile as StarletteUploadFile
 
@@ -1190,61 +1239,56 @@ async def upload_attachment(
     await container.authz.assert_project_access(project_id, user)
     if not 1 <= phase_id <= 12:
         raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+    max_bytes = container.settings.ATTACHMENT_MAX_BYTES
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > max_bytes + 1_000_000:
+        raise SdlcError("VALIDATION_FAILED", f"attachment exceeds the {max_bytes // 1_000_000} MB limit")
     form = await request.form()
     upload = form.get("file")
     if not isinstance(upload, StarletteUploadFile):
         raise SdlcError("VALIDATION_FAILED", "multipart field 'file' is required")
     raw = await upload.read()
-    if len(raw) > 10_000_000:
-        raise SdlcError("VALIDATION_FAILED", "attachment exceeds the 10 MB limit")
+    if len(raw) > max_bytes:
+        raise SdlcError("VALIDATION_FAILED", f"attachment exceeds the {max_bytes // 1_000_000} MB limit")
+    if not raw:
+        raise SdlcError("VALIDATION_FAILED", "the file is empty")
     filename = upload.filename or "attachment"
     content_type = upload.content_type or "application/octet-stream"
 
-    # Extract usable context: documents (PDF/DOCX) are parsed, images are read by
-    # a vision LLM (preferred) or OCR, text is decoded — so the attachment
-    # becomes inlineable context (D-65, D-66).
     from ..services import attachment_extract as ax
 
-    text, kind, note = ax.extract(raw, filename, content_type)
-    method = "ocr" if kind == ax.KIND_IMAGE else "parse"
-
-    # Images: prefer the multi-model vision LLM (Bedrock → Gemini) which both
-    # transcribes text and describes structure; keep the deterministic OCR result
-    # as the fallback (and append it verbatim for exactness when the LLM served).
-    vision_mode = container.settings.ATTACHMENT_VISION
-    if kind == ax.KIND_IMAGE and vision_mode != "ocr" and container.llm is not None:
-        vis = await ax.describe_image_llm(
-            raw, content_type, llm=container.llm,
-            max_edge=container.settings.ATTACHMENT_VISION_MAX_EDGE,
-        )
-        if vis is not None:
-            vtext, provider = vis
-            ocr = text  # deterministic OCR from ax.extract above
-            combined = (
-                f"{vtext}\n\n---\nOCR (verbatim, deterministic):\n{ocr}" if ocr else vtext
-            )
-            text, note, method = combined[:200_000], f"vision:{provider}", f"vision:{provider}"
-
+    try:
+        result = await ax.extract_rich(raw, filename, content_type, llm=container.llm,
+                                       settings=container.settings)
+    except ax.IngestError as err:
+        raise SdlcError("VALIDATION_FAILED", f"{filename}: {err}") from err
+    except TimeoutError as err:
+        raise SdlcError("VALIDATION_FAILED", f"{filename}: analysing the file took too long - "
+                                             "try a smaller file or split it") from err
+    text, kind, note = result.text, result.kind, result.note
     is_text = bool(text)
 
     attachment_id = new_id()
     key = attachment_key(project_id, phase_id, attachment_id, filename)
     if is_text:
         await container.content.put(key, text)
+    extraction = {"kind": kind, "method": result.method, "chars": len(text),
+                  "stats": result.stats, "warnings": result.warnings, "outline": result.outline}
     await container.db.insert_attachment(
         attachment_id=attachment_id, project_id=project_id, phase=phase_id, filename=filename,
         content_type=content_type, size_bytes=len(raw), is_text=is_text,
-        storage_key=key, created_by=user.id,
+        storage_key=key, created_by=user.id, extraction=extraction,
     )
     container.audit.record(
         project_id=project_id, phase=phase_id, agent_role="Orchestrator",
         event="attachment.uploaded", human_reviewer=user.email,
-        detail={"filename": filename, "bytes": len(raw), "kind": kind,
-                "extractedChars": len(text), "method": method, "note": note},
+        detail={"filename": filename, "bytes": len(raw), "kind": kind, "extractedChars": len(text),
+                "method": result.method, "note": note, "stats": result.stats},
     )
     return {"id": attachment_id, "filename": filename, "sizeBytes": len(raw),
             "isText": is_text, "kind": kind, "extractedChars": len(text),
-            "method": method, "note": note}
+            "method": result.method, "note": note, "stats": result.stats,
+            "warnings": result.warnings}
 
 
 @router.get("/api/projects/{project_id}/phase/{phase_id}/attachments")
@@ -1256,7 +1300,8 @@ async def list_attachments(
     rows = await container.db.list_attachments(project_id, phase_id)
     return {"attachments": [
         {"id": r["id"], "filename": r["filename"], "sizeBytes": r["size_bytes"],
-         "isText": r["is_text"], "createdAt": r["created_at"].isoformat()}
+         "isText": r["is_text"], "createdAt": r["created_at"].isoformat(),
+         "extraction": _attachment_extraction(r)}
         for r in rows
     ]}
 
@@ -1268,7 +1313,7 @@ async def delete_attachment(
 ) -> dict:
     await container.authz.assert_project_access(project_id, user)
     await container.chat.assert_not_generating(project_id, phase_id)
-    row = await container.db.delete_attachment(attachment_id)
+    row = await container.db.delete_attachment(attachment_id, project_id)   # only this project's attachment
     if row and row["storage_key"]:
         try:
             await container.content.put(row["storage_key"], "")  # tombstone the body (D-24 pattern)
@@ -1688,6 +1733,7 @@ LLM_SETTING_KEYS = (
     "llm_debug_trace",  # D-104: capture request/response bodies into llm_traces
     "per_artifact_generation",  # D-106: split each stage artifact into its own parallel call
     "plan_max_tokens",  # D-112: output budget for the LLM stage-planner proposal
+    "model_routes",  # multi-model routing: role -> ordered model chain (JSON)
 )
 
 
@@ -1786,6 +1832,68 @@ async def set_llm_config(
             detail={"changed": changed},  # values omitted (may be secrets)
         )
     return await _llm_config_view(container)
+
+
+# ------------------------------------------------------ multi-model routing
+class ModelRoutesRequest(BaseModel):
+    # role -> ordered chain of 'provider/model'. A role missing from the body (or with an
+    # empty chain) is cleared and falls back to the env default / the normal chain.
+    routes: dict[str, list[str]] = Field(default_factory=dict)
+
+
+async def _model_routes_view(container: Container) -> dict:
+    from ..services import model_routes as mr
+    from ..services.plan_model import build_model_catalog
+
+    stored = mr.parse_routes(await container.db.get_setting(mr.SETTING_KEY))
+    env = mr.env_defaults(container.settings)
+    catalog = build_model_catalog(await container.llm.providers())
+    roles = []
+    for role in mr.ROLES:
+        admin_chain, env_chain = stored.get(role, []), env.get(role, [])
+        roles.append({
+            "role": role, **mr.ROLE_INFO[role],
+            "stageSelectable": role in mr.STAGE_ROLES,
+            "models": admin_chain,                                   # what the admin set
+            "envDefault": env_chain,                                 # LIGHT_MODEL / PLAN_MODEL
+            "effective": admin_chain or env_chain,                   # what actually serves ([] = normal chain)
+            "source": "admin" if admin_chain else ("env" if env_chain else "default"),
+        })
+    return {
+        "roles": roles, "providers": list(mr.PROVIDERS), "maxChain": mr.MAX_CHAIN,
+        "stageDefaults": {str(t): r for t, r in mr.STAGE_DEFAULT_ROLE.items()},
+        "catalog": catalog["models"],
+    }
+
+
+@router.get("/api/admin/model-routes")
+async def get_model_routes(
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    if user.role != "SUPER_ADMIN":
+        raise SdlcError("FORBIDDEN", "Only a super admin can view model routing")
+    return await _model_routes_view(container)
+
+
+@router.put("/api/admin/model-routes")
+async def set_model_routes(
+    body: ModelRoutesRequest,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Set which models serve which role (live, no restart). The whole map is replaced."""
+    if user.role != "SUPER_ADMIN":
+        raise SdlcError("FORBIDDEN", "Only a super admin can change model routing")
+    import json as _json
+
+    from ..services import model_routes as mr
+
+    clean = mr.validate_routes(body.routes)
+    await _apply_setting(container, mr.SETTING_KEY, _json.dumps(clean) if clean else "", user.email)
+    container.audit.record(
+        project_id="_platform", phase=0, agent_role="Admin",
+        event="model_routes.changed", human_reviewer=user.email, detail={"routes": clean},
+    )
+    return await _model_routes_view(container)
 
 
 # Back-compat aliases (the earlier generation-mode-only endpoints).
