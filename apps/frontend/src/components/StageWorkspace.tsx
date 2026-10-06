@@ -20,6 +20,7 @@ import ArtifactViewer from './ArtifactViewer';
 import FeedbackPanel from './FeedbackPanel';
 import GatePanel from './GatePanel';
 import ContextPanel from './ContextPanel';
+import CodeExplorer from './CodeExplorer';
 
 
 /** Plain-language names + icons for the AI-judged project traits. */
@@ -1523,6 +1524,9 @@ export default function StageWorkspace({
             )}
           </section>
         )}
+
+        {/* ---- two-step code generation: structure → approval → code → commit (implementation stage) ---- */}
+        {stage.template === 6 && <CodeExplorer projectId={projectId} phase={selectedSeq} />}
 
         {/* ---- gate review ---- */}
         {pendingGate && pendingGate.phase === selectedSeq && (
