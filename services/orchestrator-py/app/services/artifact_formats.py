@@ -32,7 +32,7 @@ NARRATIVE, STRUCTURED, CODE, DIAGRAM = "narrative", "structured", "code", "diagr
 # Artifact type -> kind. Types not listed are treated as NARRATIVE: custom stages produce prose deliverables.
 TYPE_KINDS: dict[str, str] = {
     **dict.fromkeys(("PRD", "HLD", "LLD", "TEST_STRATEGY", "RTM", "PIPELINE_DESIGN", "DOCUMENT"), NARRATIVE),
-    **dict.fromkeys(("EPIC", "FEATURE", "USER_STORY", "ADR", "XRAY_TESTS", "PULL_REQUEST"), STRUCTURED),
+    **dict.fromkeys(("EPIC", "FEATURE", "USER_STORY", "ADR", "XRAY_TESTS", "PULL_REQUEST", "CODE_STRUCTURE"), STRUCTURED),
     **dict.fromkeys(("OPENAPI", "DBML", "CDK", "K6_SCRIPT", "POSTMAN_COLLECTION", "GITHUB_ACTIONS", "DOCKERFILE",
                      "STRUCTURIZR_DSL", "PLANTUML", "GRAFANA_DASHBOARD", "APP_CODE", "UNIT_TESTS"), CODE),
     **dict.fromkeys(("CLOUDCRAFT_JSON", "ARCH_DIAGRAM", "COMPONENT_DIAGRAM", "LLD_DIAGRAM", "HLD_DIAGRAM"), DIAGRAM),

@@ -1221,6 +1221,37 @@ def _attachment_extraction(row) -> dict:  # noqa: ANN001
     return raw if isinstance(raw, dict) else {}
 
 
+# ------------------------------------------------------------------ two-step code generation
+@router.get("/api/projects/{project_id}/phase/{phase_id}/code")
+async def stage_code(
+    project_id: str, phase_id: int, user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """The proposed/approved code structure as a tree, per-file generation state and commit info (project read access)."""
+    return await container.code_gen.view(project_id=project_id, phase=phase_id, user=user)
+
+
+class CodeResetBody(BaseModel):
+    reason: str = Field(default="", max_length=300)
+
+
+@router.post("/api/projects/{project_id}/phase/{phase_id}/code/reset")
+async def reset_stage_code(
+    project_id: str, phase_id: int, body: CodeResetBody, user: UserPublic = Depends(current_user),
+    container: Container = Depends(get_container),
+) -> dict:
+    """Discard the current structure so the next run proposes a new one (stage writers; not after the commit)."""
+    return await container.code_gen.reset(project_id=project_id, phase=phase_id, user=user, reason=body.reason)
+
+
+@router.get("/api/projects/{project_id}/phase/{phase_id}/code.zip")
+async def stage_code_zip(
+    project_id: str, phase_id: int, user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> Response:
+    """The generated codebase as one .zip (project read access; recorded in the audit trail)."""
+    data, name = await container.code_gen.zip(project_id=project_id, phase=phase_id, user=user)
+    return Response(content=data, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
 # ------------------------------------------------------------------ context visualizer
 @router.get("/api/projects/{project_id}/phase/{phase_id}/context")
 async def stage_context(

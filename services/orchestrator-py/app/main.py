@@ -143,7 +143,14 @@ async def lifespan(app: FastAPI):
             emit=lambda _e: None,
         )
 
-    gates = GateService(db, dynamo, audit, authz, workflow, regenerate, publisher)
+    # Two-step code generation: structure approval -> implementation -> commit on code approval.
+    async def _enqueue_generation(project_id: str, phase: int, actor: str):  # noqa: ANN202
+        return await container.gen_jobs.enqueue(project_id, phase, actor)
+
+    from .services.code_gen import CodeGenService
+    code_gen = CodeGenService(db, dynamo, audit, authz, content, workflow, _enqueue_generation, chat.can_write_stage,
+                              enabled=getattr(settings, "CODE_TWO_STEP_ENABLED", True))
+    gates = GateService(db, dynamo, audit, authz, workflow, regenerate, publisher, code_gen)
     flow = FlowService(db, dynamo, audit, authz, content, workflow, regenerate)
     monitor.start_polling()
 
@@ -157,6 +164,7 @@ async def lifespan(app: FastAPI):
     container.workflow = workflow
     container.telemetry = telemetry
     container.extras["publisher"] = publisher
+    container.code_gen = code_gen
     container.canon, container.formworks = canon, formworks
     # Durable background stage generation (D-97 L2): jobs survive disconnects, are
     # recorded across restarts, and stream reconnectable progress via Redis.

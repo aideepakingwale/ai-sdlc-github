@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { api, streamStageProgress } from '../api/client';
 import { PartTabs } from './PartTabs';
@@ -20,6 +20,9 @@ import ArtifactViewer from './ArtifactViewer';
 import FeedbackPanel from './FeedbackPanel';
 import GatePanel from './GatePanel';
 import ContextPanel from './ContextPanel';
+import CodeExplorer from './CodeExplorer';
+import { PromptEditor, type PromptEditorHandle } from './PromptEditor';
+import type { Mention } from '../lib/mentions';
 
 
 /** Plain-language names + icons for the AI-judged project traits. */
@@ -197,12 +200,8 @@ export default function StageWorkspace({
   }, [thread]);
   // Reset the discussion when the selected stage changes.
   useEffect(() => { setThread([]); setRefineText(''); }, [projectId, selectedSeq]);
-  // Inline "@" mention autosuggest (D-56).
-  const [mention, setMention] = useState<{ open: boolean; query: string; at: number }>({
-    open: false, query: '', at: 0,
-  });
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = useRef<PromptEditorHandle>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const reconnectKeyRef = useRef<string | null>(null); // guards double-attach (D-97 L2)
 
@@ -277,7 +276,6 @@ export default function StageWorkspace({
     setPrompt('');
     setRefIds([]);
     setFormworkIds([]);
-    setMention({ open: false, query: '', at: 0 });
     setPlan(null);
     setShowSystemPrompt(false);
   }, [projectId, selectedSeq]);
@@ -325,7 +323,6 @@ export default function StageWorkspace({
     setPrompt('');
     setRefIds([]);
     setFormworkIds([]);
-    setMention({ open: false, query: '', at: 0 });
     setShowSystemPrompt(false);
     setPlan(null);
   }
@@ -398,13 +395,14 @@ export default function StageWorkspace({
     return lines.length ? `\n\n## Production scope (confirmed by the reviewer)\n${lines.map((l) => `- ${l}`).join('\n')}` : '';
   };
 
-  // One row per artifact the reviewer keeps: where its layout comes from and what file it is delivered as.
-  const renderFormats = () => {
-    const cat = (plan?.formatCatalog ?? []).filter((c) => {
-      const w = plan?.intel?.willProduce?.find((x) => fmtKey(x.output) === c.type);
-      return produceSel[c.output] ?? w?.include ?? w?.recommended ?? true;
-    });
-    if (cat.length === 0) return null;
+  // ONE list of the artifacts: tick what to generate and, on the same row, choose the layout it follows and the
+  // file type it is delivered as. (Layout and delivery apply only to ticked rows.)
+  const renderArtifacts = () => {
+    const rows = plan?.intel?.willProduce ?? [];
+    if (rows.length === 0) return null;
+    const catalog = new Map((plan?.formatCatalog ?? []).map((c) => [c.type, c]));
+    const isOn = (a: { output: string; include?: boolean; recommended?: boolean }) => produceSel[a.output] ?? a.include ?? a.recommended;
+    const cat = rows.filter(isOn).map((a) => catalog.get(fmtKey(a.output))).filter((c): c is FormatOption => Boolean(c));
     const layoutValue = (f: ArtifactFormat) => (f.source === 'system' ? 'system' : `${f.source}:${f.refId ?? ''}`);
     const parse = (v: string): ArtifactFormat => {
       const [source, ...rest] = v.split(':');
@@ -422,55 +420,74 @@ export default function StageWorkspace({
       setFmtSel(next);
     };
     const attachmentChoices = Array.from(new Map(cat.flatMap((c) => c.attachments).map((a) => [a.id, a])).values());
-    const sourceLabel: Record<string, string> = { system: 'System standard', attachment: 'Attached file', formwork: 'Template' };
+    const cols = 'sm:grid-cols-[minmax(0,1.5fr)_minmax(0,1.3fr)_minmax(0,0.8fr)]';
     return (
       <div>
-        <SectionLabel icon="file" hint="each artifact can follow its own layout and be delivered in its own file type">Output format per artifact</SectionLabel>
-        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
-          <span>Apply to all:</span>
-          <select aria-label="Apply layout to all artifacts" disabled={locked} value="" onChange={(e) => e.target.value && applyAll(e.target.value)}
-            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-brand-400 focus:outline-none">
-            <option value="">Choose a layout…</option>
-            <option value="system">System standard</option>
-            {attachmentChoices.map((a) => <option key={a.id} value={`attachment:${a.id}`}>Follow “{a.filename}” (where supported)</option>)}
-          </select>
-          <span className="text-slate-400">Artifacts that cannot follow it keep their own choice. Attached files are used as context only unless you pick one here.</span>
-        </div>
+        <SectionLabel icon="tasks" hint={`${rows.filter(isOn).length} of ${rows.length} selected — tick what you want, then pick each one’s layout and file type`}>
+          Artifacts to generate
+        </SectionLabel>
+        {attachmentChoices.length > 0 && (
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+            <span>Apply to all:</span>
+            <select aria-label="Apply layout to all artifacts" disabled={locked} value="" onChange={(e) => e.target.value && applyAll(e.target.value)}
+              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-brand-400 focus:outline-none">
+              <option value="">Choose a layout…</option>
+              <option value="system">System standard</option>
+              {attachmentChoices.map((a) => <option key={a.id} value={`attachment:${a.id}`}>Follow “{a.filename}” (where supported)</option>)}
+            </select>
+            <span className="text-slate-400">Artifacts that cannot follow it keep their own choice.</span>
+          </div>
+        )}
         <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
-          <div className="hidden gap-2 bg-slate-50 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400 sm:grid sm:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,0.8fr)]">
+          <div className={`hidden gap-2 bg-slate-50 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400 sm:grid ${cols}`}>
             <span>Artifact</span><span>Layout follows</span><span>Delivered as</span>
           </div>
-          {cat.map((c) => {
-            const f = formatOf(c.output);
-            const ft = f.fileType ?? c.fileTypes.find((x) => x.native)?.value ?? '';
-            const follows = f.source === 'attachment' ? c.attachments.find((a) => a.id === f.refId)?.filename
-              : f.source === 'formwork' ? c.formworks.find((w) => w.id === f.refId)?.name : null;
+          {rows.map((a) => {
+            const on = Boolean(isOn(a));
+            const c = catalog.get(fmtKey(a.output));
+            const f = c ? formatOf(c.output) : null;
+            const ft = f && c ? f.fileType ?? c.fileTypes.find((x) => x.native)?.value ?? '' : '';
+            const off = locked || !on;
             return (
-              <div key={c.type} className="grid items-center gap-2 px-3 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,0.8fr)]" data-testid={`format-row-${c.type}`}>
-                <div className="min-w-0">
-                  <div className="truncate text-[13px] font-semibold text-slate-800">{c.output}</div>
-                  <div className="text-[11px] text-slate-500">{sourceLabel[f.source]}{follows ? ` · ${follows}` : c.houseTemplate && f.source === 'system' ? ` · ${c.houseTemplate}` : ''}</div>
-                </div>
-                <select aria-label={`Layout for ${c.output}`} disabled={locked || c.sources.length === 1} value={layoutValue(f)}
-                  onChange={(e) => setFormat(c.output, { ...parse(e.target.value), fileType: f.fileType })}
-                  className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-brand-400 focus:outline-none disabled:bg-slate-50 disabled:text-slate-500">
-                  <option value="system">System standard{c.houseTemplate ? ` (${c.houseTemplate})` : ''}</option>
-                  {c.sources.includes('attachment') && c.attachments.length > 0 && (
-                    <optgroup label="Follow an attached file">
-                      {c.attachments.map((a) => <option key={a.id} value={`attachment:${a.id}`}>{a.filename}</option>)}
-                    </optgroup>
-                  )}
-                  {c.sources.includes('formwork') && c.formworks.length > 0 && (
-                    <optgroup label="Follow a template">
-                      {c.formworks.map((w) => <option key={w.id} value={`formwork:${w.id}`}>{w.name}{w.scope === 'platform' ? ' (platform)' : ''}</option>)}
-                    </optgroup>
-                  )}
-                </select>
-                <select aria-label={`Delivered file type for ${c.output}`} disabled={locked || c.fileTypes.length === 1} value={ft}
-                  onChange={(e) => setFormat(c.output, { ...f, fileType: e.target.value })}
-                  className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-brand-400 focus:outline-none disabled:bg-slate-50 disabled:text-slate-500">
-                  {c.fileTypes.map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}
-                </select>
+              <div key={a.output} data-testid={`artifact-row-${fmtKey(a.output)}`}
+                className={`grid items-start gap-2 px-3 py-2 transition ${cols} ${on ? 'bg-brand-50/30' : 'bg-white'}`}>
+                <label className="flex min-w-0 cursor-pointer items-start gap-2.5">
+                  <input type="checkbox" className="mt-1 h-4 w-4 shrink-0 accent-brand-600" checked={on} disabled={locked} aria-label={`Generate ${a.output}`}
+                    onChange={(e) => setProduceSel((p) => ({ ...p, [a.output]: e.target.checked }))} />
+                  <span className="min-w-0">
+                    <span className="flex flex-wrap items-center gap-1.5">
+                      <span className={`text-[13px] font-semibold ${on ? 'text-slate-800' : 'text-slate-500'}`}>{a.output}</span>
+                      {a.recommended
+                        ? <Badge tone="success" icon="check">Recommended</Badge>
+                        : <Badge title="Not needed for this request, but you can still include it">Optional</Badge>}
+                    </span>
+                    {a.reason && <span className="mt-0.5 block text-xs text-slate-500">{a.reason}</span>}
+                  </span>
+                </label>
+                {c && f ? (
+                  <>
+                    <select aria-label={`Layout for ${c.output}`} disabled={off || c.sources.length === 1} value={layoutValue(f)}
+                      onChange={(e) => setFormat(c.output, { ...parse(e.target.value), fileType: f.fileType })}
+                      className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-brand-400 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400">
+                      <option value="system">System standard{c.houseTemplate ? ` (${c.houseTemplate})` : ''}</option>
+                      {c.sources.includes('attachment') && c.attachments.length > 0 && (
+                        <optgroup label="Follow an attached file">
+                          {c.attachments.map((x) => <option key={x.id} value={`attachment:${x.id}`}>{x.filename}</option>)}
+                        </optgroup>
+                      )}
+                      {c.sources.includes('formwork') && c.formworks.length > 0 && (
+                        <optgroup label="Follow a template">
+                          {c.formworks.map((w) => <option key={w.id} value={`formwork:${w.id}`}>{w.name}{w.scope === 'platform' ? ' (platform)' : ''}</option>)}
+                        </optgroup>
+                      )}
+                    </select>
+                    <select aria-label={`Delivered file type for ${c.output}`} disabled={off || c.fileTypes.length === 1} value={ft}
+                      onChange={(e) => setFormat(c.output, { ...f, fileType: e.target.value })}
+                      className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-brand-400 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400">
+                      {c.fileTypes.map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}
+                    </select>
+                  </>
+                ) : <><span className="text-xs text-slate-300">—</span><span className="text-xs text-slate-300">—</span></>}
               </div>
             );
           })}
@@ -511,7 +528,6 @@ export default function StageWorkspace({
     e?.preventDefault();
     if (planBusy || locked || promptError) return;
     setPlanBusy(true);
-    setMention({ open: false, query: '', at: 0 });
     const append = opts?.append?.trim();
     const nextPrompt = append ? (prompt.trim() ? `${prompt.trim()}\n${append}` : append) : prompt;
     if (append) setPrompt(nextPrompt);
@@ -755,40 +771,21 @@ export default function StageWorkspace({
   // --- inline "@" mention autosuggest (D-56) ---
   // Every referenceable thing, in one list: prior generated content, templates,
   // and already-uploaded files. Selecting one pins it into the next run.
-  type Mention =
-    | { kind: 'artifact'; id: string; label: string; sub: string }
-    | { kind: 'template'; id: string; label: string; sub: string }
-    | { kind: 'file'; id: string; label: string; sub: string };
   const allMentions: Mention[] = [
     ...priorArtefacts.map((a) => ({ kind: 'artifact' as const, id: a.id, label: a.title, sub: `P${a.phase} · ${a.type}` })),
     ...formworks.map((f) => ({ kind: 'template' as const, id: f.id, label: f.name, sub: `Template · ${f.artefactType}` })),
     ...attachments.map((a) => ({ kind: 'file' as const, id: a.id, label: a.filename, sub: 'Uploaded file' })),
   ];
-  const mentionMatches = mention.open
-    ? allMentions.filter((m) => m.label.toLowerCase().includes(mention.query.toLowerCase())).slice(0, 8)
-    : [];
 
-  function onPromptChange(e: ChangeEvent<HTMLTextAreaElement>) {
-    const value = e.target.value;
-    setPrompt(value);
-    const caret = e.target.selectionStart ?? value.length;
-    // find an "@token" ending at the caret with no whitespace inside the token
-    const before = value.slice(0, caret);
-    const m = before.match(/@([\w.-]*)$/);
-    if (m) setMention({ open: true, query: m[1] ?? '', at: caret - (m[1]?.length ?? 0) - 1 });
-    else if (mention.open) setMention({ open: false, query: '', at: 0 });
-  }
-
+  // Choosing a reference pins outputs and templates to the stage (files are already included); the editor
+  // shows it as a chip. Removing the chip - its ✕ or Backspace - unpins it again (a file stays attached).
   function pickMention(m: Mention) {
     if (m.kind === 'artifact') setRefIds((prev) => (prev.includes(m.id) ? prev : [...prev, m.id]));
     if (m.kind === 'template') setFormworkIds((prev) => (prev.includes(m.id) ? prev : [...prev, m.id]));
-    // files are already auto-included; selecting is a no-op beyond the mention text.
-    // Replace the "@query" fragment with a readable mention token.
-    const caret = textareaRef.current?.selectionStart ?? prompt.length;
-    const token = `@${m.label.replace(/\s+/g, '_')} `;
-    setPrompt((p) => p.slice(0, mention.at) + token + p.slice(caret));
-    setMention({ open: false, query: '', at: 0 });
-    setTimeout(() => textareaRef.current?.focus(), 0);
+  }
+  function unpickMention(m: { kind: Mention['kind']; id: string }) {
+    if (m.kind === 'artifact') setRefIds((prev) => prev.filter((id) => id !== m.id));
+    if (m.kind === 'template') setFormworkIds((prev) => prev.filter((id) => id !== m.id));
   }
 
   const selectedRefChips = refIds
@@ -1090,49 +1087,20 @@ export default function StageWorkspace({
               </Callout>
             )}
             <form onSubmit={onReviewSubmit}>
-              <div className="relative">
-                <textarea
-                  ref={textareaRef}
-                  className="w-full rounded-lg border border-slate-300 p-3 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-200"
-                  rows={3}
-                  placeholder={
-                    stage.phase === 1
-                      ? 'Describe what to build. Type @ to reference generated content, templates or uploaded files.'
-                      : `Add guidance for the ${stage.persona} (optional). Type @ to pull in prior outputs, templates or files.`
-                  }
-                  value={prompt}
-                  onChange={onPromptChange}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Escape' && mention.open) setMention({ open: false, query: '', at: 0 });
-                  }}
-                  disabled={locked}
-                />
-                {/* inline @ autosuggest (D-56) */}
-                {mention.open && mentionMatches.length > 0 && (
-                  <div className="absolute left-2 top-full z-30 mt-1 max-h-64 w-80 overflow-auto rounded-lg border border-slate-200 bg-white shadow-xl">
-                    <div className="border-b border-slate-100 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-                      Reference — generated content, templates &amp; files
-                    </div>
-                    {mentionMatches.map((m) => (
-                      <button
-                        type="button"
-                        key={`${m.kind}-${m.id}`}
-                        onClick={() => pickMention(m)}
-                        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-slate-50"
-                      >
-                        <span className="text-sm">{m.kind === 'artifact' ? '📄' : m.kind === 'template' ? '📐' : '📎'}</span>
-                        <span className="min-w-0 flex-1 truncate text-slate-700">{m.label}</span>
-                        <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">{m.sub}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {mention.open && mentionMatches.length === 0 && (
-                  <div className="absolute left-2 top-full z-30 mt-1 w-80 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-400 shadow-xl">
-                    No references match “{mention.query}”. Attach a file or generate upstream stages first.
-                  </div>
-                )}
-              </div>
+              <PromptEditor
+                ref={textareaRef}
+                value={prompt}
+                onChange={setPrompt}
+                mentions={allMentions}
+                onPick={pickMention}
+                onUnpick={unpickMention}
+                disabled={locked}
+                placeholder={
+                  stage.phase === 1
+                    ? 'Describe what to build. Type @ to reference generated content, templates or uploaded files.'
+                    : `Add guidance for the ${stage.persona} (optional). Type @ to pull in prior outputs, templates or files.`
+                }
+              />
 
               {/* ---- attach + selected-context chips (D-54/D-56) ---- */}
               <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -1231,36 +1199,7 @@ export default function StageWorkspace({
                         </div>
                       )}
 
-                      {(plan.intel.willProduce?.length ?? 0) > 0 && (
-                        <div>
-                          <SectionLabel icon="tasks" hint={`${plan.intel.willProduce.filter((a) => produceSel[a.output] ?? a.include ?? a.recommended).length} of ${plan.intel.willProduce.length} selected — tick what you want, untick to skip`}>
-                            Artifacts to generate
-                          </SectionLabel>
-                          <div className="space-y-1.5">
-                            {plan.intel.willProduce.map((a) => {
-                              const on = produceSel[a.output] ?? a.include ?? a.recommended;
-                              return (
-                                <label key={a.output} className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 transition ${on ? 'border-brand-300 bg-brand-50/40' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
-                                  <input
-                                    type="checkbox" className="mt-1 h-4 w-4 accent-brand-600"
-                                    checked={on} disabled={locked}
-                                    onChange={(e) => setProduceSel((p) => ({ ...p, [a.output]: e.target.checked }))}
-                                  />
-                                  <span className="min-w-0 flex-1">
-                                    <span className="flex flex-wrap items-center gap-2">
-                                      <span className="text-[13px] font-semibold text-slate-800">{a.output}</span>
-                                      {a.recommended
-                                        ? <Badge tone="success" icon="check">Recommended</Badge>
-                                        : <Badge title="Not needed for this request, but you can still include it">Optional</Badge>}
-                                    </span>
-                                    {a.reason && <span className="mt-0.5 block text-xs text-slate-500">{a.reason}</span>}
-                                  </span>
-                                </label>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
+                      {renderArtifacts()}
 
                       {(plan.intel.promptChecks?.length ?? 0) > 0 && (
                         <Callout tone="advice" title="Left out — not applicable to this project">
@@ -1332,8 +1271,6 @@ export default function StageWorkspace({
                           </div>
                         </div>
                       )}
-
-                      {renderFormats()}
 
                       {plan.intel.recommendation && (
                         <Callout tone="advice" title="Advice">{plan.intel.recommendation}</Callout>
@@ -1523,6 +1460,9 @@ export default function StageWorkspace({
             )}
           </section>
         )}
+
+        {/* ---- two-step code generation: structure → approval → code → commit (implementation stage) ---- */}
+        {stage.template === 6 && <CodeExplorer projectId={projectId} phase={selectedSeq} />}
 
         {/* ---- gate review ---- */}
         {pendingGate && pendingGate.phase === selectedSeq && (

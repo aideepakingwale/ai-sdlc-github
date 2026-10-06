@@ -485,3 +485,36 @@ class ClarificationOutput(BaseModel):
     to ask if not."""
     needs_clarification: bool = False
     questions: list[ClarificationQuestion] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------- two-step code generation
+class PlannedDirectory(BaseModel):
+    path: str
+    purpose: str = ""
+
+
+class PlannedFile(BaseModel):
+    path: str
+    purpose: str                                       # one line: what this file is for
+    kind: Literal["source", "test", "config", "docs", "build"] = "source"
+    layer: str = ""                                    # e.g. api, domain, persistence, infra, ui
+    covers: list[str] = Field(default_factory=list)    # story / requirement keys this file helps satisfy
+
+
+class CodeStructureOutput(BaseModel):
+    """Step 1: the proposed repository layout, for approval BEFORE any code is written."""
+    summary: str = ""                                  # architecture of the codebase in a few sentences
+    conventions: list[str] = Field(default_factory=list, min_length=1)   # naming + layout rules the code will follow
+    directories: list[PlannedDirectory] = Field(default_factory=list)
+    files: list[PlannedFile] = Field(min_length=2)
+    branch: str
+    commitMessage: str
+    prTitle: str
+    prBody: str
+    checklist: list[str] = Field(default_factory=list)
+
+
+class CodeBatchOutput(BaseModel):
+    """Step 2: the contents of an agreed batch of files (paths must come from the approved structure)."""
+    files: list[FileEntry] = Field(min_length=1)
+    designNotes: str = ""

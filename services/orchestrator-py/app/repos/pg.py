@@ -370,6 +370,12 @@ class Database:
         )
         return int(result.rsplit(" ", 1)[-1]) if result else 0
 
+    async def latest_artefact_row(self, project_id: str, phase: int, type_: str, title: str) -> asyncpg.Record | None:
+        assert self.pool
+        return await self.pool.fetchrow(
+            "SELECT * FROM artefacts WHERE project_id=$1 AND phase=$2 AND type=$3 AND title=$4 ORDER BY version DESC LIMIT 1",
+            project_id, phase, type_, title)
+
     async def list_artefacts(self, project_id: str) -> list[asyncpg.Record]:
         assert self.pool
         return await self.pool.fetch(
@@ -549,6 +555,60 @@ class Database:
                WHERE project_id=$1 ORDER BY phase, created_at DESC""", project_id)
         return [{"id": r["id"], "phase": r["phase"], "createdAt": r["created_at"].isoformat(),
                  "manifest": json.loads(r["manifest"]) if isinstance(r["manifest"], str) else r["manifest"]} for r in rows]
+
+    # ------------------------------------------------------------------ code plans (two-step code generation)
+    @staticmethod
+    def _code_plan(r: asyncpg.Record | None) -> dict | None:
+        if not r:
+            return None
+        d = dict(r)
+        for k in ("structure", "meta"):
+            if isinstance(d.get(k), str):
+                d[k] = json.loads(d[k])
+        return d
+
+    async def latest_code_plan(self, project_id: str, phase: int) -> dict | None:
+        """The newest proposal that is not superseded (proposed or approved), else None."""
+        assert self.pool
+        return self._code_plan(await self.pool.fetchrow(
+            """SELECT * FROM code_plans WHERE project_id=$1 AND phase=$2 AND status <> 'superseded'
+               ORDER BY version DESC LIMIT 1""", project_id, phase))
+
+    async def insert_code_plan(self, *, project_id: str, phase: int, structure: dict, meta: dict,
+                               artefact_id: str | None, proposed_by: str | None) -> dict:
+        """Add a new proposal; any earlier un-approved proposal is superseded (an approved one is kept
+        approved only until the new one is approved - see approve_code_plan)."""
+        assert self.pool
+        async with self.pool.acquire() as conn, conn.transaction():
+            ver = await conn.fetchval("SELECT COALESCE(MAX(version),0)+1 FROM code_plans WHERE project_id=$1 AND phase=$2", project_id, phase)
+            await conn.execute("UPDATE code_plans SET status='superseded' WHERE project_id=$1 AND phase=$2 AND status <> 'superseded'", project_id, phase)
+            row = await conn.fetchrow(
+                """INSERT INTO code_plans (id, project_id, phase, version, status, structure, meta, artefact_id, proposed_by)
+                   VALUES ($1,$2,$3,$4,'proposed',$5::jsonb,$6::jsonb,$7,$8) RETURNING *""",
+                new_id(), project_id, phase, ver, json.dumps(structure), json.dumps(meta), artefact_id, proposed_by)
+        return self._code_plan(row)  # type: ignore[return-value]
+
+    async def approve_code_plan(self, plan_id: str, *, approver: str, comments: str | None = None) -> dict | None:
+        assert self.pool
+        return self._code_plan(await self.pool.fetchrow(
+            """UPDATE code_plans SET status='approved', decided_by=$2, decided_at=now(), comments=$3
+               WHERE id=$1 AND status='proposed' RETURNING *""", plan_id, approver, comments))
+
+    async def supersede_code_plan(self, plan_id: str) -> None:
+        assert self.pool
+        await self.pool.execute("UPDATE code_plans SET status='superseded' WHERE id=$1", plan_id)
+
+    async def mark_code_plan_implemented(self, plan_id: str) -> None:
+        assert self.pool
+        await self.pool.execute("UPDATE code_plans SET implemented_at=now() WHERE id=$1", plan_id)
+
+    async def mark_code_plan_committed(self, plan_id: str, commit_ref: str) -> None:
+        assert self.pool
+        await self.pool.execute("UPDATE code_plans SET committed_at=now(), commit_ref=$2 WHERE id=$1", plan_id, commit_ref)
+
+    async def set_code_plan_artefact(self, plan_id: str, artefact_id: str) -> None:
+        assert self.pool
+        await self.pool.execute("UPDATE code_plans SET artefact_id=$2 WHERE id=$1", plan_id, artefact_id)
 
     async def set_stage_plan_sig(self, project_id: str, phase: int, sig: str | None) -> None:
         """Remember the input signature the plan was last built for; a later difference means
