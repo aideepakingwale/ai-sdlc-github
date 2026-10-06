@@ -294,3 +294,119 @@ async def test_retrieval_counts_only_upstream_artifacts_but_never_filters_standa
     assert ids(await svc.retrieve("payments", "p")) == ["art-1", "art-2", "art-3", "code-1", "kb-std"]          # unrestricted: as before
     assert ids(await svc.retrieve("payments", "p", artifact_phases={1})) == ["art-1", "code-1", "kb-std"]       # stage 2: only stage 1's output
     assert ids(await svc.retrieve("payments", "p", artifact_phases=set())) == ["code-1", "kb-std"]              # the entry stage: no artifacts
+
+
+# ---------------------------------------------------------------- the plan analysis survives a refresh
+async def test_the_ai_analysis_of_a_plan_is_kept_in_the_database_when_the_cache_is_gone():
+    import json
+    from types import SimpleNamespace
+
+    from app.services.chat import ChatService
+
+    class Redis:
+        def __init__(self):
+            self.kv = {}
+
+        async def get(self, k):
+            return self.kv.get(k)
+
+        async def set(self, k, v, nx=False, ex=None):
+            if nx and k in self.kv:
+                return None
+            self.kv[k] = v
+            return True
+
+        async def delete(self, k):
+            self.kv.pop(k, None)
+
+        async def exists(self, k):
+            return int(k in self.kv)
+
+    class Db:
+        def __init__(self):
+            self.row = None
+
+        async def get_stage_plan(self, pid, phase):
+            return self.row
+
+        async def set_stage_plan_intel(self, pid, phase, obj):
+            self.row = {"plan_intel": json.dumps(obj), "plan_sig": "s"}          # as a JSONB column comes back
+
+    svc = ChatService.__new__(ChatService)
+    svc._redis, svc._db = Redis(), Db()
+    svc._settings = SimpleNamespace(INTELLIGENT_PLANNING=True)
+    analysis = {"understood": "A payments platform with idempotent retries.", "willProduce": [{"output": "PRD", "recommended": True, "include": True, "reason": "r"}]}
+
+    async def compute(self, *, ckey, sig, **kw):
+        await self._store_intel(ckey, sig, analysis)
+        return {**analysis, "cached": False}
+
+    ChatService._compute_intelligent_plan = compute            # the planner itself is not under test
+    args = dict(project={"id": "p1", "tech_stack": "Py", "name": "n"}, phase=1, stage={"template": 1, "outputs": ["PRD"], "persona": "BA"},
+                overlay={"promptOverlay": "Build payments"}, available_tools=[], skills=[], prior_arts=[], canon_applied=False)
+    first = await svc._intelligent_plan(**args)
+    assert first["cached"] is False and first["understood"].startswith("A payments")
+
+    svc._redis.kv.clear()                                       # the cache expired / Redis restarted / page refreshed
+    again = await svc._intelligent_plan(**args, allow_compute=False)
+    assert again["cached"] is True and again["understood"] == analysis["understood"]          # the analysis is still there
+
+    stale = await svc._intelligent_plan(**{**args, "overlay": {"promptOverlay": "Build payments, now with refunds"}}, allow_compute=False)
+    assert stale["stale"] is True and stale["understood"] == analysis["understood"]            # edited since: shown, marked stale
+    assert svc._stored_intel(svc._db.row)["plan"]["understood"] == analysis["understood"]
+    assert svc._stored_intel(None) is None and svc._stored_intel({"plan_intel": "{bad"}) is None
+
+
+# ---------------------------------------------------------------- the checking agents must know what was attached
+def test_the_checkers_get_a_digest_of_the_attached_material():
+    from app.services.context import attached_digest
+
+    extra = ("## Attached documents (2) - user-supplied content.\n- LLD.docx\n- Sample-Integration-HLD.doc\n\n"
+             "### Attachment — LLD.docx (12 pages)\n# LLD template\n## 1. Overview\n" + "x" * 5000 + "\n\n"
+             "### Attachment — Sample-Integration-HLD.doc (42 pages) [condensed from 743,000 to 26,000 characters to fit]\n"
+             "# HLD\n## Container diagram\nEIP adapter calls AMOS over HTTPS.\n" + "y" * 5000 + "\n\n### Reference — [Phase 2] DRAWIO: Deployment\n<mxfile/>")
+    d = attached_digest(extra)
+    assert "### Attachment — LLD.docx" in d and "### Attachment — Sample-Integration-HLD.doc" in d and "### Reference — [Phase 2] DRAWIO" in d
+    assert "EIP adapter calls AMOS over HTTPS." in d                      # the HLD's own content is visible to the checker
+    assert len(d) <= 4_100 and d.count("…") >= 2                          # bounded: each item is cut, and marked
+    assert attached_digest("") == "" and attached_digest("   ") == ""
+
+
+def test_the_validation_and_fact_check_prompts_carry_the_digest_and_forbid_reporting_attachments_as_missing():
+    from app.services.prompt_library import render
+
+    user = render("validate.user", stage_name="LLD", quality_bar="q", user_intent="Write the LLD from the attached HLD", amend_comments="(none)",
+                  output_digest="d", syntax_errors="(none)", context_digest="c", attached_digest="### Attachment — Sample-Integration-HLD.doc\nEIP adapter")
+    assert "Sample-Integration-HLD.doc" in user and "AVAILABLE to the generating agent" in user
+    assert "never report an attached file as missing" in render("validate.system")
+    fc = render("fact_check.user", context_summary="c", attached_digest="### Attachment — x.doc\nfacts", response="r")
+    assert "x.doc" in fc and "never report an attached file as missing" in render("fact_check.system")
+
+
+async def test_the_validation_agent_is_actually_shown_the_attached_documents():
+    from types import SimpleNamespace
+
+    from pydantic import BaseModel
+
+    from app.agents import phase_agents as pa
+    from app.agents.schemas import ValidationVerdict
+    from app.domain.models import AgentState
+
+    seen = {}
+
+    class Llm:
+        async def generate_json(self, *, messages, schema, **kw):
+            seen["system"], seen["user"] = messages[0]["content"], messages[1]["content"]
+            return ValidationVerdict(ok=True), None
+
+    class Out(BaseModel):
+        lldMarkdown: str = "# LLD"
+
+    state = AgentState(project_id="p", session_id="s", current_phase=3, stage_template=3, stage_name="Technical Design",
+                       user_input="Write the LLD from the attached Sample-Integration-HLD.doc",
+                       extra_context="### Attachment — Sample-Integration-HLD.doc (42 pages)\n# HLD\n## Container diagram\nEIP adapter calls AMOS over HTTPS.")
+    deps = SimpleNamespace(llm=Llm(), db=None, audit=None, settings=SimpleNamespace(), content=None)
+    verdict = await pa._validate_output(deps, state, lambda e: None, Out())
+    assert verdict.ok
+    assert "Sample-Integration-HLD.doc" in seen["user"] and "EIP adapter calls AMOS over HTTPS." in seen["user"]
+    assert "never report an attached file as missing" in seen["system"]

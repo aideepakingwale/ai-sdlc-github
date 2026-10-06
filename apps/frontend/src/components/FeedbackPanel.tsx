@@ -33,12 +33,15 @@ const CATEGORIES = [
 ] as const;
 
 export default function FeedbackPanel({
-  projectId, phase, canResolve,
+  projectId, phase, canResolve, onUploadMissing, uploading,
 }: {
   projectId: string;
   phase: number;
   user: User;
   canResolve: boolean;
+  /** Opens the attach-document picker (same upload as the prompt area). */
+  onUploadMissing?: () => void;
+  uploading?: boolean;
 }) {
   const qc = useQueryClient();
   const key = ['feedback', projectId, phase];
@@ -109,6 +112,12 @@ export default function FeedbackPanel({
                 <span className="font-semibold">{s.icon} {f.category}</span>
                 <span className="ml-2 opacity-80">Validation agent</span>
                 <div className="mt-0.5 text-slate-700">{f.comment}</div>
+                {f.category === 'missing-document' && onUploadMissing && (
+                  <button
+                    type="button" onClick={onUploadMissing} disabled={uploading}
+                    className="mt-1 rounded border border-current px-2 py-0.5 text-[10px] font-semibold hover:bg-white/60 disabled:opacity-40"
+                  >📎 Upload the missing document, then regenerate</button>
+                )}
               </div>
             );
           })}

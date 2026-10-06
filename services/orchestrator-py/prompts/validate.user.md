@@ -10,6 +10,7 @@ variables:
 - output_digest
 - syntax_errors
 - context_digest
+- attached_digest
 ---
 ## Stage under validation
 ${stage_name}
@@ -22,6 +23,9 @@ ${user_intent}
 
 ## Upstream context this stage MUST build on (check for drift)
 ${context_digest}
+
+## Material the requester attached for this stage (AVAILABLE to the generating agent - shown here as titles and openings)
+${attached_digest}
 
 ## Reviewer's requested changes (must be honoured exactly; empty if none)
 ${amend_comments}

@@ -27,7 +27,7 @@ from ..services.applicability import (
 from ..services.audit import AuditService
 from ..services.content_store import ContentStore, artifact_key, source_key
 from ..services.content_validators import format_issues, syntactic_issues
-from ..services.context import build_context_block
+from ..services.context import attached_digest, build_context_block
 from ..services.diagram_render import render_architecture
 from ..services.guardrails import sanitise_output
 from ..services.prompt_library import render as render_prompt
@@ -1010,6 +1010,7 @@ async def _validate_output(
                     output_digest=_output_digest(out, skipped=tuple(
                         scope_skipped_fields(state, list(type(out).model_fields)))),
                     context_digest=context_digest[:2_500],
+                    attached_digest=attached_digest(state.extra_context) or "(none attached)",
                     syntax_errors=format_issues(syntactic) or "(none)",
                 )},
             ],
@@ -1098,7 +1099,7 @@ async def _persist_validation_feedback(
                     + (f" [{dims}]" if dims else "")).strip(),
     }]
     issues = score_signal + [
-        {"category": i.area or "quality", "severity": i.severity,
+        {"category": "missing-document" if i.missingDocument else (i.area or "quality"), "severity": i.severity,
          "comment": (i.problem + (f" — Fix: {i.fix}" if i.fix else "")).strip()}
         for i in verdict.issues
     ]

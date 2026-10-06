@@ -80,6 +80,7 @@ interface StagePlan {
     options?: Array<{ label: string; description?: string }>;
     multiSelect?: boolean;
     rationale?: string;
+    needsDocument?: boolean;
   }> | null;
   // Intelligent, context-aware plan (D-105); null when disabled/unavailable.
   // AI-judged project traits (code enforces them); a project lead can override each.
@@ -290,17 +291,18 @@ export default function StageWorkspace({
     const base = `/api/projects/${projectId}/phase/${selectedSeq}/plan`;
     (async () => {
       try {
-        let st = await api.get<{ building: boolean; ready: boolean }>(`${base}/state`);
+        let st = await api.get<PlanState>(`${base}/state`);
         const wasBuilding = st.building;
         if (st.building) {
           markedBusy = true;
           setPlanBusy(true);
           while (!cancelled && st.building) {
             await new Promise((r) => setTimeout(r, 2000));
-            st = await api.get<{ building: boolean; ready: boolean }>(`${base}/state`);
+            st = await api.get<PlanState>(`${base}/state`);
           }
         }
-        if (cancelled || (!st.ready && !wasBuilding)) return;
+        // A plan that was built (its analysis is kept server-side) or already reviewed is restored on refresh.
+        if (cancelled || (!st.ready && !st.planned && !wasBuilding)) return;
         const p = await api.get<StagePlan>(`${base}?cached=true`);
         if (cancelled) return;
         setPlan(p);
@@ -1039,6 +1041,22 @@ export default function StageWorkspace({
                   onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (isLast) submitClarification(); else setClarifyStep(step + 1); } }}
                   className="mt-2 w-full rounded-md border border-slate-300 px-2 py-1 text-[12px] focus:border-brand-400 focus:outline-none"
                 />
+                {/* Forgot a document? Upload it right here — it joins this stage's context
+                    and is used when the answers are submitted. */}
+                <div className={`mt-2 flex flex-wrap items-center gap-2 rounded-md border px-2 py-1.5 text-[11px] ${
+                  q.needsDocument ? 'border-brand-300 bg-brand-50 text-brand-800' : 'border-dashed border-slate-300 text-slate-500'
+                }`}>
+                  <button
+                    type="button" data-testid="clarify-upload" disabled={streaming || uploading || locked}
+                    onClick={() => fileInputRef.current?.click()}
+                    className="rounded border border-current px-2 py-0.5 font-semibold hover:bg-white/60 disabled:opacity-40"
+                  >📎 {uploading ? 'Uploading…' : q.needsDocument ? 'Upload the missing document' : 'Forgot a document? Upload it'}</button>
+                  <span>
+                    {attachments.length > 0
+                      ? `${attachments.length} attached — new files are added to this stage's context.`
+                      : 'Added to this stage’s context and used when you submit.'}
+                  </span>
+                </div>
               </div>
 
               <div className="mt-3 flex items-center gap-2">
@@ -1482,6 +1500,8 @@ export default function StageWorkspace({
             projectId={projectId}
             phase={selectedSeq}
             user={user}
+            onUploadMissing={() => fileInputRef.current?.click()}
+            uploading={uploading}
             canResolve={
               user.role === 'SUPER_ADMIN' ||
               user.role === 'PROJECT_MANAGER' ||

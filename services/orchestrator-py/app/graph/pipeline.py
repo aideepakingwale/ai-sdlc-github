@@ -20,6 +20,7 @@ from langgraph.graph import END, START, StateGraph
 from ..agents.phase_agents import TEMPLATE_TOOLS, AgentDeps, PhaseAgentResult, run_phase_agent
 from ..agents.schemas import FactCheck
 from ..domain.models import AgentState, PlanStep, get_phase
+from ..services.context import attached_digest
 from ..services.model_router import classify_tier
 from ..services.prompt_library import render as render_prompt
 
@@ -186,6 +187,7 @@ async def _fact_check(gs: GraphState, config: RunnableConfig) -> dict[str, Any]:
                     "content": render_prompt(
                         "fact_check.user",
                         context_summary=context_summary,
+                        attached_digest=attached_digest(state.extra_context) or "(none attached)",
                         response=state.final_response[:6_000],
                     ),
                 },
