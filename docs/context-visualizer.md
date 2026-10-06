@@ -53,3 +53,20 @@ changed in between.
 
 Both need only the project's read permission; there is nothing to edit through them. Migration `0033`
 adds the table (`python -m app.scripts migrate` or redeploy).
+
+## Project-level graph
+
+**Pipeline → Project context graph** (also **Whole project** in a stage's panel) shows how context flows
+through the whole project, read-only:
+
+* shared project context on the left - the project, its technology stack, organisation canon, output
+  templates and any attached codebase;
+* one column per workflow level, each stage sized by how much context its last run read and coloured by
+  state, with the files uploaded to it on its left and the artifacts it produced below;
+* lines for *feeds* (stage to stage), *produced* and *attached*. *applies to* (shared context to stages)
+  and *builds on* (an artifact to every later stage that uses it) are drawn for the item you select, so
+  the canvas stays readable.
+
+Click any circle for what it uses and what uses it; **Open this stage** jumps to it. Search, hide a kind,
+zoom and pan as in the stage view. `GET /api/projects/{id}/context/graph` serves it (project read
+permission; at most the 150 newest artifacts, flagged when truncated).

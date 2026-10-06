@@ -1217,6 +1217,25 @@ class ChatService:
                 "actual": ({**actual["manifest"], "runId": actual["id"], "ranAt": actual["createdAt"]} if actual else None),
                 "diff": diff_manifests(runs[1]["manifest"] if len(runs) > 1 else None, runs[0]["manifest"]) if runs else None}
 
+    async def project_context_graph(self, *, project_id: str, user: UserPublic) -> dict[str, Any]:
+        """The whole project's context: shared project context, every stage with its attached files, the
+        artifacts each produced and which later stages build on them. Read access only."""
+        from .project_context_graph import build_project_graph
+        await self._authz.assert_project_access(project_id, user)
+        wf = await self._workflow.view(project_id)
+        project = await self._db.get_project(project_id)
+        states = {int(s["SK"].split("#")[1]): s["status"] for s in await self._dynamo.list_phase_states(project_id)}
+        attachments = {s["seq"]: [{"id": a["id"], "filename": a["filename"]} for a in await self._db.list_attachments(project_id, s["seq"])]
+                       for s in wf["stages"]}
+        manifests = {r["phase"]: r["manifest"] for r in await self._db.latest_context_manifests(project_id)}
+        canon_stages = {s["seq"] for s in wf["stages"]
+                        if self._deps.canon and await self._deps.canon.render_block(project_id, s["template"])}
+        templates = [f["name"] for f in await self._deps.formworks.list(project_id, user)] if self._deps.formworks else []
+        return build_project_graph(
+            stages=wf["stages"], levels=wf["levels"], states=states, artifacts=[dict(a) for a in await self._db.list_artefacts(project_id)],
+            attachments=attachments, project=dict(project), manifests=manifests, canon_stages=canon_stages,
+            template_names=templates, codebase_files=await self._db.count_codebase_files(project_id))
+
     async def context_overview(self, *, project_id: str, user: UserPublic) -> dict[str, Any]:
         """Per stage, the size and shape of the context its latest run was given (pipeline strip)."""
         await self._authz.assert_project_access(project_id, user)
