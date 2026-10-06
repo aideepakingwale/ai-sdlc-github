@@ -89,3 +89,15 @@ describe('runs are independent', () => {
     expect(useApp.getState().activeProjectId).toBe('new1');
   });
 });
+
+
+describe('signing out', () => {
+  it('drops every live run so the next person in this tab cannot see it', () => {
+    const k = streamKey('projA', 3);
+    useApp.getState().beginStream(k);
+    push({ type: 'content_delta', part: 'x', text: 'SECRET of A' }, k);
+    useApp.getState().setUser(null);
+    expect(useApp.getState().streams).toEqual({});
+    expect(useApp.getState().activeProjectId).toBeNull();
+  });
+});

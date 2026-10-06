@@ -232,9 +232,9 @@ class FakeDb:
     async def list_notifications(self, project_id, limit=50):
         return [n for n in self.notifications if n["project_id"] == project_id][:limit]
 
-    async def mark_notification_read(self, notification_id, user_id):
+    async def mark_notification_read(self, notification_id, user_id, project_id=None):
         for n in self.notifications:
-            if n["id"] == notification_id and user_id not in n["read_by"]:
+            if n["id"] == notification_id and (project_id is None or n["project_id"] == project_id) and user_id not in n["read_by"]:
                 n["read_by"].append(user_id)
 
     # Stage plan drafts

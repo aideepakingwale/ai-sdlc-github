@@ -154,7 +154,8 @@ function reduce(cur: StreamState, e: StreamEvent): Partial<StreamState> {
 
 export const useApp = create<AppState>((set) => ({
   user: null,
-  setUser: (user) => set({ user }),
+  // Signing out drops every live run too: the next person in this tab must not see the previous one's output.
+  setUser: (user) => set(user ? { user } : { user, streams: {}, activeProjectId: null }),
 
   activeProjectId: null,
   setActiveProject: (activeProjectId) => set({ activeProjectId }),

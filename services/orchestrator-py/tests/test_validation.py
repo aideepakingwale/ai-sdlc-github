@@ -278,7 +278,7 @@ async def test_delete_project_purges_every_store():
 
     from .conftest import FakeAudit, make_user
 
-    calls = {"prefix": None, "dynamo": None, "db": None}
+    calls = {"dynamo": None, "db": None}
 
     class _Authz:
         async def assert_can_delete_project(self, pid, user):
@@ -299,16 +299,16 @@ async def test_delete_project_purges_every_store():
 
     class _Content:
         async def delete_prefix(self, prefix):
-            calls["prefix"] = prefix
-            return 7
+            calls.setdefault("prefixes", []).append(prefix)
+            return 7 if prefix.startswith("content-store/") else 2          # the project's templates are purged as well
 
     audit = FakeAudit()
     svc = FlowService.__new__(FlowService)
     svc._db, svc._dynamo, svc._audit, svc._authz, svc._content = _Db(), _Dynamo(), audit, _Authz(), _Content()
 
     res = await svc.delete_project("p9", make_user("SUPER_ADMIN"))
-    assert res == {"projectId": "p9", "deleted": True, "filesRemoved": 7}
-    assert calls == {"prefix": "content-store/p9", "dynamo": "p9", "db": "p9"}
+    assert res == {"projectId": "p9", "deleted": True, "filesRemoved": 9}
+    assert calls == {"prefixes": ["content-store/p9", "formworks/p9"], "dynamo": "p9", "db": "p9"}
     assert "project.deleted" in audit.events
 
 

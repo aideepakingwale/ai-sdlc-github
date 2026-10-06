@@ -176,7 +176,7 @@ export default function StageWorkspace({
     threadEndRef.current?.scrollIntoView({ block: 'nearest' });
   }, [thread]);
   // Reset the discussion when the selected stage changes.
-  useEffect(() => { setThread([]); setRefineText(''); setFormatMode(null); }, [selectedSeq]);
+  useEffect(() => { setThread([]); setRefineText(''); setFormatMode(null); }, [projectId, selectedSeq]);
   // Inline "@" mention autosuggest (D-56).
   const [mention, setMention] = useState<{ open: boolean; query: string; at: number }>({
     open: false, query: '', at: 0,
@@ -255,7 +255,7 @@ export default function StageWorkspace({
     setMention({ open: false, query: '', at: 0 });
     setPlan(null);
     setShowSystemPrompt(false);
-  }, [selectedSeq]);
+  }, [projectId, selectedSeq]);
 
   // The plan lives on the SERVER (building flag + cached result), not in this tab: opening
   // the same project in another tab/session shows the same state — "Building plan…" while a
