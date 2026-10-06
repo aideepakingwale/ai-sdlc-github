@@ -34,7 +34,8 @@ from ..services.prompt_library import render as render_prompt
 from ..services.steering import resolve_steering
 from ..services.rag import RagService
 from ..services.scaffold import quality_gate_files
-from ..services.artifact_formats import attachment_layout_types, norm_type
+from ..services.artifact_formats import attachment_layout_types, kind_of, norm_type
+from ..services.text_diagrams import convert_text_diagrams
 from ..services.model_routes import role_for_stage
 from ..services.stack import decide_from_text, is_stack_owner, record_decision, stack_of, stack_source
 from .prompts import build_phase_prompt, openapi_fix_prompt, render_stack
@@ -672,6 +673,16 @@ async def _save_artifact(
         emit({"type": "node", "node": "agent",
               "label": f"Skipped {type_} '{title[:60]}' — not in the confirmed output scope"})
         return None
+
+    # Diagrams in a document must be standard, renderable source (Mermaid / PlantUML / draw.io), not ASCII art.
+    if kind_of(type_) == "narrative" or type_.upper() in {"ADR"}:
+        try:
+            content, conv = await convert_text_diagrams(deps.llm, content, tag=f"stage{state.current_phase}_text_diagram")
+            if conv["found"]:
+                emit({"type": "node", "node": "guardrail", "status": "done" if conv["converted"] == conv["found"] else "error",
+                      "label": f"Diagrams in {type_}: {conv['converted']} of {conv['found']} text drawing(s) redrawn as Mermaid"})
+        except Exception as err:  # noqa: BLE001 - never block saving the artifact
+            log.warning("text diagram conversion skipped: %s", err)
 
     # Output guardrail (D-34): mask secrets/PII before the body is persisted
     # anywhere (content store, DB, RAG index) — masks are audited.

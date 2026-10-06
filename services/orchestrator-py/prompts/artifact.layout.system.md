@@ -14,3 +14,5 @@ The reviewer chose the attached document "${layout_name}" as the layout for this
 The reference is a LAYOUT guide only: take its structure, never its facts. Everything you state must come from the request, the approved context and the attached source material below.
 
 Output the whole ${artifact_type} as GitHub-flavoured markdown directly - no JSON, no wrapping code fence, no preamble or closing remarks. Start with a single '# ' title heading.
+
+Diagrams: if the reference shows a diagram, draw yours as a fenced ```mermaid (or ```plantuml) code block - standard, renderable source - never as ASCII / box-drawing art, and never copy the reference's drawing.
