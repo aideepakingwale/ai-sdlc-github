@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { api, streamStageProgress } from '../api/client';
 import { PartTabs } from './PartTabs';
@@ -21,6 +21,8 @@ import FeedbackPanel from './FeedbackPanel';
 import GatePanel from './GatePanel';
 import ContextPanel from './ContextPanel';
 import CodeExplorer from './CodeExplorer';
+import { PromptEditor, type PromptEditorHandle } from './PromptEditor';
+import type { Mention } from '../lib/mentions';
 
 
 /** Plain-language names + icons for the AI-judged project traits. */
@@ -198,12 +200,8 @@ export default function StageWorkspace({
   }, [thread]);
   // Reset the discussion when the selected stage changes.
   useEffect(() => { setThread([]); setRefineText(''); }, [projectId, selectedSeq]);
-  // Inline "@" mention autosuggest (D-56).
-  const [mention, setMention] = useState<{ open: boolean; query: string; at: number }>({
-    open: false, query: '', at: 0,
-  });
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = useRef<PromptEditorHandle>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const reconnectKeyRef = useRef<string | null>(null); // guards double-attach (D-97 L2)
 
@@ -278,7 +276,6 @@ export default function StageWorkspace({
     setPrompt('');
     setRefIds([]);
     setFormworkIds([]);
-    setMention({ open: false, query: '', at: 0 });
     setPlan(null);
     setShowSystemPrompt(false);
   }, [projectId, selectedSeq]);
@@ -326,7 +323,6 @@ export default function StageWorkspace({
     setPrompt('');
     setRefIds([]);
     setFormworkIds([]);
-    setMention({ open: false, query: '', at: 0 });
     setShowSystemPrompt(false);
     setPlan(null);
   }
@@ -512,7 +508,6 @@ export default function StageWorkspace({
     e?.preventDefault();
     if (planBusy || locked || promptError) return;
     setPlanBusy(true);
-    setMention({ open: false, query: '', at: 0 });
     const append = opts?.append?.trim();
     const nextPrompt = append ? (prompt.trim() ? `${prompt.trim()}\n${append}` : append) : prompt;
     if (append) setPrompt(nextPrompt);
@@ -756,40 +751,21 @@ export default function StageWorkspace({
   // --- inline "@" mention autosuggest (D-56) ---
   // Every referenceable thing, in one list: prior generated content, templates,
   // and already-uploaded files. Selecting one pins it into the next run.
-  type Mention =
-    | { kind: 'artifact'; id: string; label: string; sub: string }
-    | { kind: 'template'; id: string; label: string; sub: string }
-    | { kind: 'file'; id: string; label: string; sub: string };
   const allMentions: Mention[] = [
     ...priorArtefacts.map((a) => ({ kind: 'artifact' as const, id: a.id, label: a.title, sub: `P${a.phase} · ${a.type}` })),
     ...formworks.map((f) => ({ kind: 'template' as const, id: f.id, label: f.name, sub: `Template · ${f.artefactType}` })),
     ...attachments.map((a) => ({ kind: 'file' as const, id: a.id, label: a.filename, sub: 'Uploaded file' })),
   ];
-  const mentionMatches = mention.open
-    ? allMentions.filter((m) => m.label.toLowerCase().includes(mention.query.toLowerCase())).slice(0, 8)
-    : [];
 
-  function onPromptChange(e: ChangeEvent<HTMLTextAreaElement>) {
-    const value = e.target.value;
-    setPrompt(value);
-    const caret = e.target.selectionStart ?? value.length;
-    // find an "@token" ending at the caret with no whitespace inside the token
-    const before = value.slice(0, caret);
-    const m = before.match(/@([\w.-]*)$/);
-    if (m) setMention({ open: true, query: m[1] ?? '', at: caret - (m[1]?.length ?? 0) - 1 });
-    else if (mention.open) setMention({ open: false, query: '', at: 0 });
-  }
-
+  // Choosing a reference pins outputs and templates to the stage (files are already included); the editor
+  // shows it as a chip. Removing the chip - its ✕ or Backspace - unpins it again (a file stays attached).
   function pickMention(m: Mention) {
     if (m.kind === 'artifact') setRefIds((prev) => (prev.includes(m.id) ? prev : [...prev, m.id]));
     if (m.kind === 'template') setFormworkIds((prev) => (prev.includes(m.id) ? prev : [...prev, m.id]));
-    // files are already auto-included; selecting is a no-op beyond the mention text.
-    // Replace the "@query" fragment with a readable mention token.
-    const caret = textareaRef.current?.selectionStart ?? prompt.length;
-    const token = `@${m.label.replace(/\s+/g, '_')} `;
-    setPrompt((p) => p.slice(0, mention.at) + token + p.slice(caret));
-    setMention({ open: false, query: '', at: 0 });
-    setTimeout(() => textareaRef.current?.focus(), 0);
+  }
+  function unpickMention(m: { kind: Mention['kind']; id: string }) {
+    if (m.kind === 'artifact') setRefIds((prev) => prev.filter((id) => id !== m.id));
+    if (m.kind === 'template') setFormworkIds((prev) => prev.filter((id) => id !== m.id));
   }
 
   const selectedRefChips = refIds
@@ -1091,49 +1067,20 @@ export default function StageWorkspace({
               </Callout>
             )}
             <form onSubmit={onReviewSubmit}>
-              <div className="relative">
-                <textarea
-                  ref={textareaRef}
-                  className="w-full rounded-lg border border-slate-300 p-3 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-200"
-                  rows={3}
-                  placeholder={
-                    stage.phase === 1
-                      ? 'Describe what to build. Type @ to reference generated content, templates or uploaded files.'
-                      : `Add guidance for the ${stage.persona} (optional). Type @ to pull in prior outputs, templates or files.`
-                  }
-                  value={prompt}
-                  onChange={onPromptChange}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Escape' && mention.open) setMention({ open: false, query: '', at: 0 });
-                  }}
-                  disabled={locked}
-                />
-                {/* inline @ autosuggest (D-56) */}
-                {mention.open && mentionMatches.length > 0 && (
-                  <div className="absolute left-2 top-full z-30 mt-1 max-h-64 w-80 overflow-auto rounded-lg border border-slate-200 bg-white shadow-xl">
-                    <div className="border-b border-slate-100 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-                      Reference — generated content, templates &amp; files
-                    </div>
-                    {mentionMatches.map((m) => (
-                      <button
-                        type="button"
-                        key={`${m.kind}-${m.id}`}
-                        onClick={() => pickMention(m)}
-                        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-slate-50"
-                      >
-                        <span className="text-sm">{m.kind === 'artifact' ? '📄' : m.kind === 'template' ? '📐' : '📎'}</span>
-                        <span className="min-w-0 flex-1 truncate text-slate-700">{m.label}</span>
-                        <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">{m.sub}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {mention.open && mentionMatches.length === 0 && (
-                  <div className="absolute left-2 top-full z-30 mt-1 w-80 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-400 shadow-xl">
-                    No references match “{mention.query}”. Attach a file or generate upstream stages first.
-                  </div>
-                )}
-              </div>
+              <PromptEditor
+                ref={textareaRef}
+                value={prompt}
+                onChange={setPrompt}
+                mentions={allMentions}
+                onPick={pickMention}
+                onUnpick={unpickMention}
+                disabled={locked}
+                placeholder={
+                  stage.phase === 1
+                    ? 'Describe what to build. Type @ to reference generated content, templates or uploaded files.'
+                    : `Add guidance for the ${stage.persona} (optional). Type @ to pull in prior outputs, templates or files.`
+                }
+              />
 
               {/* ---- attach + selected-context chips (D-54/D-56) ---- */}
               <div className="mt-2 flex flex-wrap items-center gap-2">
