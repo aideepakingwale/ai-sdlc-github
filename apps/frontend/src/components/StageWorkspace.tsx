@@ -19,6 +19,7 @@ import { streamKey, useApp, useStream, type ActivityItem } from '../store';
 import ArtifactViewer from './ArtifactViewer';
 import FeedbackPanel from './FeedbackPanel';
 import GatePanel from './GatePanel';
+import ContextPanel from './ContextPanel';
 
 
 /** Plain-language names + icons for the AI-judged project traits. */
@@ -1195,6 +1196,8 @@ export default function StageWorkspace({
                 </span>
               </div>
             </form>
+
+            <ContextPanel projectId={projectId} seq={selectedSeq} refreshKey={`${locked}|${attachments.length}|${plan?.planState?.fresh ?? ''}|${(plan?.overlay.promptOverlay ?? '').length}`} />
 
             {/* ---- Step 2 · Review the plan ---- */}
             {plan && (
