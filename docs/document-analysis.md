@@ -57,7 +57,7 @@ instructions to follow**.
 | `ATTACHMENT_MAX_FIGURES` | 24 | pictures / diagram pages sent to the vision model per document |
 | `ATTACHMENT_FIGURE_CONCURRENCY` | 3 | parallel vision calls per upload |
 | `ATTACHMENT_PARSE_SECONDS` / `ATTACHMENT_ANALYSIS_SECONDS` | 90 / 120 | wall-clock budgets |
-| `ATTACHMENT_STORE_CHARS` | 300,000 | extracted Markdown kept per attachment |
+| `ATTACHMENT_STORE_CHARS` | 1,000,000 | extracted Markdown kept per attachment |
 | `ATTACHMENT_RENDER_PAGES` | `auto` | `off` skips LibreOffice rendering |
 | `ATTACHMENT_VISION` | `auto` | `ocr` never calls the model |
 | `ATTACHMENT_CONTEXT_CHARS` | 80,000 | budget for all attached material in one prompt |

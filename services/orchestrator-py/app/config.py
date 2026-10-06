@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     ATTACHMENT_FIGURE_CONCURRENCY: int = 3       # parallel vision calls per upload
     ATTACHMENT_PARSE_SECONDS: int = 90           # wall-clock budget for parsing one file
     ATTACHMENT_ANALYSIS_SECONDS: int = 120       # wall-clock budget for describing its figures
-    ATTACHMENT_STORE_CHARS: int = 300_000        # extracted Markdown kept per attachment
+    ATTACHMENT_STORE_CHARS: int = 1_000_000        # extracted Markdown kept per attachment
     # Render slides / diagram pages to images for the vision model through
     # LibreOffice (when installed). 'off' keeps the structural text extraction only.
     ATTACHMENT_RENDER_PAGES: Literal["auto", "off"] = "auto"
