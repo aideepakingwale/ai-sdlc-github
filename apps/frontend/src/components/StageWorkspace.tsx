@@ -45,6 +45,19 @@ function fmtTime(iso: string): string {
     : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+/** One artifact's output format: where its layout comes from and what file it is delivered as. */
+interface ArtifactFormat { source: 'system' | 'attachment' | 'formwork'; refId?: string; fileType?: string }
+interface FormatOption {
+  output: string; type: string; kind: 'narrative' | 'structured' | 'code' | 'diagram';
+  sources: Array<'system' | 'attachment' | 'formwork'>;
+  fileTypes: Array<{ value: string; label: string; native: boolean }>;
+  houseTemplate: string | null;
+  formworks: Array<{ id: string; name: string; scope: string; sections?: string[] }>;
+  attachments: Array<{ id: string; filename: string }>;
+  selected: ArtifactFormat;
+}
+const fmtKey = (o: string) => o.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+
 // D-56 Plan Review & Edit gate
 interface StagePlan {
   phase: number;
@@ -92,7 +105,9 @@ interface StagePlan {
     ragSnippets: number;
     curatedInjectedChars: number;
   };
-  overlay: { promptOverlay: string; referencedArtifactIds: string[]; attachmentIds: string[]; formworkIds: string[]; origin: string };
+  overlay: { promptOverlay: string; referencedArtifactIds: string[]; attachmentIds: string[]; formworkIds: string[]; artifactFormats?: Record<string, ArtifactFormat>; origin: string };
+  /** Per artifact: what layouts and file types it supports, and the current choice. */
+  formatCatalog?: FormatOption[];
   prompt: { system: string; user: string };
 }
 
@@ -180,7 +195,7 @@ export default function StageWorkspace({
     threadEndRef.current?.scrollIntoView({ block: 'nearest' });
   }, [thread]);
   // Reset the discussion when the selected stage changes.
-  useEffect(() => { setThread([]); setRefineText(''); setFormatMode(null); }, [projectId, selectedSeq]);
+  useEffect(() => { setThread([]); setRefineText(''); }, [projectId, selectedSeq]);
   // Inline "@" mention autosuggest (D-56).
   const [mention, setMention] = useState<{ open: boolean; query: string; at: number }>({
     open: false, query: '', at: 0,
@@ -201,11 +216,16 @@ export default function StageWorkspace({
     enabled: Boolean(projectId),
   });
   const attachments = attachmentsQ.data?.attachments ?? [];
-  // D-112: explicit output-format CHOICE (no prose inference). null = use the default
-  // (follow the attachment when one is present, else the system template).
-  const [formatMode, setFormatMode] = useState<'system' | 'attached' | null>(null);
-  const effectiveFormatMode: 'system' | 'attached' =
-    formatMode ?? (attachments.length > 0 ? 'attached' : 'system');
+  // Per-artifact output format. null = nothing edited yet: show what the plan has saved.
+  // Attached files are context only unless the reviewer points an artifact at one.
+  const [fmtSel, setFmtSel] = useState<Record<string, ArtifactFormat> | null>(null);
+  useEffect(() => setFmtSel(null), [selectedSeq, projectId]);
+  const formatOf = (o: string): ArtifactFormat => {
+    const k = fmtKey(o);
+    return (fmtSel ?? plan?.overlay.artifactFormats ?? {})[k] ?? { source: 'system' };
+  };
+  const setFormat = (o: string, f: ArtifactFormat) =>
+    setFmtSel((cur) => ({ ...(cur ?? plan?.overlay.artifactFormats ?? {}), [fmtKey(o)]: f }));
 
   // D-56: templates (formworks) available to @-reference — project + platform.
   const formworksQ = useQuery({
@@ -347,6 +367,13 @@ export default function StageWorkspace({
     referencedArtifactIds: refIds,
     attachmentIds: attachments.map((a) => a.id),
     formworkIds,
+    // only artifacts this stage can produce, and only those the reviewer kept
+    artifactFormats: Object.fromEntries(
+      (plan?.formatCatalog ?? [])
+        .filter((c) => produceSel[c.output] ?? plan?.intel?.willProduce?.find((w) => fmtKey(w.output) === c.type)?.include ?? true)
+        .map((c) => [c.type, formatOf(c.output)] as const)
+        .filter(([, f]) => f.source !== 'system' || f.fileType),
+    ),
   });
 
   // D-112: the reviewer's decision (which outputs to produce + the format) as an
@@ -366,15 +393,86 @@ export default function StageWorkspace({
     if (exclude.length) lines.push(`Do NOT produce: ${exclude.join(', ')}.`);
     const extras = (intel.suggestedArtifacts ?? []).filter((x) => suggestSel[x.name]).map((x) => x.name);
     if (extras.length) lines.push(`Also include (approved additions to the standard template): ${extras.join(', ')}.`);
-    // D-112: the format is an explicit reviewer CHOICE, not inferred from prose. We emit
-    // a deterministic machine token the backend switches on — ATTACHED_DOCUMENT (follow
-    // the uploaded file's structure) or SYSTEM_DEFAULT (the stage's recommended template).
-    if (effectiveFormatMode === 'attached' && attachments.length) {
-      lines.push(`Follow this output format: ATTACHED_DOCUMENT — ${attachments.map((a) => a.filename).join(', ')}`);
-    } else {
-      lines.push('Follow this output format: SYSTEM_DEFAULT');
-    }
+    // Layout and file type are chosen per artifact (artifactFormats) — never stage-wide.
     return lines.length ? `\n\n## Production scope (confirmed by the reviewer)\n${lines.map((l) => `- ${l}`).join('\n')}` : '';
+  };
+
+  // One row per artifact the reviewer keeps: where its layout comes from and what file it is delivered as.
+  const renderFormats = () => {
+    const cat = (plan?.formatCatalog ?? []).filter((c) => {
+      const w = plan?.intel?.willProduce?.find((x) => fmtKey(x.output) === c.type);
+      return produceSel[c.output] ?? w?.include ?? w?.recommended ?? true;
+    });
+    if (cat.length === 0) return null;
+    const layoutValue = (f: ArtifactFormat) => (f.source === 'system' ? 'system' : `${f.source}:${f.refId ?? ''}`);
+    const parse = (v: string): ArtifactFormat => {
+      const [source, ...rest] = v.split(':');
+      return source === 'system' ? { source: 'system' } : { source: source as 'attachment' | 'formwork', refId: rest.join(':') };
+    };
+    const applyAll = (v: string) => {
+      const next: Record<string, ArtifactFormat> = { ...(fmtSel ?? plan?.overlay.artifactFormats ?? {}) };
+      for (const c of cat) {
+        const f = parse(v);
+        const ok = f.source === 'system'
+          || (f.source === 'attachment' && c.attachments.some((a) => a.id === f.refId))
+          || (f.source === 'formwork' && c.formworks.some((w) => w.id === f.refId));
+        next[c.type] = ok ? { ...f, fileType: formatOf(c.output).fileType } : formatOf(c.output);
+      }
+      setFmtSel(next);
+    };
+    const attachmentChoices = Array.from(new Map(cat.flatMap((c) => c.attachments).map((a) => [a.id, a])).values());
+    const sourceLabel: Record<string, string> = { system: 'System standard', attachment: 'Attached file', formwork: 'Template' };
+    return (
+      <div>
+        <SectionLabel icon="file" hint="each artifact can follow its own layout and be delivered in its own file type">Output format per artifact</SectionLabel>
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+          <span>Apply to all:</span>
+          <select aria-label="Apply layout to all artifacts" disabled={locked} value="" onChange={(e) => e.target.value && applyAll(e.target.value)}
+            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-brand-400 focus:outline-none">
+            <option value="">Choose a layout…</option>
+            <option value="system">System standard</option>
+            {attachmentChoices.map((a) => <option key={a.id} value={`attachment:${a.id}`}>Follow “{a.filename}” (where supported)</option>)}
+          </select>
+          <span className="text-slate-400">Artifacts that cannot follow it keep their own choice. Attached files are used as context only unless you pick one here.</span>
+        </div>
+        <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+          {cat.map((c) => {
+            const f = formatOf(c.output);
+            const ft = f.fileType ?? c.fileTypes.find((x) => x.native)?.value ?? '';
+            const follows = f.source === 'attachment' ? c.attachments.find((a) => a.id === f.refId)?.filename
+              : f.source === 'formwork' ? c.formworks.find((w) => w.id === f.refId)?.name : null;
+            return (
+              <div key={c.type} className="grid items-center gap-2 px-3 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,0.8fr)]" data-testid={`format-row-${c.type}`}>
+                <div className="min-w-0">
+                  <div className="truncate text-[13px] font-semibold text-slate-800">{c.output}</div>
+                  <div className="text-[11px] text-slate-500">{sourceLabel[f.source]}{follows ? ` · ${follows}` : c.houseTemplate && f.source === 'system' ? ` · ${c.houseTemplate}` : ''}</div>
+                </div>
+                <select aria-label={`Layout for ${c.output}`} disabled={locked || c.sources.length === 1} value={layoutValue(f)}
+                  onChange={(e) => setFormat(c.output, { ...parse(e.target.value), fileType: f.fileType })}
+                  className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-brand-400 focus:outline-none disabled:bg-slate-50 disabled:text-slate-500">
+                  <option value="system">System standard{c.houseTemplate ? ` (${c.houseTemplate})` : ''}</option>
+                  {c.sources.includes('attachment') && c.attachments.length > 0 && (
+                    <optgroup label="Follow an attached file">
+                      {c.attachments.map((a) => <option key={a.id} value={`attachment:${a.id}`}>{a.filename}</option>)}
+                    </optgroup>
+                  )}
+                  {c.sources.includes('formwork') && c.formworks.length > 0 && (
+                    <optgroup label="Follow a template">
+                      {c.formworks.map((w) => <option key={w.id} value={`formwork:${w.id}`}>{w.name}{w.scope === 'platform' ? ' (platform)' : ''}</option>)}
+                    </optgroup>
+                  )}
+                </select>
+                <select aria-label={`Delivered file type for ${c.output}`} disabled={locked || c.fileTypes.length === 1} value={ft}
+                  onChange={(e) => setFormat(c.output, { ...f, fileType: e.target.value })}
+                  className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-brand-400 focus:outline-none disabled:bg-slate-50 disabled:text-slate-500">
+                  {c.fileTypes.map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}
+                </select>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
   };
 
   // D-112 Phase C: a concise, chat-style summary of what the agent proposed, logged
@@ -1229,28 +1327,7 @@ export default function StageWorkspace({
                         </div>
                       )}
 
-                      {/* Output format — an explicit choice (no prose inference) */}
-                      <div>
-                        <SectionLabel icon="file" hint="choose one">Output format</SectionLabel>
-                        <div className="grid gap-2 sm:grid-cols-2">
-                          <label className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 ${effectiveFormatMode === 'system' ? 'border-brand-300 bg-brand-50/40' : 'border-slate-200 hover:border-slate-300'}`}>
-                            <input type="radio" name="formatMode" className="mt-1 h-4 w-4 accent-brand-600" disabled={locked} checked={effectiveFormatMode === 'system'} onChange={() => setFormatMode('system')} />
-                            <span className="text-xs">
-                              <span className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-800"><Icon name="sparkles" size={13} />System’s recommended format</span>
-                              <span className="text-slate-500">The standard template for this stage.</span>
-                            </span>
-                          </label>
-                          <label className={`flex items-start gap-3 rounded-lg border px-3 py-2 ${attachments.length ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'} ${effectiveFormatMode === 'attached' ? 'border-brand-300 bg-brand-50/40' : 'border-slate-200 hover:border-slate-300'}`}>
-                            <input type="radio" name="formatMode" className="mt-1 h-4 w-4 accent-brand-600" disabled={!attachments.length || locked} checked={effectiveFormatMode === 'attached'} onChange={() => setFormatMode('attached')} />
-                            <span className="text-xs">
-                              <span className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-800"><Icon name="paperclip" size={13} />Follow my attached document</span>
-                              <span className="text-slate-500">
-                                {attachments.length ? `Mirror ${attachments.map((a) => a.filename).join(', ')} exactly.` : 'Attach a document above to enable this.'}
-                              </span>
-                            </span>
-                          </label>
-                        </div>
-                      </div>
+                      {renderFormats()}
 
                       {plan.intel.recommendation && (
                         <Callout tone="advice" title="Advice">{plan.intel.recommendation}</Callout>

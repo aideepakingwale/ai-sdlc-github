@@ -176,3 +176,26 @@ def catalog(outputs: list[str]) -> list[dict[str, Any]]:
                     "fileTypes": [{"value": f, "label": FILE_LABELS.get(f, f), "native": i == 0}
                                   for i, f in enumerate(file_types_for(t))]})
     return out
+
+
+def convert_file(artifact_type: str, content: str, filename: str, target: str) -> tuple[str, str]:
+    """Deterministic (no model) conversion of an artifact's content to the requested delivered file
+    type. Only OPENAPI converts (YAML <-> JSON); everything else is returned unchanged. Returns
+    (content, filename). Raises VALIDATION_FAILED for a type this artifact cannot be delivered as."""
+    t = norm_type(artifact_type)
+    already = filename.lower().endswith((".yaml", ".yml") if target == "yaml" else (".json",))
+    if not target or (target == native_file_type(t) and (t != "OPENAPI" or already)):
+        return content, filename
+    if target not in file_types_for(t):
+        raise SdlcError("VALIDATION_FAILED", f"{t} cannot be delivered as '{target}'")
+    if t == "OPENAPI" and target in ("json", "yaml"):
+        import yaml
+        try:
+            doc = yaml.safe_load(content)
+        except yaml.YAMLError as err:
+            raise SdlcError("VALIDATION_FAILED", f"the spec is not valid YAML/JSON, so it cannot be converted: {err}") from err
+        stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+        if target == "json":
+            return json.dumps(doc, indent=2, ensure_ascii=False) + "\n", f"{stem}.json"
+        return yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), f"{stem}.yaml"
+    return content, filename          # docx / pdf / html are rendered in the browser from the document view
