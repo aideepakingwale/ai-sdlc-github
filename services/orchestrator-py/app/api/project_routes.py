@@ -451,6 +451,21 @@ async def update_stage_plan(
     return await container.chat.save_plan(project_id=project_id, phase=phase_id, user=user, overlay=body.model_dump())
 
 
+class _AmendMode(BaseModel):
+    mode: str
+
+
+@router.put("/api/projects/{project_id}/phase/{phase_id}/plan/amend-mode")
+async def set_amend_mode(
+    project_id: str, phase_id: int, body: _AmendMode,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """After 'changes requested': extend the existing work ('amend') or start from a blank slate ('fresh')."""
+    if not 1 <= phase_id <= 12:
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+    return await container.chat.set_amend_mode(project_id=project_id, phase=phase_id, user=user, mode=body.mode)
+
+
 @router.post("/api/projects/{project_id}/phase/{phase_id}/plan/trigger")
 async def trigger_stage_plan(
     project_id: str, phase_id: int,

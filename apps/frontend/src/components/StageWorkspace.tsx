@@ -113,6 +113,8 @@ interface StagePlan {
   overlay: { promptOverlay: string; referencedArtifactIds: string[]; attachmentIds: string[]; formworkIds: string[]; artifactFormats?: Record<string, ArtifactFormat>; origin: string };
   /** Per artifact: what layouts and file types it supports, and the current choice. */
   formatCatalog?: FormatOption[];
+  /** Set while a stage is being amended after 'changes requested' (null otherwise). */
+  amend?: { mode: 'pending' | 'amend' | 'fresh'; base: string } | null;
   prompt: { system: string; user: string };
 }
 
@@ -341,6 +343,21 @@ export default function StageWorkspace({
   const stages = flow.stages;
   const byKey = useMemo(() => new Map(stages.map((s) => [s.key, s])), [stages]);
   const stage = stages.find((s) => s.phase === selectedSeq) ?? stages[0];
+
+  // A stage whose changes were requested always loads its saved plan, so the amend / blank-slate choice
+  // (and the instructions it carries over) is there even if no plan was reviewed in this tab.
+  const amendStatus = stage?.status;
+  useEffect(() => {
+    if (!selectedSeq || amendStatus !== 'AMEND_REQUESTED' || plan) return;
+    let cancelled = false;
+    api.get<StagePlan>(`/api/projects/${projectId}/phase/${selectedSeq}/plan?cached=true`).then((p) => {
+      if (cancelled) return;
+      setPlan(p);
+      setPrompt((cur) => cur || (p.overlay.promptOverlay ?? '').split(/##\s*Production scope/)[0]!.trim());
+    }).catch(() => { /* the normal Review plan flow applies */ });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, selectedSeq, amendStatus, plan === null]);
   const idx = stages.findIndex((s) => s.phase === stage?.phase);
   const runnable = stage ? isRunnable(stage, byKey) : false;
 
@@ -523,12 +540,29 @@ export default function StageWorkspace({
     }
   }
 
+  // Amend & re-plan: extend what the stage already knew, or start from a blank slate.
+  const [amendBusy, setAmendBusy] = useState(false);
+  async function chooseAmend(mode: 'amend' | 'fresh') {
+    if (amendBusy || locked) return;
+    setAmendBusy(true);
+    try {
+      await api.put(`/api/projects/${projectId}/phase/${selectedSeq}/plan/amend-mode`, { mode });
+      const p = await api.get<StagePlan>(`/api/projects/${projectId}/phase/${selectedSeq}/plan?cached=true`);
+      setPlan(p);
+      setPrompt((p.overlay.promptOverlay ?? '').split(/##\s*Production scope/)[0]!.trim());
+      void qc.invalidateQueries({ queryKey: ['clarification', projectId, selectedSeq] });
+      void qc.invalidateQueries({ queryKey: ['project', projectId] });
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : 'Could not change how this stage is re-planned');
+    } finally { setAmendBusy(false); }
+  }
+
   // D-56: save the overlay and (re-)render the full plan — "Review / Update plan".
   // D-112 Phase C: `append` folds a free-form refinement into the overlay (additive,
   // so earlier guidance is kept) and `logTurns` records the exchange in the thread.
   async function reviewPlan(e?: FormEvent, opts?: { append?: string; logTurns?: boolean; userMessage?: string }) {
     e?.preventDefault();
-    if (planBusy || locked || promptError) return;
+    if (planBusy || locked || promptError || plan?.amend?.mode === 'pending') return;
     setPlanBusy(true);
     const append = opts?.append?.trim();
     const nextPrompt = append ? (prompt.trim() ? `${prompt.trim()}\n${append}` : append) : prompt;
@@ -846,7 +880,7 @@ export default function StageWorkspace({
   });
   const guideButton: { label: string; icon: IconName; run: () => void; disabled?: boolean } | null = (() => {
     switch (guide.next.action) {
-      case 'review-plan': return { label: 'Review plan', icon: 'search', run: () => (promptError ? textareaRef.current?.focus() : void reviewPlan()), disabled: planBusy || locked };
+      case 'review-plan': return { label: 'Review plan', icon: 'search', run: () => (promptError ? textareaRef.current?.focus() : void reviewPlan()), disabled: planBusy || locked || plan?.amend?.mode === 'pending' };
       case 'update-plan': return { label: 'Update plan', icon: 'refresh', run: () => void reviewPlan(), disabled: !canReviewPlan };
       case 'generate': return { label: 'Generate', icon: 'play', run: () => void triggerPlan(), disabled: !planFresh || !plan?.canEdit };
       case 'open-gate': return { label: 'Go to review', icon: 'arrow-right', run: () => document.getElementById('gate-review')?.scrollIntoView({ behavior: 'smooth', block: 'start' }) };
@@ -1100,9 +1134,36 @@ export default function StageWorkspace({
               </div>
             </div>
             {stage.status === 'AMEND_REQUESTED' && (
-              <Callout tone="warning" className="mb-3" title="Changes were requested at gate review" compact>
-                The reviewer’s feedback is pre-filled below. Adjust it, then review the plan and generate again.
-              </Callout>
+              plan?.amend?.mode === 'pending' || !plan?.amend ? (
+                <section className="mb-3 rounded-xl border border-amber-300 bg-amber-50/70 p-4" data-testid="amend-choice">
+                  <div className="text-sm font-bold text-amber-900">Changes were requested — how should this stage be re-planned?</div>
+                  <p className="mt-0.5 text-xs text-amber-800">
+                    Your earlier instructions, answered questions and discussion, and the previous version are all still on record.
+                  </p>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <button type="button" disabled={amendBusy || !plan?.amend} onClick={() => void chooseAmend('amend')} data-testid="amend-keep"
+                      className="rounded-lg border border-brand-300 bg-white p-3 text-left hover:border-brand-500 disabled:opacity-50">
+                      <div className="text-sm font-semibold text-slate-800">Amend the existing work <span className="ml-1 rounded bg-brand-100 px-1.5 py-0.5 text-[10px] font-semibold text-brand-700">recommended</span></div>
+                      <div className="mt-0.5 text-[11px] text-slate-500">Keep everything decided so far. Your changes extend it; the planner, the project-fit check and the agent all see the history and the previous version.</div>
+                    </button>
+                    <button type="button" disabled={amendBusy || !plan?.amend} onClick={() => void chooseAmend('fresh')} data-testid="amend-fresh"
+                      className="rounded-lg border border-slate-300 bg-white p-3 text-left hover:border-slate-500 disabled:opacity-50">
+                      <div className="text-sm font-semibold text-slate-800">Start from a blank slate</div>
+                      <div className="mt-0.5 text-[11px] text-slate-500">Set aside the earlier answers, analysis and previous version; only your new instructions apply (attached files stay).</div>
+                    </button>
+                  </div>
+                </section>
+              ) : (
+                <Callout tone="warning" className="mb-3" title={plan.amend.mode === 'amend' ? 'Amending — the earlier context is kept' : 'Starting from a blank slate'} compact>
+                  {plan.amend.mode === 'amend'
+                    ? 'The earlier instructions, answers and the previous version stay in context; your changes below extend them.'
+                    : 'Earlier answers and the previous version are set aside; only the instructions below apply.'}{' '}
+                  <button type="button" onClick={() => void chooseAmend(plan.amend!.mode === 'amend' ? 'fresh' : 'amend')} disabled={amendBusy || locked}
+                    className="font-semibold underline disabled:opacity-40" data-testid="amend-switch">
+                    {plan.amend.mode === 'amend' ? 'Start fresh instead' : 'Keep the history instead'}
+                  </button>
+                </Callout>
+              )
             )}
             <form onSubmit={onReviewSubmit}>
               <PromptEditor

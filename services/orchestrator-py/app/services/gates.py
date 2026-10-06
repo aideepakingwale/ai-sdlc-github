@@ -154,6 +154,9 @@ class GateService:
                 step_overrides=_stored_overrides(existing),
                 origin="amend", updated_by=user.id,
             )
+            # The reviewer now chooses: extend what the stage already knew, or start from a blank slate.
+            # The earlier instructions are kept as the base either way, so the choice can be switched.
+            await self._db.set_stage_amend(project_id, phase, "pending", base.rstrip())
         except Exception as err:  # noqa: BLE001 — draft seeding is best-effort
             log.error("amend plan-draft seed failed: %s", err)
         return {"projectId": project_id, "phase": phase, "status": "AMEND_REQUESTED", "nextPhase": None, "planReview": True}

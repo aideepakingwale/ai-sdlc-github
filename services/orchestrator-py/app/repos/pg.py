@@ -653,6 +653,20 @@ class Database:
             None if artifact_formats is None else _json.dumps(artifact_formats),
         )
 
+    async def set_stage_amend(self, project_id: str, phase: int, mode: str | None, base: str | None = None,
+                              *, keep_base: bool = False) -> None:
+        """Record how an amendment is being re-planned. `keep_base` leaves the stored base untouched."""
+        assert self.pool
+        if keep_base:
+            await self.pool.execute("UPDATE stage_plans SET amend_mode=$3 WHERE project_id=$1 AND phase=$2", project_id, phase, mode)
+        else:
+            await self.pool.execute("UPDATE stage_plans SET amend_mode=$3, amend_base=$4 WHERE project_id=$1 AND phase=$2",
+                                    project_id, phase, mode, base)
+
+    async def delete_stage_traits(self, project_id: str, phase: int) -> None:
+        assert self.pool
+        await self.pool.execute("DELETE FROM stage_traits WHERE project_id=$1 AND phase=$2", project_id, phase)
+
     async def delete_stage_plan(self, project_id: str, phase: int) -> None:
         assert self.pool
         await self.pool.execute("DELETE FROM stage_plans WHERE project_id=$1 AND phase=$2", project_id, phase)

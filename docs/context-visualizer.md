@@ -77,3 +77,19 @@ Checking the graph against a real, generated project showed that "Retrieved know
 own earlier output and the output of later stages (every artifact is indexed as soon as it is saved).
 Retrieval now counts project artifacts only from the stage's upstream stages; enterprise standards and
 codebase files are unaffected. The same rule feeds the prompt, the plan preview and the context manifest.
+
+## Amend & re-plan
+
+When a reviewer requests changes, the stage returns to plan review and the writer chooses how to re-plan
+(`PUT /phase/{n}/plan/amend-mode`, stored as `stage_plans.amend_mode`, migration 0036):
+
+- **Amend the existing work** (`amend`, recommended): the instructions the stage carried (original request,
+  answered clarifications, earlier amendments) are kept as a protected base and are never overwritten by an edit.
+  The planner and the project-fit judgement also see the stage's saved discussion and the deliverables being
+  amended, the agent receives the previous version of those deliverables, and the context graph shows them in the
+  "Amendment & history" layer.
+- **Start from a blank slate** (`fresh`): only the new instructions apply; answered clarifications, the stored plan
+  analysis and the project-fit judgement are discarded and re-derived. Attached files stay. The choice can be
+  switched until generation starts.
+
+Planning and generation are blocked while the choice is `pending`.

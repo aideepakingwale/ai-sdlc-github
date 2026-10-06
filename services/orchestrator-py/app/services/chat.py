@@ -44,6 +44,13 @@ LAYOUT_CHARS = 14_000          # how much of an attached layout document is show
 log = logging.getLogger("chat")
 
 
+def _clip_instructions(text: str, limit: int = 8000) -> str:
+    """Keep the start (the original request) and the end (the latest amendment) of long instructions."""
+    if len(text) <= limit:
+        return text
+    return text[: limit // 2] + "\n[… middle omitted …]\n" + text[-limit // 2:]
+
+
 class SectionPick(BaseModel):
     """The sections of an attached document a light model chose to keep in full."""
     ids: list[int] = Field(default_factory=list, max_length=60)
@@ -966,6 +973,7 @@ class ChatService:
             "tools": sorted(available_tools), "outputs": sorted(outputs),
             "arts": art_digest, "canon": canon_applied, "persona": stage.get("persona"),
             "attn": sorted(att_names), "fwn": sorted(fw_names), "na": sorted(applicability or {}),
+            "hist": overlay.get("history", ""),
         }, sort_keys=True)
         sig = hashlib.sha256(sig_src.encode()).hexdigest()[:16]
         ckey = f"sdlc:planintel:{project['id']}:{phase}"
@@ -1053,6 +1061,7 @@ class ChatService:
             "so": step_overrides, "to": trait_overrides,
             "stack": project.get("tech_stack"), "name": project.get("name"),
             "arts": sorted(str(a["id"]) for a in prior_arts),
+            "am": ChatService._amend_of(row)[0],
         }
         return hashlib.sha256(json.dumps(src, sort_keys=True, default=str).encode()).hexdigest()[:20]
 
@@ -1095,6 +1104,8 @@ class ChatService:
             raise SdlcError("GATE_CONFLICT", "This stage is already generating")
         if st["building"]:
             raise SdlcError("GATE_CONFLICT", "The plan is still being built — wait for it to finish")
+        if self._amend_of(await self._db.get_stage_plan(project_id, phase))[0] == "pending":
+            raise SdlcError("GATE_CONFLICT", "Choose how to re-plan first: amend the existing work or start from a blank slate")
         if not st["planned"]:
             raise SdlcError("GATE_CONFLICT", "Review the plan before generating")
         if st["stale"]:
@@ -1136,8 +1147,11 @@ class ChatService:
               "standard output list that this project would clearly need, each with a one-line reason.\n"
             f"PRIOR-STAGE ARTIFACTS: {art_digest}.\n"
             f"CANON RULES APPLIED: {'yes' if canon_applied else 'no'}.\n\n"
-            f"USER INPUT / INSTRUCTIONS for this stage:\n"
-            f"{(overlay.get('promptOverlay') or '(none — infer from the stage and context)')[:4000]}\n\n"
+            + (f"{overlay['history']}\nWhen restating what you understood, cover the WHOLE intent - the original request, the "
+               "answers already given and every amendment so far - and say what THIS amendment changes. Never present only the "
+               "newest instruction.\n" if overlay.get("history") else "")
+            + f"USER INPUT / INSTRUCTIONS for this stage:\n"
+            f"{_clip_instructions(overlay.get('promptOverlay') or '(none — infer from the stage and context)')}\n\n"
             "Produce the proposal: `understood` (restate the intent); `willProduce` (each declared output "
             "with recommended=true/false + a one-line reason, honouring what the user actually asked for); "
             "`formatSource` (default template / an attached file's sections / a formwork); `outOfScope`; a "
@@ -1323,6 +1337,9 @@ class ChatService:
             "artifactFormats": self._formats_of(row),
             "origin": row["origin"] if row else "new",
         }
+        amend_mode, amend_base = self._amend_of(row)
+        overlay["history"] = await self._amend_history(project_id, phase, row)   # '' unless amending
+        overlay["amendMode"] = amend_mode or ""
         # Pending interactive clarification (D-108): the UI renders these as answer cards.
         clarification = None
         if row and row["clarification_json"]:
@@ -1347,7 +1364,8 @@ class ChatService:
         fit_upstream += [a.get("filename", "") for a in fit_attachments]
         fit_upstream.append(self._project_profile(project))
         trait_detail = await self.resolve_project_traits(
-            project=project, phase=phase, user_text=overlay.get("promptOverlay", ""),
+            project=project, phase=phase,
+            user_text=(overlay.get("promptOverlay", "") + ("\n\n" + overlay["history"] if overlay.get("history") else "")),
             upstream=fit_upstream, allow_llm=run_intel)
         not_applicable = inapplicable_types(trait_values({k: v for k, v in trait_detail.items() if k[0] != "_"}),
                                             stage["template"])
@@ -1467,6 +1485,8 @@ class ChatService:
                 "artifactFormats": overlay.get("artifactFormats") or {},
                 "stepOverrides": step_overrides,
             },
+            # Amend & re-plan: null when the stage is not being amended.
+            "amend": ({"mode": amend_mode, "base": amend_base} if amend_mode else None),
             "prompt": {"system": system, "user": user_prompt},
         }
 
@@ -1483,8 +1503,14 @@ class ChatService:
             formats = validate_formats(overlay["artifactFormats"], self._stage_output_types(stage))
             await self._assert_format_refs(project_id, phase, formats)
         row = await self._db.get_stage_plan(project_id, phase)
+        new_text = overlay.get("promptOverlay", "") or ""
+        mode, base = self._amend_of(row)
+        if mode == "amend" and base and not new_text.startswith(base):
+            # Amending extends what the stage already knew: an edit that lost the earlier instructions
+            # (an empty editor, a replaced text) never overwrites them.
+            new_text = f"{base}\n\n{new_text.strip()}".strip()
         await self._db.upsert_stage_plan(
-            project_id=project_id, phase=phase, prompt_overlay=overlay.get("promptOverlay", ""),
+            project_id=project_id, phase=phase, prompt_overlay=new_text,
             referenced_artifact_ids=overlay.get("referencedArtifactIds") or [],
             attachment_ids=overlay.get("attachmentIds") or [],
             formwork_ids=overlay.get("formworkIds") or [],
@@ -1526,6 +1552,97 @@ class ChatService:
     def _format_lines(rows: list[dict[str, str]]) -> str:
         return "\n".join(f"- {r['artifact']} — layout: {r['layout']}; delivered as {r['deliveredAs']}" for r in rows)
 
+    @staticmethod
+    def _amend_of(row: Any) -> tuple[str | None, str]:
+        """(mode, base) of an amendment re-plan: mode is None | 'pending' | 'amend' | 'fresh'."""
+        try:
+            return (row["amend_mode"] or None), (row["amend_base"] or "")
+        except (KeyError, IndexError, TypeError):
+            return None, ""
+
+    async def _amend_history(self, project_id: str, phase: int, row: Any) -> str:
+        """While a stage is being AMENDED (not restarted), what the planner and the project-fit judgement
+        must still take into account beyond the instruction text: the stage's saved discussion (questions,
+        answers, earlier plans) and the deliverables of the version being amended."""
+        mode, _ = self._amend_of(row)
+        if mode != "amend":
+            return ""
+        lines: list[str] = []
+        try:
+            session = await self._db.get_session(project_id)
+            msgs = [m for m in (await self._db.list_chat(session["id"]) if session else []) if m["phase"] == phase]
+            for m in msgs[-16:]:
+                who = "Reviewer" if m["role"] == "user" else "Agent"
+                text = re.sub(r"\s+", " ", str(m["content"] or "")).strip()
+                if text:
+                    lines.append(f"- {who}: {text[:400]}")
+        except Exception:  # noqa: BLE001 - history is advisory
+            log.warning("could not read the stage discussion", exc_info=True)
+        arts = [f"{a['type']}: {a['title']}" for a in await self._db.list_artefacts(project_id) if a["phase"] == phase]
+        out = ("THIS STAGE IS BEING AMENDED. Everything already decided stays in force; the newest reviewer changes EXTEND it.\n")
+        if lines:
+            out += "Discussion so far in this stage:\n" + "\n".join(lines) + "\n"
+        if arts:
+            out += "Deliverables of the version being amended: " + "; ".join(arts[:12]) + "\n"
+        return out
+
+    async def set_amend_mode(self, *, project_id: str, phase: int, user: UserPublic, mode: str) -> dict[str, Any]:
+        """The reviewer's choice when re-planning after 'changes requested': EXTEND what the stage already
+        knew ('amend') or start from a blank slate ('fresh'). Switchable until generation starts."""
+        if mode not in ("amend", "fresh"):
+            raise SdlcError("VALIDATION_FAILED", "mode must be 'amend' or 'fresh'")
+        _, stage = await self._stage_for(project_id, phase)
+        if not await self._can_write_stage(project_id, stage, user):
+            raise SdlcError("FORBIDDEN", f"Re-planning '{stage['name']}' requires write permission ({' or '.join(self._stage_writers(stage))})")
+        await self.assert_not_generating(project_id, phase)
+        row = await self._db.get_stage_plan(project_id, phase)
+        cur, base = self._amend_of(row)
+        if cur is None:
+            raise SdlcError("GATE_CONFLICT", "This stage has no pending amendment to re-plan")
+        overlay = ((row["prompt_overlay"] if row else "") or "").strip()
+        delta = overlay[len(base):].strip() if base and overlay.startswith(base) else overlay
+        if mode == "amend":
+            new_overlay = f"{base}\n\n{delta}".strip() if base and cur != "amend" else overlay
+        else:
+            if cur == "fresh":
+                return {"projectId": project_id, "phase": phase, "mode": mode}
+            blocks = list(self._AMEND_RE.finditer(delta))
+            new_overlay = (f"Reviewer's requested changes ({blocks[-1].group(1)}):\n{blocks[-1].group(2)}".strip()
+                           if blocks else delta)
+        await self._db.upsert_stage_plan(
+            project_id=project_id, phase=phase, prompt_overlay=new_overlay,
+            referenced_artifact_ids=(row["referenced_artifact_ids"] if row else []) or [],
+            attachment_ids=(row["attachment_ids"] if row else []) or [],
+            formwork_ids=(row["formwork_ids"] if row else []) or [],
+            step_overrides=self._step_overrides(row), origin=(row["origin"] if row else "amend"), updated_by=user.id,
+        )
+        await self._db.set_stage_amend(project_id, phase, mode, keep_base=True)
+        if mode == "fresh":
+            # A blank slate: answered clarifications, the AI's judgement of the project and the earlier plan
+            # analysis are all discarded so they are re-derived from the new instructions alone.
+            await self._db.set_stage_clarification(project_id, phase, None)
+            await self._db.set_stage_plan_intel(project_id, phase, None)
+            await self._db.delete_stage_traits(project_id, phase)
+            try:
+                await self._redis.delete(f"sdlc:planintel:{project_id}:{phase}")
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            session = await self._db.get_session(project_id)
+            if session:
+                await self._db.insert_chat_turn(
+                    session["id"], phase,
+                    "Re-plan choice: " + ("amend the existing work" if mode == "amend" else "start from a blank slate"),
+                    ("Keeping the earlier instructions, answers, discussion and the previous version as context; "
+                     "your changes extend them." if mode == "amend" else
+                     "Starting fresh: earlier answers and the previous version are set aside; only your new instructions apply."))
+        except Exception:  # noqa: BLE001
+            log.warning("could not record the re-plan choice", exc_info=True)
+        self._audit.record(project_id=project_id, phase=phase, agent_role="Orchestrator",
+                           event="plan.amend_mode_chosen", human_reviewer=user.email,
+                           detail={"stage": stage["key"], "mode": mode})
+        return {"projectId": project_id, "phase": phase, "mode": mode}
+
     _AMEND_RE = re.compile(
         r"Reviewer's requested changes \(([^)]*)\):\n(.*?)(?=\n\nReviewer's requested changes \(|\n\n## |\Z)", re.S)
 
@@ -1540,7 +1657,7 @@ class ChatService:
         if amending is None:
             st = await self._dynamo.get_phase_state(project_id, phase)
             amending = bool(st and st.get("status") == "AMEND_REQUESTED")
-        if not amending:
+        if not amending or self._amend_of(await self._db.get_stage_plan(project_id, phase))[0] == "fresh":
             return ""
         budget = int(getattr(getattr(self, "_settings", None), "REVISION_CONTEXT_CHARS", 60_000) or 60_000)
         rows = [r for r in await self._db.list_artefacts(project_id) if r["phase"] == phase]
