@@ -107,6 +107,8 @@ class Settings(BaseSettings):
     # output quality on real Bedrock before enabling in production.
     PER_ARTIFACT_GENERATION: bool = False
     PER_ARTIFACT_MAX_PARALLEL: int = 4
+    # A long markdown document that did not fit one response is written in parts of this many sections each.
+    DOC_PART_SECTIONS: int = 3
     # Number of background workers consuming the stage-generation queue (D-99).
     # Bounds how many stage runs execute concurrently across the platform.
     GENERATION_WORKERS: int = 4

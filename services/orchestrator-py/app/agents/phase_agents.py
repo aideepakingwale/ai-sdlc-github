@@ -13,7 +13,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal, Union, get_args, get_origin
 
-from pydantic import BaseModel, TypeAdapter, create_model
+from pydantic import BaseModel, Field, TypeAdapter, create_model
 
 from ..config import Settings
 from ..domain.errors import SdlcError
@@ -295,6 +295,63 @@ def _add(artifacts: list[ContextArtifact], a: ContextArtifact | None) -> None:
         artifacts.append(a)
 
 
+class _DocSection(BaseModel):
+    title: str
+    covers: str = ""        # one line: what the section must contain
+
+
+class _DocOutline(BaseModel):
+    sections: list[_DocSection] = Field(min_length=1, max_length=24)
+
+
+async def _generate_markdown_in_parts(
+    *, deps: "AgentDeps", system: str, user: str, field_name: str, intent: str, base_tag: str,
+    max_tokens: int, model: str | None, role: str | None, emit: Emit,
+) -> tuple[str, LlmResult]:
+    """A markdown document too long for one response is written in PARTS: a short outline first, then
+    the sections in small groups (a few at a time, in parallel), each told the whole outline so the parts
+    stay consistent and do not repeat each other, and joined in outline order. Used when the single-shot
+    call is cut off at the model's output limit."""
+    outline, res = await deps.llm.generate_json(
+        intent=intent, tag=f"{base_tag}:{field_name}:outline", max_attempts=2,
+        messages=[{"role": "system", "content": system, "cache": True},
+                  {"role": "user", "content": (
+                      f"{user}\n\n---\nThe `{field_name}` document is long, so it will be written in parts. First produce ONLY its "
+                      'outline as JSON {"sections": [{"title": "...", "covers": "one line: what it must contain"}]} - the '
+                      "document's real top-level sections in order (at most 20), following any governing format exactly.")}],
+        schema=_DocOutline, max_tokens=4_000, model=model, role=role,
+    )
+    sections = outline.sections
+    per_part = max(1, getattr(deps.settings, "DOC_PART_SECTIONS", 3))
+    groups = [sections[i:i + per_part] for i in range(0, len(sections), per_part)]
+    toc = "\n".join(f"{i}. {sec.title} - {sec.covers}" for i, sec in enumerate(sections, 1))
+    sem = asyncio.Semaphore(max(1, getattr(deps.settings, "PER_ARTIFACT_MAX_PARALLEL", 4)))
+    emit({"type": "node", "node": "agent",
+          "label": f"{field_name} is long - writing it in {len(groups)} parts ({len(sections)} sections)"})
+
+    async def write(idx: int, group: list[_DocSection]) -> tuple[str, LlmResult]:
+        mine = "; ".join(sec.title for sec in group)
+        async with sem:
+            r = await deps.llm.generate(
+                intent=intent, tag=f"{base_tag}:{field_name}:part{idx + 1}", max_tokens=max_tokens, model=model, role=role,
+                messages=[{"role": "system", "content": system, "cache": True},
+                          {"role": "user", "content": (
+                              f"{user}\n\n---\nYou are writing PART {idx + 1} of {len(groups)} of the `{field_name}` document. Full outline:\n{toc}\n\n"
+                              f"Write ONLY these sections, in full, as markdown: {mine}. Use the outline's exact section titles as headings, "
+                              "keep numbering consistent with the outline, do not write any other section, and add no preamble, closing remarks or code "
+                              "fence around the document." + (" Start with the document's single '# ' title heading." if idx == 0 else
+                                                              " Do NOT repeat the document title."))}],
+            )
+        return (r.content or "").strip(), r
+
+    parts = await asyncio.gather(*(write(i, g) for i, g in enumerate(groups)))
+    text = "\n\n".join(t for t, _ in parts if t)
+    if any(r.truncated for _, r in parts):
+        emit({"type": "node", "node": "guardrail", "status": "error",
+              "label": f"A part of {field_name} was still cut off - retrigger that part to complete it"})
+    return text, parts[-1][1] if parts else res
+
+
 async def _generate_phase_split(
     *, deps: "AgentDeps", state: "AgentState", system: str, user: str,
     schema: type[BaseModel], base_tag: str, intent: str, max_tokens: int,
@@ -340,12 +397,24 @@ async def _generate_phase_split(
             f"above, to the same enterprise standard and consistent with the rest. Return JSON of "
             f'exactly the form {{"{field_name}": ...}} conforming to the schema — nothing else.'
         )
-        inst, res = await deps.llm.generate_json(
-            intent=intent, tag=f"{base_tag}:{field_name}",
-            messages=[{"role": "system", "content": system, "cache": True},
-                      {"role": "user", "content": instruction}],
-            schema=wrapper, max_tokens=max_tokens, model=model, role=role,
-        )
+        long_text = fi.annotation is str            # a markdown document field (e.g. lldMarkdown)
+        try:
+            inst, res = await deps.llm.generate_json(
+                intent=intent, tag=f"{base_tag}:{field_name}",
+                messages=[{"role": "system", "content": system, "cache": True},
+                          {"role": "user", "content": instruction}],
+                schema=wrapper, max_tokens=max_tokens, model=model, role=role,
+                # one shot for a long document: if it is cut off, writing it in parts beats re-asking for the same size
+                max_attempts=1 if long_text else 3,
+            )
+        except SdlcError as err:
+            if not long_text:
+                raise
+            log.info("%s did not fit one response (%s); writing it in parts", field_name, str(err)[:120])
+            text, res = await _generate_markdown_in_parts(
+                deps=deps, system=system, user=user, field_name=field_name, intent=intent, base_tag=base_tag,
+                max_tokens=max_tokens, model=model, role=role, emit=emit)
+            inst = wrapper.model_validate({field_name: text})
         return field_name, getattr(inst, field_name), res
 
     values: dict[str, Any] = {}
