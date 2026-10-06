@@ -27,9 +27,11 @@ Return STRICT JSON only, matching:
 {"needs_clarification": <true|false>, "questions": [
   {"id": "kebab-case-id", "question": "<specific, answerable question>", "header": "<=12 char chip label",
    "options": [{"label": "<short choice>", "description": "<one line: what it means / its trade-off>"}],
-   "multiSelect": <true|false>, "rationale": "<one line: why this matters>"}
+   "multiSelect": <true|false>, "rationale": "<one line: why this matters>", "needsDocument": <true|false>}
 ]}
 
 For EACH question, provide 2-4 concrete, mutually-exclusive predefined options, each with a one-line description — a recommended/most-common option first where there is one. The UI automatically adds an "Other" free-text choice, so do NOT add it yourself. Set multiSelect=true only when several options can legitimately apply together. Make options specific to THIS request and context (e.g. for a cloud question offer the plausible providers, not generic text).
+
+Set needsDocument=true when the gap is a specific document, spec, diagram, template or data file the requester may simply have forgotten to attach (the UI then offers an upload in the same card). Otherwise false.
 
 If clarification is needed, list at most ${max_questions} questions, ordered by how much they affect the outcome. If not, return needs_clarification=false and an empty questions array. Output the JSON object and nothing else.

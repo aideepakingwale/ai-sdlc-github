@@ -1099,7 +1099,7 @@ async def _persist_validation_feedback(
                     + (f" [{dims}]" if dims else "")).strip(),
     }]
     issues = score_signal + [
-        {"category": i.area or "quality", "severity": i.severity,
+        {"category": "missing-document" if i.missingDocument else (i.area or "quality"), "severity": i.severity,
          "comment": (i.problem + (f" — Fix: {i.fix}" if i.fix else "")).strip()}
         for i in verdict.issues
     ]

@@ -347,6 +347,7 @@ class ValidationIssue(BaseModel):
     area: str = ""          # e.g. "intent", "completeness", "correctness", a field name
     problem: str            # what is wrong
     fix: str = ""           # the concrete change the reworking agent should make
+    missingDocument: bool = False   # the gap is a document the requester could upload
 
 
 class ValidationVerdict(BaseModel):
@@ -477,6 +478,10 @@ class ClarificationQuestion(BaseModel):
     )
     multiSelect: bool = Field(default=False, description="True if several options may apply.")
     rationale: str = Field(default="", description="One line: why this matters to the outcome.")
+    needsDocument: bool = Field(
+        default=False,
+        description="True when the gap is a document/file the requester may simply have forgotten to attach; "
+                    "the UI then offers an upload in the same card.")
 
 
 class ClarificationOutput(BaseModel):
