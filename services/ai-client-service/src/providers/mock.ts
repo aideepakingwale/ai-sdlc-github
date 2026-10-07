@@ -284,6 +284,21 @@ function render(kind: string, topic: string, seed: string, userText: string): st
         message: 'fix(ai): remove invalid type assignment flagged by CI',
       });
 
+    case 'security_review':
+      // Gate-time / on-demand security review (offline): a small, fixed report so the review is visible end to end.
+      return JSON.stringify({
+        rating: 'HIGH',
+        summary: "The design exposes an unauthenticated ingestion path and stores data without a stated encryption key policy.",
+        findings: [
+          { severity: 'critical', area: 'Authentication', finding: 'The ingestion endpoint accepts requests without authentication.', evidence: 'OPENAPI - /ingest has no security scheme', fix: 'Require OAuth2 client-credentials or mTLS on every ingestion route.' },
+          { severity: 'high', area: 'Data protection', finding: 'Encryption at rest is mentioned but no key ownership or rotation is defined.', evidence: 'LLD - Data storage section', fix: 'Use customer-managed KMS keys with annual rotation and document key ownership.' },
+          { severity: 'medium', area: 'Infrastructure', finding: 'The queue policy allows any principal in the account to publish.', evidence: 'CDK - queue resource policy', fix: 'Restrict the queue policy to the producer role ARN.' },
+          { severity: 'low', area: 'Logging', finding: 'Request bodies are logged at INFO level.', evidence: 'LLD - Observability section', fix: 'Log identifiers only; mask payload fields.' },
+        ],
+        gaps: ['No threat model was supplied for the external SaaS integration.'],
+        nextSteps: ['Add authentication to the ingestion API.', 'Define KMS key ownership and rotation.', 'Tighten the queue policy.'],
+      });
+
     case 'fact_check':
       return JSON.stringify({ ok: true, issues: [] });
 
