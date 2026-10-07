@@ -169,3 +169,35 @@ async def test_planning_waits_for_the_choice():
     svc._plan_status, svc._authz = status, SimpleNamespace(assert_project_access=access)
     with pytest.raises(SdlcError, match="how to re-plan"):
         await svc.assert_plan_ready("p", 3, SimpleNamespace())
+
+
+# ----------------------------------------------------------- security review skill
+@pytest.mark.asyncio
+async def test_security_review_reads_the_projects_artifacts_and_reports_what_it_reviewed():
+    from app.services.skills import SKILLS, SkillContext, _security_review
+
+    assert any(s.id == "security_review" and s.phase is None and "TA" in s.roles and "PO" not in s.roles for s in SKILLS)
+
+    class Db:
+        async def list_artefacts(self, pid):
+            return [{"type": "HLD", "title": "HLD v1", "content": "# HLD\nuses S3", "storage_key": None},
+                    {"type": "CDK", "title": "stack", "content": "new Bucket()", "storage_key": None},
+                    {"type": "EPIC", "title": "ignored", "content": "x", "storage_key": None}]
+
+    seen = {}
+
+    class Llm:
+        async def generate(self, **kw):
+            seen["user"] = kw["messages"][-1]["content"]
+            return SimpleNamespace(content="## Summary\nMEDIUM", provider="p", tier="frontier", model="m")
+
+    ctx = SkillContext(project_id="p", phase=3, tech_stack="Python", user=None, user_input="data protection",
+                       deps=SimpleNamespace(db=Db(), llm=Llm(), content=SimpleNamespace(get=None)))
+    out = await _security_review(ctx)
+    assert out["meta"]["artifactsReviewed"] == 2 and "[HLD]" in seen["user"] and "[CDK]" in seen["user"] and "ignored" not in seen["user"]
+    assert "Focus the review on: data protection" in seen["user"]
+
+    ctx.deps.db.list_artefacts = lambda pid: _noop([])
+    from app.domain.errors import SdlcError
+    with pytest.raises(SdlcError, match="nothing to review"):
+        await _security_review(ctx)
