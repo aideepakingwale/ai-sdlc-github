@@ -182,8 +182,8 @@ class GateService:
                 formwork_ids=_jlist(existing, "formwork_ids"),
                 # keep everything the earlier plan carried: per-step models and per-artifact formats
                 step_overrides=_stored_overrides(existing),
-                artifact_formats=_jdict(existing, "artifact_formats"),
                 origin="amend", updated_by=user.id,
+                **({"artifact_formats": fmts} if (fmts := _jdict(existing, "artifact_formats")) else {}),
             )
             # The reviewer now chooses: extend what the stage already knew, or start from a blank slate.
             # The earlier instructions are kept as the base either way, so the choice can be switched.
