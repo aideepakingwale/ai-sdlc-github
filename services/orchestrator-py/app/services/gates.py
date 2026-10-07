@@ -170,7 +170,8 @@ class GateService:
             existing = await self._db.get_stage_plan(project_id, phase)
             if not existing or not (existing["prompt_overlay"] or "").strip():
                 # The plan is consumed when a stage generates: the amendment extends the last plan that ran.
-                snap = await self._db.latest_stage_plan_snapshot(project_id, phase)
+                snap_fn = getattr(self._db, "latest_stage_plan_snapshot", None)
+                snap = await snap_fn(project_id, phase) if snap_fn else None
                 existing = snap if snap is not None else existing
             base = (existing["prompt_overlay"].strip() + "\n\n") if (existing and existing["prompt_overlay"].strip()) else ""
             await self._db.upsert_stage_plan(
@@ -186,7 +187,9 @@ class GateService:
             )
             # The reviewer now chooses: extend what the stage already knew, or start from a blank slate.
             # The earlier instructions are kept as the base either way, so the choice can be switched.
-            await self._db.set_stage_amend(project_id, phase, "pending", base.rstrip())
+            set_amend = getattr(self._db, "set_stage_amend", None)
+            if set_amend:
+                await set_amend(project_id, phase, "pending", base.rstrip())
         except Exception as err:  # noqa: BLE001 — draft seeding is best-effort
             log.error("amend plan-draft seed failed: %s", err)
         return {"projectId": project_id, "phase": phase, "status": "AMEND_REQUESTED", "nextPhase": None, "planReview": True}
