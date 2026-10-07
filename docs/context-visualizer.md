@@ -93,3 +93,14 @@ When a reviewer requests changes, the stage returns to plan review and the write
   switched until generation starts.
 
 Planning and generation are blocked while the choice is `pending`.
+
+## Security review at the gate
+
+When a design, technical, DevOps or implementation stage (`SECURITY_GATE_TEMPLATES`, default `2,3,5,6`) reaches human
+review, the security reviewer agent reads the project's latest HLD/LLD/ADR/OpenAPI/DBML/CDK/pipeline/code artifacts and
+records its findings as quality signals (`source = security`, categories `security-rating` and `security-<severity>`),
+shown in the stage's quality panel. The same reviewer backs the on-demand **Security review** skill.
+
+`SECURITY_GATE_BLOCK` (`critical` | `high` | `off`, default `critical`) decides which open findings stop the stage being
+approved; a reviewer resolves a finding once it is fixed or the risk is accepted. `SECURITY_GATE_ENABLED=false` turns the
+check off. A failed review never blocks the gate. Migration 0037 widens the feedback source constraint.

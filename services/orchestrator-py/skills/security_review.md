@@ -23,17 +23,10 @@ Assess, where the artifacts allow:
 - **Code (OWASP Top 10)**: injection, hard-coded secrets, unsafe deserialisation, weak crypto, missing validation.
 - **Compliance** relevant to the stated regime (GDPR, PCI-DSS, HIPAA, SOC 2) if one applies.
 
-Return markdown with exactly these sections:
-
-## Summary
-Two or three sentences and an overall rating: LOW, MEDIUM, HIGH or CRITICAL risk.
-
-## Findings
-A table: | # | Severity (Critical/High/Medium/Low) | Area | Finding | Evidence (artifact and section) | Recommended fix |
-Order by severity. At most 15 findings. Every finding must cite the artifact it comes from.
-
-## Gaps
-What could not be reviewed because the artifacts do not cover it.
-
-## Recommended next steps
-At most five concrete actions, most important first.
+Return STRICT JSON only:
+{"rating": "LOW|MEDIUM|HIGH|CRITICAL", "summary": "two or three sentences",
+ "findings": [{"severity": "critical|high|medium|low", "area": "short area name", "finding": "what is wrong",
+               "evidence": "the artifact and section it comes from", "fix": "the recommended fix"}],
+ "gaps": ["what could not be reviewed because the artifacts do not cover it"],
+ "nextSteps": ["at most five concrete actions, most important first"]}
+Order findings by severity, at most 15, and cite the artifact each one comes from.

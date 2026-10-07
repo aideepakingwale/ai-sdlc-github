@@ -736,6 +736,27 @@ class Database:
                     issue.get("comment", ""),
                 )
 
+    async def replace_source_feedback(
+        self, *, project_id: str, phase: int, source: str, issues: list[dict[str, Any]],
+    ) -> None:
+        """Refresh one automatic source's rows for a stage (e.g. the gate-time 'security' review)."""
+        assert self.pool
+        async with self.pool.acquire() as conn, conn.transaction():
+            await conn.execute("DELETE FROM generation_feedback WHERE project_id=$1 AND phase=$2 AND source=$3",
+                               project_id, phase, source)
+            for issue in issues:
+                await conn.execute(
+                    "INSERT INTO generation_feedback (id, project_id, phase, source, category, severity, comment) "
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                    new_id(), project_id, phase, source, issue.get("category", "security"),
+                    issue.get("severity", "info"), issue.get("comment", ""))
+
+    async def count_open_feedback(self, project_id: str, phase: int, source: str, categories: list[str]) -> int:
+        assert self.pool
+        return int(await self.pool.fetchval(
+            "SELECT count(*) FROM generation_feedback WHERE project_id=$1 AND phase=$2 AND source=$3 "
+            "AND status='open' AND category = ANY($4::text[])", project_id, phase, source, categories) or 0)
+
     async def get_feedback(self, feedback_id: str) -> asyncpg.Record | None:
         assert self.pool
         return await self.pool.fetchrow("SELECT * FROM generation_feedback WHERE id=$1", feedback_id)

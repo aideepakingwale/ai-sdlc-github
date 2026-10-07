@@ -246,6 +246,7 @@ class ChatService:
                 # Persist the deferred external-write plan for this stage (D-67).
                 await self._persist_publish_plan(project["id"], seq, phase_result)
                 if final_state.gate_status == "PENDING_REVIEW":
+                    await self._security_gate(project["id"], seq, stage, project, emit)
                     await self._dynamo.put_phase_state(
                         project_id=project["id"], phase=seq,
                         status="PENDING_REVIEW", reviewer_role=stage["reviewerRole"],
@@ -1696,6 +1697,32 @@ class ChatService:
                 "Keep what the reviewers did not ask to change, apply the requested changes, and keep the document's structure and numbering stable.\n\n"
                 + "\n\n".join(parts))
 
+    async def _security_gate(self, project_id: str, phase: int, stage: dict, project: dict, emit: Emit) -> None:
+        """Gate-time security review: when a stage's output reaches human review, review the project's artifacts and
+        record the findings beside the validation verdict. Best-effort - a failed review never blocks the gate."""
+        from .security_gate import applies_to, feedback_rows, run_review
+        from .skills import SKILL_PACKS
+
+        if not applies_to(self._settings, stage.get("template")):
+            return
+        try:
+            emit({"type": "node", "node": "agent", "label": "Security review of the stage output…"})
+            body = next((p["body"] for p in SKILL_PACKS if p["id"] == "security_review"), "")
+            report, labels, res = await run_review(self._deps, project_id, instruction=body, tech_stack=stack_of(project),
+                                                   tag="security_gate")
+            await self._db.replace_source_feedback(project_id=project_id, phase=phase, source="security", issues=feedback_rows(report))
+            counts = {sev: sum(1 for f in report.findings if f.severity == sev) for sev in ("critical", "high", "medium", "low")}
+            self._audit.record(project_id=project_id, phase=phase, agent_role="SecurityReview", event="security.review_completed",
+                               provider=res.provider, model=res.model,
+                               detail={"stage": stage["key"], "rating": report.rating, "findings": counts,
+                                       "artifactsReviewed": len(labels),
+                                       "blocking": getattr(self._settings, "SECURITY_GATE_BLOCK", "critical")})
+            emit({"type": "node", "node": "agent",
+                  "label": f"Security review: {report.rating} risk - {counts['critical']} critical, {counts['high']} high, "
+                           f"{counts['medium']} medium, {counts['low']} low"})
+        except Exception as err:  # noqa: BLE001
+            log.info("security review skipped (%s)", str(err)[:160])
+
     @staticmethod
     def _formats_of(row: Any) -> dict[str, dict[str, str]]:
         """The stage's stored per-artifact formats ({} when none / an older row)."""
@@ -1970,6 +1997,7 @@ class ChatService:
             # Persist the deferred external-write plan for this stage (D-67).
             await self._persist_publish_plan(project_id, phase, phase_result)
             if final_state.gate_status == "PENDING_REVIEW":
+                await self._security_gate(project_id, phase, stage, project, emit)
                 await self._dynamo.put_phase_state(project_id=project_id, phase=phase, status="PENDING_REVIEW", reviewer_role=stage["reviewerRole"])
                 emit({"type": "gate", "phase": phase, "status": "PENDING_REVIEW", "reviewerRole": stage["reviewerRole"]})
                 self._audit.record(project_id=project_id, phase=phase, agent_role=stage["persona"],

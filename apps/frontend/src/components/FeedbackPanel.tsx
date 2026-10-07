@@ -11,7 +11,7 @@ interface Feedback {
   id: string;
   phase: number;
   artefactId: string | null;
-  source: 'validation' | 'human';
+  source: 'validation' | 'human' | 'security';
   rating: number | null;
   category: string;
   severity: 'error' | 'warning' | 'info';
@@ -57,7 +57,9 @@ export default function FeedbackPanel({
   });
   const items = q.data?.feedback ?? [];
   const validation = items.filter((f) => f.source === 'validation');
+  const security = items.filter((f) => f.source === 'security');
   const human = items.filter((f) => f.source === 'human');
+  const openBlocking = security.filter((f) => f.status === 'open' && f.category === 'security-critical').length;
   const openHuman = human.filter((f) => f.status === 'open');
 
   const report = useMutation({
@@ -118,6 +120,35 @@ export default function FeedbackPanel({
                     className="mt-1 rounded border border-current px-2 py-0.5 text-[10px] font-semibold hover:bg-white/60 disabled:opacity-40"
                   >📎 Upload the missing document, then regenerate</button>
                 )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* gate-time security review */}
+      {security.length > 0 && (
+        <div className="mb-2 space-y-1" data-testid="security-review">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">🛡 Security review</div>
+          {openBlocking > 0 && (
+            <div className="rounded border border-red-200 bg-red-50 px-2 py-1 text-[11px] text-red-700">
+              {openBlocking} open critical finding{openBlocking > 1 ? 's' : ''} — this stage cannot be approved until each is resolved (fixed, or the risk accepted).
+            </div>
+          )}
+          {security.map((f) => {
+            const s = SEV_META[f.severity];
+            const resolved = f.status === 'resolved';
+            return (
+              <div key={f.id} className={`rounded-lg border px-3 py-1.5 text-[11px] ${resolved ? 'border-slate-200 bg-slate-50 opacity-70' : s.cls}`}>
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold">{s.icon} {f.category.replace('security-', '')}</span>
+                  {resolved && <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">resolved</span>}
+                  {!resolved && canResolve && f.category !== 'security-rating' && (
+                    <button type="button" onClick={() => resolve.mutate(f.id)} disabled={resolve.isPending}
+                      className="ml-auto rounded border border-current px-1.5 py-0.5 text-[10px] font-semibold hover:bg-white/50">Resolve</button>
+                  )}
+                </div>
+                <div className="mt-0.5 text-slate-700">{f.comment}</div>
               </div>
             );
           })}

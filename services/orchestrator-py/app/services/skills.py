@@ -253,49 +253,16 @@ def _llm_skill(instruction: str, tier: SkillTier, mock_kind: str) -> Callable[[S
 # declares identity + RBAC + execution wiring; the body is the instruction.
 # Deterministic (non-LLM) executors are registered here by id and referenced
 # from the pack via `executor: builtin`.
-_SECURITY_TYPES = ("HLD", "LLD", "ADR", "OPENAPI", "DBML", "CDK", "STRUCTURIZR_DSL", "PLANTUML", "DOCKERFILE",
-                   "GITHUB_ACTIONS", "PIPELINE_DESIGN", "APP_CODE", "PULL_REQUEST", "PRD")
-_SECURITY_TOTAL_CHARS = 60_000
-_SECURITY_PER_ARTIFACT = 12_000
-
-
 async def _security_review(ctx: SkillContext) -> dict[str, Any]:
-    """Review the project's latest design / API / infrastructure / pipeline / code artifacts for security
-    risks. The model only sees what exists in the project; gaps are reported, not guessed."""
+    """On-demand security review of the project's latest design / API / infrastructure / pipeline / code artifacts
+    (the same reviewer the gate-time check runs). The model only sees what exists; gaps are reported, not guessed."""
+    from .security_gate import render_markdown, run_review
+
     body = next((p["body"] for p in SKILL_PACKS if p["id"] == "security_review"), "")
-    rows = {t: [] for t in _SECURITY_TYPES}
-    for r in await ctx.deps.db.list_artefacts(ctx.project_id):
-        if r["type"] in rows:
-            rows[r["type"]].append(r)
-    parts: list[str] = []
-    used: list[str] = []
-    total = 0
-    for t in _SECURITY_TYPES:                                   # design first, then infrastructure, then code
-        for r in rows[t]:
-            text = r["content"] or ""
-            if r["storage_key"]:
-                stored = await ctx.deps.content.get(r["storage_key"])
-                if stored is not None:
-                    text = stored
-            text = text.strip()[:min(_SECURITY_PER_ARTIFACT, max(0, _SECURITY_TOTAL_CHARS - total))]
-            if not text:
-                continue
-            total += len(text)
-            parts.append(f"### [{r['type']}] {r['title']}\n{text}")
-            used.append(f"{r['type']}: {r['title']}")
-    if not parts:
-        raise SdlcError("NOT_FOUND", "There is nothing to review yet - run a design, infrastructure or code stage first")
-    system = render_prompt(
-        "skill.system.wrapper", policy=render_prompt("policy.responsible_ai"), instruction=body,
-        tech_stack=ctx.tech_stack, mock_kind="chat",
-    )
-    focus = f"Focus the review on: {ctx.user_input}\n\n" if ctx.user_input else ""
-    res = await ctx.deps.llm.generate(
-        intent="architecture", tier="frontier", tag="skill:security_review", temperature=0.1, max_tokens=6000, role="reason",
-        messages=[{"role": "system", "content": system},
-                  {"role": "user", "content": f"{focus}Artifacts under review ({len(used)}): {'; '.join(used)}\n\n" + "\n\n".join(parts)}],
-    )
-    return {"output": res.content, "meta": {"provider": res.provider, "tier": res.tier, "model": res.model, "artifactsReviewed": len(used)}}
+    report, labels, res = await run_review(ctx.deps, ctx.project_id, instruction=body, tech_stack=ctx.tech_stack, focus=ctx.user_input)
+    return {"output": render_markdown(report),
+            "meta": {"provider": res.provider, "tier": res.tier, "model": res.model, "artifactsReviewed": len(labels),
+                     "rating": report.rating, "findings": len(report.findings)}}
 
 
 BUILTIN_EXECUTORS: dict[str, Callable[[SkillContext], Awaitable[dict[str, Any]]]] = {

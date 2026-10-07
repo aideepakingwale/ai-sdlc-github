@@ -150,7 +150,7 @@ async def lifespan(app: FastAPI):
     from .services.code_gen import CodeGenService
     code_gen = CodeGenService(db, dynamo, audit, authz, content, workflow, _enqueue_generation, chat.can_write_stage,
                               enabled=getattr(settings, "CODE_TWO_STEP_ENABLED", True))
-    gates = GateService(db, dynamo, audit, authz, workflow, regenerate, publisher, code_gen)
+    gates = GateService(db, dynamo, audit, authz, workflow, regenerate, publisher, code_gen, settings=get_settings())
     flow = FlowService(db, dynamo, audit, authz, content, workflow, regenerate)
     monitor.start_polling()
 

@@ -43,7 +43,7 @@ def _stored_overrides(row: Any) -> dict:
 class GateService:
     def __init__(
         self, db: Database, dynamo: DynamoStore, audit: AuditService,
-        authz: AuthzService, workflow: Any, regenerate: Regenerate, publisher: Any = None, code: Any = None,
+        authz: AuthzService, workflow: Any, regenerate: Regenerate, publisher: Any = None, code: Any = None, settings: Any = None,
     ) -> None:
         self._db = db
         self._dynamo = dynamo
@@ -52,6 +52,7 @@ class GateService:
         self._workflow = workflow
         self._regenerate = regenerate
         self._publisher = publisher  # PublishService (D-67); None disables deferred publish
+        self._settings = settings
         self._code = code            # CodeGenService: two-step code generation (structure approval, commit record)
 
     async def list_states(self, project_id: str, viewer: UserPublic | None = None) -> list[PhaseStateView]:
@@ -327,12 +328,31 @@ class GateService:
                            detail={"stage": stage["key"], "target": target})
         return {"projectId": project_id, "phase": phase, "status": "PENDING_REVIEW", **matrix}
 
+    async def _assert_security_clear(self, project_id: str, phase: int) -> None:
+        """Open security findings at or above SECURITY_GATE_BLOCK stop a stage being approved until a reviewer
+        resolves them (fixed, or accepted by a reviewer who answers for the risk)."""
+        from .security_gate import blocking_categories
+
+        if getattr(self, "_settings", None) is None:          # no settings wired (tests, tools): the check is off
+            return
+        cats = blocking_categories(getattr(self._settings, "SECURITY_GATE_BLOCK", "critical"))
+        if not cats:
+            return
+        n = await self._db.count_open_feedback(project_id, phase, "security", cats)
+        if n:
+            raise SdlcError(
+                "GATE_CONFLICT",
+                f"{n} open {'critical' if cats == ['security-critical'] else 'critical or high'} security finding(s) must be "
+                "resolved before this stage can be approved. Fix them and request changes, or resolve each finding in "
+                "the quality panel once it is fixed or the risk is accepted.")
+
     async def _finalize_gate(
         self, project_id: str, phase: int, stage: dict, wf: dict, user: UserPublic,
         override: bool, state: dict,
     ) -> dict[str, Any]:
         """All required reviewers have signed (or an admin override) — publish the
         queued external writes, transition the gate to APPROVED and advance."""
+        await self._assert_security_clear(project_id, phase)
         # Two-step code generation: approving the proposed STRUCTURE does not complete the stage - it releases
         # the gate and starts the implementation; only the later approval of the CODE completes it.
         if self._code is not None:

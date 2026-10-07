@@ -210,6 +210,13 @@ class Settings(BaseSettings):
     # rebuild; unset uses the built-in default. Hot-reloaded on mtime change.
     TECH_CATALOG_PATH: str | None = None
     VALIDATION_MAX_REPAIRS: int = 1
+    # Gate-time security review: when a stage's output reaches human review, an agent reviews the project's
+    # design / API / infrastructure / pipeline / code artifacts and records findings beside the validation verdict.
+    SECURITY_GATE_ENABLED: bool = True
+    SECURITY_GATE_TEMPLATES: str = "2,3,5,6"      # stage templates that get the review (comma-separated)
+    # Open findings of at least this severity block approval until a reviewer resolves them: critical | high | off.
+    SECURITY_GATE_BLOCK: str = "critical"
+
     # When the validator flags specific artifacts, rework ONLY those (the others are reused
     # from the first run's saved parts) instead of regenerating the whole stage. Falls back
     # to a full regeneration when the issues cannot be localised.
