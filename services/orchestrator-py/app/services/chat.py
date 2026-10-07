@@ -2011,6 +2011,10 @@ class ChatService:
             origin = (row["origin"] if row and "origin" in row else None)
             if origin in ("retrigger", "amend"):
                 await self._flag_downstream_stale(project_id, phase, wf, states, stage["name"])
+            try:
+                await self._db.archive_stage_plan(project_id, phase)   # keep it: a later amendment extends it
+            except Exception:  # noqa: BLE001 - history is best-effort
+                log.warning("could not archive the consumed stage plan", exc_info=True)
             await self._db.delete_stage_plan(project_id, phase)  # draft consumed
 
         # Safety net (D-111): a run that produced no reviewable output (no result, or a

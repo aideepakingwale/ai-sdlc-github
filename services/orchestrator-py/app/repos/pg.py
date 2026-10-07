@@ -667,6 +667,26 @@ class Database:
         assert self.pool
         await self.pool.execute("DELETE FROM stage_traits WHERE project_id=$1 AND phase=$2", project_id, phase)
 
+    async def archive_stage_plan(self, project_id: str, phase: int) -> None:
+        """Keep a copy of the stage's plan before it is consumed by a run, so an amendment can extend it."""
+        assert self.pool
+        await self.pool.execute(
+            "INSERT INTO stage_plan_history (id, project_id, phase, prompt_overlay, referenced_artifact_ids, attachment_ids, "
+            "formwork_ids, step_overrides, artifact_formats, origin) "
+            "SELECT $3, project_id, phase, COALESCE(prompt_overlay,''), COALESCE(referenced_artifact_ids,'[]'::jsonb), "
+            "COALESCE(attachment_ids,'[]'::jsonb), COALESCE(formwork_ids,'[]'::jsonb), COALESCE(step_overrides,'{}'::jsonb), "
+            "COALESCE(artifact_formats,'{}'::jsonb), COALESCE(origin,'new') FROM stage_plans WHERE project_id=$1 AND phase=$2",
+            project_id, phase, new_id())
+        await self.pool.execute(
+            "DELETE FROM stage_plan_history WHERE project_id=$1 AND phase=$2 AND id NOT IN "
+            "(SELECT id FROM stage_plan_history WHERE project_id=$1 AND phase=$2 ORDER BY created_at DESC LIMIT 20)",
+            project_id, phase)
+
+    async def latest_stage_plan_snapshot(self, project_id: str, phase: int) -> asyncpg.Record | None:
+        assert self.pool
+        return await self.pool.fetchrow(
+            "SELECT * FROM stage_plan_history WHERE project_id=$1 AND phase=$2 ORDER BY created_at DESC LIMIT 1", project_id, phase)
+
     async def delete_stage_plan(self, project_id: str, phase: int) -> None:
         assert self.pool
         await self.pool.execute("DELETE FROM stage_plans WHERE project_id=$1 AND phase=$2", project_id, phase)

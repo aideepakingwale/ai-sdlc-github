@@ -40,6 +40,30 @@ def _stored_overrides(row: Any) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
+def _jval(row: Any, key: str, empty: Any) -> Any:
+    try:
+        raw = row[key] if row else None
+    except (KeyError, IndexError, TypeError):
+        return empty
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode()
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "null")
+        except ValueError:
+            return empty
+    return raw if isinstance(raw, type(empty)) else empty
+
+
+def _jlist(row: Any, key: str) -> list:
+    return _jval(row, key, [])
+
+
+def _jdict(row: Any, key: str) -> dict | None:
+    d = _jval(row, key, {})
+    return d or None          # None keeps whatever the stage plan already stores
+
+
 class GateService:
     def __init__(
         self, db: Database, dynamo: DynamoStore, audit: AuditService,
@@ -144,15 +168,20 @@ class GateService:
         # triggers the re-generation. The stage stays AMEND_REQUESTED until then.
         try:
             existing = await self._db.get_stage_plan(project_id, phase)
+            if not existing or not (existing["prompt_overlay"] or "").strip():
+                # The plan is consumed when a stage generates: the amendment extends the last plan that ran.
+                snap = await self._db.latest_stage_plan_snapshot(project_id, phase)
+                existing = snap if snap is not None else existing
             base = (existing["prompt_overlay"].strip() + "\n\n") if (existing and existing["prompt_overlay"].strip()) else ""
             await self._db.upsert_stage_plan(
                 project_id=project_id, phase=phase,
                 prompt_overlay=f"{base}Reviewer's requested changes ({user.email}):\n{comments.strip()}",
-                referenced_artifact_ids=(existing["referenced_artifact_ids"] if existing else []) or [],
-                attachment_ids=(existing["attachment_ids"] if existing else []) or [],
-                formwork_ids=(existing["formwork_ids"] if existing else []) or [],
-                # keep everything the earlier plan carried: per-step models (formats are kept by the DB layer)
+                referenced_artifact_ids=_jlist(existing, "referenced_artifact_ids"),
+                attachment_ids=_jlist(existing, "attachment_ids"),
+                formwork_ids=_jlist(existing, "formwork_ids"),
+                # keep everything the earlier plan carried: per-step models and per-artifact formats
                 step_overrides=_stored_overrides(existing),
+                artifact_formats=_jdict(existing, "artifact_formats"),
                 origin="amend", updated_by=user.id,
             )
             # The reviewer now chooses: extend what the stage already knew, or start from a blank slate.

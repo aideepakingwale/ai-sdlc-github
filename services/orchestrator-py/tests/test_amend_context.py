@@ -171,3 +171,37 @@ async def test_planning_waits_for_the_choice():
         await svc.assert_plan_ready("p", 3, SimpleNamespace())
 
 
+
+
+@pytest.mark.asyncio
+async def test_an_amendment_extends_the_plan_that_ran_even_though_the_live_plan_was_consumed():
+    from app.services.gates import GateService
+
+    snap = {"prompt_overlay": "Design the LLD.\n\n## Clarifications (confirmed by the reviewer)\n- Cloud?\n  → AWS",
+            "referenced_artifact_ids": ["a1"], "attachment_ids": ["f1"], "formwork_ids": [],
+            "step_overrides": {"s1": {"model": "m"}}, "artifact_formats": {"LLD": {"fileType": "docx"}}}
+    saved = {}
+
+    class Db:
+        async def get_stage_plan(self, pid, phase):
+            return None                                         # consumed when the stage generated
+
+        async def latest_stage_plan_snapshot(self, pid, phase):
+            return snap
+
+        async def upsert_stage_plan(self, **kw):
+            saved.update(kw)
+
+        async def set_stage_amend(self, pid, phase, mode, base=None, **kw):
+            saved["amend"] = (mode, base)
+
+    gates = GateService.__new__(GateService)
+    gates._db = Db()
+    existing = await gates._db.get_stage_plan("p", 3)
+    # the same steps the amend branch runs
+    if not existing or not (existing["prompt_overlay"] or "").strip():
+        existing = await gates._db.latest_stage_plan_snapshot("p", 3)
+    from app.services.gates import _jdict, _jlist, _stored_overrides
+    assert _jlist(existing, "attachment_ids") == ["f1"] and _jlist(existing, "referenced_artifact_ids") == ["a1"]
+    assert _jdict(existing, "artifact_formats") == {"LLD": {"fileType": "docx"}} and _stored_overrides(existing) == {"s1": {"model": "m"}}
+    assert _jdict({"artifact_formats": {}}, "artifact_formats") is None        # nothing stored: keep what the plan has
