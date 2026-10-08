@@ -13,6 +13,13 @@ export type Pane =
 interface V2State {
   pane: Pane;
   sideCollapsed: boolean;
+  /** Widths (px) the user dragged the sidebar and the details pane to; the pane can also fill the whole window. */
+  sideWidth: number;
+  paneWidth: number;
+  paneFull: boolean;
+  setSideWidth: (w: number) => void;
+  setPaneWidth: (w: number) => void;
+  setPaneFull: (v: boolean) => void;
   /** Narrow screens: the sidebar is a drawer and the right pane covers the page. */
   narrow: boolean;
   drawer: boolean;
@@ -25,6 +32,10 @@ interface V2State {
 }
 
 const SIDE_KEY = 'sdlc:v2:side-collapsed';
+export const SIDE_W = { def: 288, min: 220, max: 440 };
+export const PANE_W = { def: 640, min: 340 };
+const readNum = (k: string, def: number): number => { try { const n = Number(localStorage.getItem(k)); return Number.isFinite(n) && n > 0 ? n : def; } catch { return def; } };
+const saveNum = (k: string, n: number) => { try { localStorage.setItem(k, String(n)); } catch { /* ignore */ } };
 const readSide = (): boolean => { try { return localStorage.getItem(SIDE_KEY) === '1'; } catch { return false; } };
 
 function same(a: Pane, b: Pane): boolean {
@@ -39,12 +50,18 @@ function same(a: Pane, b: Pane): boolean {
 export const useV2 = create<V2State>((set, get) => ({
   pane: null,
   sideCollapsed: readSide(),
+  sideWidth: readNum('sdlc:v2:side-w', SIDE_W.def),
+  paneWidth: readNum('sdlc:v2:pane-w', PANE_W.def),
+  paneFull: false,
+  setSideWidth: (w) => { saveNum('sdlc:v2:side-w', w); set({ sideWidth: w }); },
+  setPaneWidth: (w) => { saveNum('sdlc:v2:pane-w', w); set({ paneWidth: w }); },
+  setPaneFull: (v) => set({ paneFull: v }),
   narrow: false,
   drawer: false,
   setNarrow: (v) => set(v ? { narrow: true } : { narrow: false, drawer: false }),
   setDrawer: (v) => set({ drawer: v }),
   openPane: (p) => set({ pane: p }),
-  closePane: () => set({ pane: null }),
+  closePane: () => set({ pane: null, paneFull: false }),
   togglePane: (p) => set({ pane: same(get().pane, p) ? null : p }),
   setSideCollapsed: (v) => {
     try { localStorage.setItem(SIDE_KEY, v ? '1' : '0'); } catch { /* ignore */ }

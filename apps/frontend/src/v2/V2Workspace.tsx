@@ -15,8 +15,9 @@ import { useApp } from '../store';
 import GlobalBar from './GlobalBar';
 import PipelineView from './PipelineView';
 import PreviewPane from './PreviewPane';
+import Splitter from './Splitter';
 import Sidebar, { type V2Modal, type V2View } from './Sidebar';
-import { useV2 } from './store';
+import { SIDE_W, useV2 } from './store';
 import { useNarrowSync } from './narrow';
 import { applyTheme, watchSystemTheme } from './theme';
 import { useWorkspaceData } from './useWorkspaceData';
@@ -30,6 +31,8 @@ export default function V2Workspace() {
   const drawer = useV2((s) => s.drawer);
   const setDrawer = useV2((s) => s.setDrawer);
   const sideCollapsed = useV2((s) => s.sideCollapsed);
+  const sideWidth = useV2((s) => s.sideWidth);
+  const setSideWidth = useV2((s) => s.setSideWidth);
   const closePane = useV2((s) => s.closePane);
   const openPane = useV2((s) => s.openPane);
   const [view, setView] = useState<V2View>('dashboard');
@@ -80,7 +83,7 @@ export default function V2Workspace() {
       {(narrow ? drawer : !sideCollapsed) && (
         <div className={narrow ? 'fixed inset-0 z-40 flex' : 'contents'} data-testid={narrow ? 'v2-drawer' : undefined}>
         <Sidebar
-          projects={projects.data?.projects ?? []} activeProjectId={activeProjectId}
+          width={narrow ? undefined : sideWidth} projects={projects.data?.projects ?? []} activeProjectId={activeProjectId}
           onPickProject={(id) => { setDrawer(false); setActiveProject(id); }} onNewProject={() => setNewProject(true)}
           canManage={canManage} isAdmin={user.role === 'SUPER_ADMIN'} flow={flow.data}
           selectedStage={activeStage} view={view} onView={(v) => { setDrawer(false); setModalRaw(null); setView(v); }} onStage={(n) => { setDrawer(false); goStage(n); }} onModal={(m) => { setDrawer(false); setModal(m); }}
@@ -89,6 +92,8 @@ export default function V2Workspace() {
           {narrow && <button type="button" aria-label="Close the sidebar" className="flex-1 bg-black/40" onClick={() => setDrawer(false)} />}
         </div>
       )}
+
+      {!narrow && !sideCollapsed && <Splitter value={sideWidth} min={SIDE_W.min} max={SIDE_W.max} edge="right" onChange={setSideWidth} onReset={() => setSideWidth(SIDE_W.def)} label="Resize the sidebar" testid="v2-split-side" />}
 
       <div className="flex min-w-0 flex-1 flex-col">
         <GlobalBar

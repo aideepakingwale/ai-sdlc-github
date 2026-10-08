@@ -25,6 +25,8 @@ const E = (cx: number, cy: number, rx: number, ry: number): Shape => ({ e: [cx, 
 const dot = (cx: number, cy: number): Shape => L(cx, cy, cx + 0.01, cy);
 
 export const ICONS = {
+  maximize: [PL('15 3 21 3 21 9'), PL('9 21 3 21 3 15'), L(21, 3, 14, 10), L(3, 21, 10, 14)],
+  minimize: [PL('4 14 10 14 10 20'), PL('20 10 14 10 14 4'), L(14, 10, 21, 3), L(3, 21, 10, 14)],
   info: [C(12, 12, 10), L(12, 16, 12, 12), dot(12, 8)],
   warning: [P('M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z'), L(12, 9, 12, 13), dot(12, 17)],
   error: [C(12, 12, 10), L(15, 9, 9, 15), L(9, 9, 15, 15)],

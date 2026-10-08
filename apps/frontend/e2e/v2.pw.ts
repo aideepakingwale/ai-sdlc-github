@@ -170,6 +170,56 @@ test.describe('pipeline and configuration pages', () => {
   });
 });
 
+test.describe('resizing', () => {
+  async function drag(page: Page, testid: string, dx: number) {
+    const box = (await page.getByTestId(testid).boundingBox())!;
+    const x = box.x + box.width / 2, y = box.y + box.height / 2;
+    await page.mouse.move(x, y); await page.mouse.down(); await page.mouse.move(x + dx / 2, y, { steps: 4 }); await page.mouse.move(x + dx, y, { steps: 4 }); await page.mouse.up();
+  }
+  test('the sidebar and the details pane can be dragged to a new width, which is remembered', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { name } = await newProject(page);
+    await page.reload();
+    await openProject(page, name);
+    const side = page.getByTestId('v2-sidebar');
+    const w0 = (await side.boundingBox())!.width;
+    await drag(page, 'v2-split-side', 80);
+    const w1 = (await side.boundingBox())!.width;
+    expect(w1).toBeGreaterThan(w0 + 60);
+    await page.getByTestId('v2-open-project-panel').click();
+    const pane = page.getByTestId('v2-pane');
+    const p0 = (await pane.boundingBox())!.width;
+    await drag(page, 'v2-split-pane', -120);                 // dragging the divider left widens the pane
+    const p1 = (await pane.boundingBox())!.width;
+    expect(p1).toBeGreaterThan(p0 + 90);
+    await page.reload();
+    await expect(page.getByTestId('v2-workspace')).toBeVisible();
+    expect((await page.getByTestId('v2-sidebar').boundingBox())!.width).toBeCloseTo(w1, -1);
+    await page.getByTestId('v2-split-side').dblclick();      // double-click resets
+    expect((await page.getByTestId('v2-sidebar').boundingBox())!.width).toBeCloseTo(288, -1);
+  });
+
+  test('the details pane can go full screen and Escape brings it back', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { name } = await newProject(page);
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-open-project-panel').click();
+    const pane = page.getByTestId('v2-pane');
+    await page.getByTestId('v2-pane-full').click();
+    await expect(pane).toHaveAttribute('data-full', 'true');
+    const box = (await pane.boundingBox())!;
+    expect(box.width).toBeGreaterThanOrEqual(1430);
+    expect(box.x).toBeLessThanOrEqual(1);
+    await page.keyboard.press('Escape');
+    await expect(pane).toHaveAttribute('data-full', 'false');
+    expect((await pane.boundingBox())!.width).toBeLessThan(1000);
+    await page.getByTestId('v2-pane-full').click();
+    await page.getByTestId('v2-pane-full').click();         // the same button leaves full screen
+    await expect(pane).toHaveAttribute('data-full', 'false');
+  });
+});
+
 test.describe('theme', () => {
   test('dark is applied from the account menu, persists, and classic stays light', async ({ page }) => {
     await login(page, '/?ui=v2');

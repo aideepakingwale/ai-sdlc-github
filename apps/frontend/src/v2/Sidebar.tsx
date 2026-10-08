@@ -34,8 +34,10 @@ const Heading = ({ children }: { children: React.ReactNode }) => (
 );
 
 export default function Sidebar({
-  projects, activeProjectId, onPickProject, onNewProject, canManage, isAdmin, flow, selectedStage, view, onView, onStage, onModal,
+  width, projects, activeProjectId, onPickProject, onNewProject, canManage, isAdmin, flow, selectedStage, view, onView, onStage, onModal,
 }: {
+  /** Pixel width; the workspace owns it so a divider can resize it. */
+  width?: number;
   projects: Project[];
   activeProjectId: string | null;
   onPickProject: (id: string | null) => void;
@@ -65,7 +67,7 @@ export default function Sidebar({
   const doneCount = flow?.stages.filter((s) => s.status === 'APPROVED').length ?? 0;
 
   return (
-    <aside className="flex w-72 max-w-[85vw] shrink-0 flex-col overflow-y-auto border-r border-slate-200 bg-slate-100" aria-label="Projects and stages" data-testid="v2-sidebar">
+    <aside style={width ? { width } : undefined} className={`flex ${width ? '' : 'w-72'} max-w-[85vw] shrink-0 flex-col overflow-y-auto bg-slate-100`} aria-label="Projects and stages" data-testid="v2-sidebar">
       <div className="px-4 pb-1 pt-4">
         <div className="font-display text-xl font-bold text-navy">DevMind</div>
       </div>

@@ -43,6 +43,14 @@ Only an explicit choice is remembered; the default is not stored. The choice is 
 - **Right pane** (`v2/PreviewPane.tsx`, state in `v2/store.ts`): shows one of `project` (tabs), `artefact`, `context`,
   or nothing. Only one thing is open at a time; opening an artefact from a project tab gives a back link to that tab.
 
+## Resizing and full screen
+
+The dividers between the sidebar, the centre and the details pane can be dragged (or focused and moved with the arrow
+keys, Shift for bigger steps, Home/End for the limits); double-click a divider to reset it. The widths are remembered
+per browser (`sdlc:v2:side-w` 220 to 440 px, `sdlc:v2:pane-w` from 340 px, always leaving 420 px for the centre).
+The details pane has a full-screen button in its header (Esc or the same button leaves it); on narrow screens the pane
+already covers the page, so the button is hidden. Test hooks: `v2-split-side`, `v2-split-pane`, `v2-pane-full`.
+
 ## Centre views
 
 **Stage (conversation).** `v2/stage/StageChat.tsx`, built to the design mock and driven by the same logic as the classic
