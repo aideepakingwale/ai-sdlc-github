@@ -30,6 +30,21 @@ indicative, not billing-accurate.
 
 ## The full view (read-only)
 
+The graph is a left-to-right hierarchy, not a hub with spokes:
+
+1. **Fixed context** (first column): boxes for the instructions, project profile, standards and templates, your
+   instructions, attachments, amendment history and retrieved knowledge, each holding its items.
+2. **The stages this one builds on**: one box per stage, in dependency order (a stage that depends on another sits to its
+   right, joined by a green *builds on* link). The manifest carries this as `lineage`
+   (`context_manifest.lineage_of`: the stages reachable through `dependsOn`, with their own dependencies).
+3. **The prompt**, then **the artifacts it produces** on the right.
+
+Each box feeds the prompt with one link (thicker = more tokens); only the stages this one *directly* builds on link
+to the prompt, the rest reach it through the chain. Violet dashed links are cross-links between things: a template or
+attached file an artifact follows, the previous version that is revised into the new artifact, and the files your
+instructions refer to. Links that skip a column run along the bottom so nothing crosses a box it has no part in.
+Selecting a box or an item lights up the links of both.
+
 Zoom (wheel or buttons), pan (drag), search, filter by layer, hide items that are not included.
 Click a circle for its source info (stage, artifact type, file, origin, relevance, who decided the stack)
 and its relationships; click a line to see how two things relate (*builds on*, *analysed*, *layout

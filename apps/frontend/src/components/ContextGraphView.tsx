@@ -39,7 +39,6 @@ export default function ContextGraphView({ view, initialMode, onClose }: { view:
   const selNode = selected?.type === 'node' ? nodeById.get(selected.id) : undefined;
   const selEdge = selected?.type === 'edge' ? graph.edges.find((e) => e.id === selected.id) : undefined;
   const clamp = (z: number) => Math.min(4, Math.max(0.3, z));
-  const half = graph.width / 2;
 
   const toggleLayer = (id: string) => setLayers((cur) => {
     const all = manifest.layers.map((l) => l.id);
@@ -90,7 +89,7 @@ export default function ContextGraphView({ view, initialMode, onClose }: { view:
         <div className="relative min-w-0 flex-1 overflow-hidden bg-white">
           <svg
             data-testid="context-graph" className="h-full w-full cursor-grab touch-none select-none active:cursor-grabbing"
-            viewBox={`${-half} ${-half} ${graph.width} ${graph.height}`} preserveAspectRatio="xMidYMid meet"
+            viewBox={`0 0 ${graph.width} ${graph.height}`} preserveAspectRatio="xMidYMid meet"
             onWheel={(e) => { e.preventDefault(); setZoom((z) => clamp(z * (e.deltaY < 0 ? 1.12 : 1 / 1.12))); }}
             onPointerDown={(e) => { drag.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y }; (e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId); }}
             onPointerMove={(e) => {
@@ -101,9 +100,10 @@ export default function ContextGraphView({ view, initialMode, onClose }: { view:
             onPointerUp={() => { drag.current = null; }}
             onClick={(e) => { if (e.target === e.currentTarget) setSelected(null); }}
           >
+            <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#64748b" /></marker></defs>
             <g transform={`scale(${zoom}) translate(${pan.x} ${pan.y})`}>
               {graph.edges.map((e) => <Edge key={e.id} e={e} dim={Boolean(focus) && !focus!.edges.has(e.id)} active={selected?.id === e.id} onSelect={() => setSelected({ type: 'edge', id: e.id })} />)}
-              {graph.nodes.map((n) => (
+              {[...graph.nodes].sort((a, b) => Number(b.kind === 'group') - Number(a.kind === 'group')).map((n) => (
                 <Node key={n.id} n={n} dim={Boolean(focus) && !focus!.nodes.has(n.id)} active={selected?.id === n.id}
                   onSelect={() => setSelected({ type: 'node', id: n.id })} />
               ))}
@@ -120,7 +120,8 @@ export default function ContextGraphView({ view, initialMode, onClose }: { view:
 
         <aside className="w-80 shrink-0 overflow-y-auto border-l border-slate-200 bg-white p-4 text-xs" aria-label="Details">
           {selNode?.item && <ItemDetail node={selNode} edges={graph.edges} nodeById={nodeById} onPick={(id) => setSelected({ type: 'node', id })} />}
-          {selNode && !selNode.item && <PromptDetail node={selNode} manifest={manifest} />}
+          {selNode && !selNode.item && selNode.kind === 'group' && <GroupDetail node={selNode} manifest={manifest} edges={graph.edges} nodeById={nodeById} onPick={(id) => setSelected({ type: 'node', id })} />}
+          {selNode && !selNode.item && selNode.kind !== 'group' && <PromptDetail node={selNode} manifest={manifest} />}
           {selEdge && <EdgeDetail edge={selEdge} nodeById={nodeById} onPick={(id) => setSelected({ type: 'node', id })} />}
           {!selected && <Overview manifest={manifest} diff={mode === 'actual' ? view.diff : null} />}
         </aside>
@@ -131,32 +132,62 @@ export default function ContextGraphView({ view, initialMode, onClose }: { view:
 }
 
 function Node({ n, dim, active, onSelect }: { n: GNode; dim: boolean; active: boolean; onSelect: () => void }) {
-  const fill = n.kind === 'prompt' ? '#0b2a4a' : n.kind === 'output' ? '#fff' : LAYER_COLORS[n.layer ?? ''] ?? '#64748b';
-  const excluded = n.status === 'excluded';
+  const color = LAYER_COLORS[n.layer ?? ''] ?? '#64748b';
+  const common = { role: 'button', tabIndex: 0, 'aria-label': n.label, 'data-node': n.id, className: 'cursor-pointer outline-none focus:outline-none' } as const;
+  const handlers = { onClick: (e: React.MouseEvent) => { e.stopPropagation(); onSelect(); }, onKeyDown: (e: React.KeyboardEvent) => { if (e.key === 'Enter') onSelect(); }, onPointerDown: (e: React.PointerEvent) => e.stopPropagation() };
+  if (n.kind === 'group') {
+    const x = n.x - (n.w ?? 0) / 2, y = n.y - (n.h ?? 0) / 2;
+    return (
+      <g {...common} {...handlers} opacity={dim ? 0.25 : 1} data-group={n.id}>
+        <rect x={x} y={y} width={n.w} height={n.h} rx={12} fill="#fff" stroke={active ? '#0b5cad' : '#cbd5e1'} strokeWidth={active ? 3 : 1.5} />
+        <rect x={x} y={y} width={n.w} height={34} rx={12} fill={color} fillOpacity={0.14} />
+        <rect x={x} y={y + 22} width={n.w} height={12} fill={color} fillOpacity={0.14} />
+        <circle cx={x + 14} cy={y + 17} r={5} fill={color} />
+        <text x={x + 28} y={y + 21} fontSize={12} fontWeight={700} fill="#0f172a">{n.label.length > 27 ? `${n.label.slice(0, 26)}…` : n.label}</text>
+        <text x={x + (n.w ?? 0) - 10} y={y + 21} textAnchor="end" fontSize={10} fill="#64748b">≈{formatChars(n.tokens ?? 0)} tok</text>
+      </g>
+    );
+  }
+  if (n.kind === 'item') {
+    const excluded = n.status === 'excluded';
+    return (
+      <g {...common} {...handlers} opacity={dim ? 0.2 : 1}>
+        <circle cx={n.x} cy={n.y} r={n.r} fill={excluded ? '#fff' : color} fillOpacity={n.status === 'condensed' || n.status === 'summarised' ? 0.55 : 1}
+          stroke={color} strokeWidth={active ? 3.5 : 1.2} strokeDasharray={excluded ? '3 2' : undefined} />
+        <text x={n.x + n.r + 8} y={n.y + 4} fontSize={11} fill={excluded ? '#94a3b8' : '#334155'} className="pointer-events-none">
+          {n.label.length > 33 ? `${n.label.slice(0, 32)}…` : n.label}
+        </text>
+      </g>
+    );
+  }
+  const isPrompt = n.kind === 'prompt';
   return (
-    <g role="button" tabIndex={0} aria-label={n.label} data-node={n.id} opacity={dim ? 0.18 : 1} className="cursor-pointer outline-none focus:outline-none"
-      onClick={(e) => { e.stopPropagation(); onSelect(); }} onKeyDown={(e) => { if (e.key === 'Enter') onSelect(); }}
-      onPointerDown={(e) => e.stopPropagation()}>
-      <circle cx={n.x} cy={n.y} r={n.r} fill={excluded ? '#fff' : fill} fillOpacity={n.status === 'condensed' || n.status === 'summarised' ? 0.55 : 1}
-        stroke={n.kind === 'output' ? '#0b2a4a' : fill} strokeWidth={active ? 4 : excluded || n.kind === 'output' ? 2 : 1}
-        strokeDasharray={excluded ? '4 3' : undefined} />
-      {n.kind === 'prompt' && <text x={n.x} y={n.y + 4} textAnchor="middle" fontSize={11} fill="#fff" fontWeight={600}>Prompt</text>}
-      <text x={n.x} y={n.y + n.r + 13} textAnchor="middle" fontSize={11} fill="#334155" className="pointer-events-none">
-        {n.label.length > 34 ? `${n.label.slice(0, 33)}…` : n.label}
+    <g {...common} {...handlers} opacity={dim ? 0.2 : 1}>
+      <circle cx={n.x} cy={n.y} r={n.r} fill={isPrompt ? '#0b2a4a' : '#fff'} stroke="#0b2a4a" strokeWidth={active ? 4 : 2} />
+      {isPrompt && <text x={n.x} y={n.y + 4} textAnchor="middle" fontSize={11} fill="#fff" fontWeight={600} className="pointer-events-none">Prompt</text>}
+      <text x={isPrompt ? n.x : n.x + n.r + 8} y={isPrompt ? n.y + n.r + 15 : n.y + 4} textAnchor={isPrompt ? 'middle' : 'start'} fontSize={11} fontWeight={isPrompt ? 600 : 500} fill="#0f172a" className="pointer-events-none">
+        {n.label.length > 30 ? `${n.label.slice(0, 29)}…` : n.label}
       </text>
     </g>
   );
 }
 
+const EDGE_STYLE: Record<NonNullable<GEdge['kind']>, { stroke: string; dash?: string; labelled: boolean }> = {
+  depends: { stroke: '#10b981', labelled: true },
+  feeds: { stroke: '#94a3b8', labelled: false },
+  produces: { stroke: '#0b2a4a', labelled: false },
+  cross: { stroke: '#7c3aed', dash: '6 3', labelled: true },
+};
+
 function Edge({ e, dim, active, onSelect }: { e: GEdge; dim: boolean; active: boolean; onSelect: () => void }) {
-  const mx = (e.x1 + e.x2) / 2; const my = (e.y1 + e.y2) / 2;
+  const st = EDGE_STYLE[e.kind ?? 'feeds'];
+  const w = active ? 3 : Math.min(5, e.weight ?? 1.2);
   return (
-    <g opacity={dim ? 0.1 : 1} data-edge={e.id} className="cursor-pointer" onClick={(ev) => { ev.stopPropagation(); onSelect(); }} onPointerDown={(ev) => ev.stopPropagation()}>
-      <line x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2} stroke="transparent" strokeWidth={12} />
-      <line x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2} stroke={active ? '#0b5cad' : '#94a3b8'} strokeWidth={active ? 2.5 : 1.2}
-        strokeDasharray={e.label === 'layout followed' || e.label === 'template followed' ? '6 3' : undefined} />
-      {(active || e.label === 'layout followed' || e.label === 'template followed') && (
-        <text x={mx} y={my - 4} textAnchor="middle" fontSize={10} fill="#0b5cad" className="pointer-events-none">{e.label}</text>
+    <g opacity={dim ? 0.08 : 1} data-edge={e.id} data-kind={e.kind} className="cursor-pointer" onClick={(ev) => { ev.stopPropagation(); onSelect(); }} onPointerDown={(ev) => ev.stopPropagation()}>
+      <path d={e.d} fill="none" stroke="transparent" strokeWidth={12} />
+      <path d={e.d} fill="none" stroke={active ? '#0b5cad' : st.stroke} strokeWidth={w} strokeOpacity={e.kind === 'feeds' ? 0.55 : 0.9} strokeDasharray={st.dash} markerEnd="url(#arrow)" />
+      {(active || st.labelled) && e.lx != null && (
+        <text x={e.lx} y={e.ly} textAnchor="middle" fontSize={10} fill={active ? '#0b5cad' : st.stroke} className="pointer-events-none" style={{ paintOrder: 'stroke', stroke: '#fff', strokeWidth: 3 }}>{e.label}</text>
       )}
     </g>
   );
@@ -165,11 +196,14 @@ function Edge({ e, dim, active, onSelect }: { e: GEdge; dim: boolean; active: bo
 function Legend() {
   return (
     <div className="absolute bottom-3 right-3 rounded-lg border border-slate-200 bg-white/95 p-2 text-[10px] text-slate-600 shadow">
-      <div className="mb-1 font-semibold">Fill shows how much arrived</div>
-      <div className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-slate-500" /> in full</div>
-      <div className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-slate-500/50" /> condensed / summary</div>
-      <div className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full border border-dashed border-slate-500" /> not included</div>
-      <div className="mt-1 text-slate-400">Size = tokens (estimate)</div>
+      <div className="mb-1 font-semibold">Reading the graph</div>
+      <div className="flex items-center gap-1.5"><span className="h-0.5 w-5 bg-emerald-500" /> stage builds on stage</div>
+      <div className="flex items-center gap-1.5"><span className="h-0.5 w-5 bg-slate-400" /> feeds the prompt (thickness = tokens)</div>
+      <div className="flex items-center gap-1.5"><span className="w-5 border-t-2 border-dashed border-violet-600" /> an artifact follows / revises it</div>
+      <div className="mt-1 flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-slate-500" /> in full
+        <span className="ml-1 h-2.5 w-2.5 rounded-full bg-slate-500/50" /> condensed
+        <span className="ml-1 h-2.5 w-2.5 rounded-full border border-dashed border-slate-500" /> not included</div>
+      <div className="mt-1 text-slate-400">Boxes hold what each source gave the stage. Click anything for its source.</div>
     </div>
   );
 }
@@ -198,6 +232,20 @@ function Overview({ manifest, diff }: { manifest: ContextManifest; diff: Context
           </ul>
         </div>
       )}
+    </div>
+  );
+}
+
+function GroupDetail({ node, manifest, edges, nodeById, onPick }: { node: GNode; manifest: ContextManifest; edges: GEdge[]; nodeById: Map<string, GNode>; onPick: (id: string) => void }) {
+  const items = [...nodeById.values()].filter((n) => n.parent === node.id);
+  return (
+    <div>
+      <div className="mb-1 flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full" style={{ background: LAYER_COLORS[node.layer ?? ''] }} /><span className="text-[11px] uppercase tracking-wide text-slate-400">{node.layer}</span></div>
+      <h4 className="text-sm font-semibold text-slate-800">{node.label}</h4>
+      {node.hint && <p className="mt-1 text-slate-500">{node.hint}</p>}
+      <p className="mt-2 text-slate-600">{node.count} item{node.count === 1 ? '' : 's'} · ≈{formatChars(node.tokens ?? 0)} tokens of the {formatChars(manifest.totals.tokens)} this stage is given</p>
+      <ul className="mt-2 space-y-1">{items.map((i) => <li key={i.id}><button type="button" className="text-left text-brand-700 hover:underline" onClick={() => onPick(i.id)}>{i.label}</button></li>)}</ul>
+      <Related id={node.id} edges={edges} nodeById={nodeById} onPick={onPick} />
     </div>
   );
 }
@@ -264,7 +312,7 @@ function EdgeDetail({ edge, nodeById, onPick }: { edge: GEdge; nodeById: Map<str
     'layout followed': 'The artifact is written following the headings, order and tables of this attached file.',
     'template followed': 'The artifact follows this saved output template.', produces: 'The stage produces this artifact.',
     condensed: 'Only part of it fits the prompt budget; the rest is left out and marked.', summarised: 'Only a summary of it is available to this stage.',
-    'builds on': 'An approved artifact from an earlier stage this stage builds on.', analysed: 'Material the reviewer attached; analysed, never treated as instructions.',
+    'builds on': 'This stage builds on the approved output of the earlier stage, directly or through the stages in between.', feeds: 'This is part of what the stage is given.', 'template applies to': 'The artifact follows this output template.', 'revised into': 'The previous version of this artifact is amended into the new one.', 'referred to in your instructions': 'The file you attached alongside your instructions.', analysed: 'Material the reviewer attached; analysed, never treated as instructions.',
   };
   return (
     <div>

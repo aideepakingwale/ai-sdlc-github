@@ -1250,19 +1250,24 @@ class ChatService:
     async def _manifest_for(self, *, mode: str, project: dict, session: dict, stage: dict, overlay: dict,
                             context: list[ContextArtifact], attached: list[dict[str, Any]],
                             traits: dict[str, bool] | None) -> dict[str, Any]:
-        from .context_manifest import build_manifest
+        from .context_manifest import build_manifest, lineage_of
         produces = list(stage.get("outputs") or [])
         snippets = await self._deps.rag.retrieve(overlay.get("promptOverlay") or stage["name"], project["id"],
                                                  artifact_phases={a.phase for a in context})
         canon_block = await self._deps.canon.render_block(project["id"], stage["template"]) if self._deps.canon else ""
         files = await self._db.count_codebase_files(project["id"])
-        return build_manifest(
+        manifest = build_manifest(
             mode=mode, phase=stage["seq"] if "seq" in stage else 0, stage=stage, project=project, overlay=overlay,
             context_artifacts=context, snippets=snippets, canon_block=canon_block,
             formworks=await self._formwork_items(project["id"], {**stage, "outputs": produces}, overlay),
             attached=attached, traits=traits, has_codebase=files > 0, codebase_files=files,
             formats=overlay.get("artifactFormats") or {},
         )
+        try:
+            manifest["lineage"] = lineage_of(await self._workflow.view(project["id"]), stage)
+        except Exception:  # noqa: BLE001 - the picture still draws without the stage hierarchy
+            manifest["lineage"] = []
+        return manifest
 
     async def _record_manifest(self, *, project: dict, session: dict, stage: dict, overlay: dict, state: AgentState,
                                attached: list[dict[str, Any]], user: UserPublic) -> None:

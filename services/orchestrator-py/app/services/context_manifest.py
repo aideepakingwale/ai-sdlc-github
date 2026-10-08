@@ -190,3 +190,24 @@ def diff_manifests(old: dict[str, Any] | None, new: dict[str, Any]) -> dict[str,
                      "to": {"status": b[k]["status"], "chars": b[k]["chars"]}}
                     for k in b if k in a and (a[k]["status"], a[k]["chars"]) != (b[k]["status"], b[k]["chars"])],
     }
+
+
+def lineage_of(workflow: dict[str, Any], stage: dict[str, Any]) -> list[dict[str, Any]]:
+    """The stages this one builds on, directly or through others, with their own dependencies (by stage number):
+    the hierarchy the context graph draws between the previous stages. Nearest stages are listed last."""
+    by_key = {s["key"]: s for s in workflow.get("stages", [])}
+    seen: dict[str, dict[str, Any]] = {}
+    todo = list(stage.get("dependsOn") or [])
+    while todo:
+        key = todo.pop()
+        if key in seen or key not in by_key:
+            continue
+        st = by_key[key]
+        seen[key] = {"phase": st["seq"], "name": st["name"],
+                     "dependsOn": [by_key[d]["seq"] for d in (st.get("dependsOn") or []) if d in by_key]}
+        todo.extend(st.get("dependsOn") or [])
+    direct = {by_key[d]["seq"] for d in (stage.get("dependsOn") or []) if d in by_key}
+    out = sorted(seen.values(), key=lambda x: x["phase"])
+    for o in out:
+        o["direct"] = o["phase"] in direct
+    return out

@@ -410,3 +410,19 @@ async def test_the_validation_agent_is_actually_shown_the_attached_documents():
     assert verdict.ok
     assert "Sample-Integration-HLD.doc" in seen["user"] and "EIP adapter calls AMOS over HTTPS." in seen["user"]
     assert "never report an attached file as missing" in seen["system"]
+
+
+def test_lineage_lists_every_stage_this_one_builds_on_with_its_own_dependencies():
+    from app.services.context_manifest import lineage_of
+    wf = {"stages": [
+        {"seq": 1, "key": "req", "name": "Requirements", "dependsOn": []},
+        {"seq": 2, "key": "arch", "name": "Architecture", "dependsOn": ["req"]},
+        {"seq": 3, "key": "lld", "name": "Design", "dependsOn": ["arch"]},
+        {"seq": 4, "key": "qa", "name": "Testing", "dependsOn": ["lld", "req"]},
+        {"seq": 5, "key": "side", "name": "Unrelated", "dependsOn": ["req"]},
+    ]}
+    got = lineage_of(wf, wf["stages"][3])
+    assert [g["phase"] for g in got] == [1, 2, 3]                                # transitive, in order, no siblings
+    assert {g["phase"]: g["dependsOn"] for g in got} == {1: [], 2: [1], 3: [2]}
+    assert {g["phase"]: g["direct"] for g in got} == {1: True, 2: False, 3: True}
+    assert lineage_of(wf, wf["stages"][0]) == []
