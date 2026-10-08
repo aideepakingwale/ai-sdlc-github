@@ -74,6 +74,8 @@ Submit answers while questions are open). The decision that needs you (Approve s
 findings) sits just above it. Test hooks: `v2-stagechat` (with `data-mode`), `v2-stage-header`, `v2-minimap`,
 `v2-next`, `v2-questions`, `plan-card`, `v2-approval`, `v2-approve`, `v2-composer`, `v2-primary`.
 
+A stage whose earlier stages are not all approved is read-only: the banner says what it is waiting for and the composer is disabled. The server enforces the same rule (planning, saving the plan, discussing, answering questions and running all return "This stage is waiting for an earlier one"), so it also holds for scripts and for the classic workspace.
+
 The earlier `variant="chat"` of the classic view is no longer used by the new workspace.
 
 **Pipeline** (`v2/PipelineView.tsx`, helpers in `v2/pipelineLib.ts`): the levels left to right with arrows, parallel

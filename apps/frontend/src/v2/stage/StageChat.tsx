@@ -308,14 +308,15 @@ export default function StageChat(props: StageControllerProps & { onOpenPipeline
 
   /* ---- composer: always at the bottom ---- */
   const writable = plan?.canEdit ?? stage.canRetrigger;
+  const blocked = blockedReason.length > 0;               // an earlier stage is not approved yet: nothing here can be planned or run
   const asking = Boolean(clarification?.length) && !streamingHere;
   const label = asking ? (clarifyStep >= (clarification?.length ?? 1) - 1 ? 'Submit answers' : 'Next') : { new: 'Review plan', plan: 'Generate', running: 'Generating', review: 'Request changes', amend: 'Update plan', approved: 'Re-run stage', escalated: 'Request changes' }[mode];
-  const placeholder = asking ? 'Answer the questions above first. Anything you skip is left to the agent.' : {
+  const placeholder = blocked ? `Waiting for ${blockedReason.join(', ')} to be approved. You can write here once it is.` : asking ? 'Answer the questions above first. Anything you skip is left to the agent.' : {
     new: stage.phase === 1 ? 'Describe what you need. Type @ to reference outputs, templates or files.' : `Add guidance for the ${stage.persona} (optional). Type @ to pull in earlier outputs, templates or files.`,
     plan: 'Refine the brief and I will update the plan…', running: 'Generating… editing is locked', review: 'Describe the changes you want… (or approve above)',
     amend: amendUndecided ? 'Choose how to re-plan above first' : 'Adjust the instructions, then update the plan', approved: 'This stage is approved. Re-run it to change it.', escalated: 'Describe what to change…',
   }[mode];
-  const editorDisabled = asking || locked || mode === 'running' || mode === 'approved' || (mode === 'amend' && amendUndecided);
+  const editorDisabled = blocked || asking || locked || mode === 'running' || mode === 'approved' || (mode === 'amend' && amendUndecided);
   const useBrief = mode === 'new' || mode === 'amend';
   const primary = (() => {
     if (asking) {
@@ -348,9 +349,9 @@ export default function StageChat(props: StageControllerProps & { onOpenPipeline
         <PromptEditor ref={textareaRef} value={mode === 'plan' ? refineText : prompt} onChange={mode === 'plan' ? setRefineText : setPrompt} mentions={allMentions} onPick={pickMention} onUnpick={unpickMention} disabled={editorDisabled} placeholder={placeholder} />
       )}
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <button type="button" disabled={locked || uploading} onClick={() => fileInputRef.current?.click()} className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs text-slate-600 hover:border-brand-400 disabled:opacity-40">{uploading ? 'Uploading…' : '+ Document'}</button>
+        <button type="button" disabled={blocked || locked || uploading} onClick={() => fileInputRef.current?.click()} className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs text-slate-600 hover:border-brand-400 disabled:opacity-40">{uploading ? 'Uploading…' : '+ Document'}</button>
         <span className="text-xs text-slate-500">type @ to reference outputs</span>
-        <button type="button" onClick={primary.run} disabled={primary.disabled || (mode === 'plan' && !writable)} data-testid="v2-primary"
+        <button type="button" onClick={primary.run} disabled={blocked || primary.disabled || (mode === 'plan' && !writable)} data-testid="v2-primary"
           className="ml-auto rounded-lg bg-brand-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50">{primary.loading ? `${label}…` : label}</button>
       </div>
       {useBrief && promptMissing && !asking && <p className="mt-1.5 text-xs text-slate-500">{promptError}</p>}
@@ -359,7 +360,7 @@ export default function StageChat(props: StageControllerProps & { onOpenPipeline
 
   /* ---- assemble ---- */
   return (
-    <div className="flex h-full min-h-0 flex-col bg-slate-50" data-testid="v2-stagechat" data-mode={mode}>
+    <div className="flex h-full min-h-0 flex-col bg-slate-50" data-testid="v2-stagechat" data-mode={mode} data-blocked={blocked ? 'true' : 'false'}>
       {header}
       <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-[760px] flex-col gap-4 px-4 py-5">

@@ -697,6 +697,7 @@ class ChatService:
         _, stage = await self._stage_for(project_id, phase)
         if not await self._can_write_stage(project_id, stage, user):
             raise SdlcError("FORBIDDEN", f"Answering the '{stage['name']}' clarification requires write permission ({' or '.join(self._stage_writers(stage))})")
+        await self.assert_dependencies_approved(project_id, phase)
         row = await self._db.get_stage_plan(project_id, phase)
         existing = ((row["prompt_overlay"] if row else "") or "").strip()
         lines: list[str] = []
@@ -756,6 +757,7 @@ class ChatService:
         _, stage = await self._stage_for(project_id, phase)
         if not await self._can_write_stage(project_id, stage, user):
             raise SdlcError("FORBIDDEN", f"Posting to the '{stage['name']}' discussion requires write permission ({' or '.join(self._stage_writers(stage))})")
+        await self.assert_dependencies_approved(project_id, phase)
         um = (user_message or "").strip()
         if um:
             enforce_input(um, channel="plan")
@@ -1097,9 +1099,30 @@ class ChatService:
         st.pop("_sig", None)
         return st
 
+    async def unmet_dependencies(self, project_id: str, phase: int) -> list[str]:
+        """Names of the upstream stages this stage still waits for (declared dependencies not yet approved)."""
+        wf, stage = await self._stage_for(project_id, phase)
+        deps = stage.get("dependsOn") or []
+        if not deps:
+            return []
+        by_key = {s["key"]: s for s in wf["stages"]}
+        states = {s["SK"]: s for s in await self._dynamo.list_phase_states(project_id)}
+        return [by_key[d]["name"] for d in deps
+                if d in by_key and (states.get(f"PHASE#{by_key[d]['seq']}") or {}).get("status") != "APPROVED"]
+
+    async def assert_dependencies_approved(self, project_id: str, phase: int) -> None:
+        """A stage cannot be planned, discussed or run before the stages it depends on are approved."""
+        unmet = await self.unmet_dependencies(project_id, phase)
+        if unmet:
+            raise SdlcError(
+                "GATE_CONFLICT",
+                f"This stage is waiting for an earlier one. It runs once {', '.join(unmet)} {'is' if len(unmet) == 1 else 'are'} approved.",
+            )
+
     async def assert_plan_ready(self, project_id: str, phase: int, user: UserPublic) -> None:
         """Generation gate: only a finished, up-to-date plan may start a run."""
         await self._authz.assert_project_access(project_id, user)
+        await self.assert_dependencies_approved(project_id, phase)
         st = await self._plan_status(project_id, phase)
         if st["generating"]:
             raise SdlcError("GATE_CONFLICT", "This stage is already generating")
@@ -1320,6 +1343,8 @@ class ChatService:
         selectable model catalog, skills, tools, context inventory and the actual
         system-generated prompt (D-56/D-68). Deterministic — nothing runs, no tokens."""
         await self._authz.assert_project_access(project_id, user)
+        if run_intel:                                     # the AI planning pass costs tokens: not before the stage can run
+            await self.assert_dependencies_approved(project_id, phase)
         wf, stage = await self._stage_for(project_id, phase)
         project = await self._db.get_project(project_id)
         session = await self._db.get_session(project_id)
@@ -1497,6 +1522,7 @@ class ChatService:
         _, stage = await self._stage_for(project_id, phase)
         if not await self._can_write_stage(project_id, stage, user):
             raise SdlcError("FORBIDDEN", f"Editing the '{stage['name']}' plan requires write permission ({' or '.join(self._stage_writers(stage))})")
+        await self.assert_dependencies_approved(project_id, phase)
         await self.assert_not_generating(project_id, phase)
         await self._assert_own_references(project_id, overlay)
         formats = None                                    # None = keep the stored per-artifact formats

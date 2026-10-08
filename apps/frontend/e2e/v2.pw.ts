@@ -97,6 +97,24 @@ test.describe('stage view', () => {
     await expect(page.getByTestId('v2-primary')).toHaveText('Review plan');
   });
 
+  test('a stage whose earlier stage is not approved cannot be planned or run', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-stage-2').click();
+    await expect(page.getByTestId('v2-stagechat')).toHaveAttribute('data-blocked', 'true');
+    await expect(page.getByText(/waiting for an earlier one/i)).toBeVisible();
+    await expect(page.getByTestId('v2-primary')).toBeDisabled();
+    await expect(page.getByTestId('v2-composer').getByRole('textbox').first()).toHaveAttribute('contenteditable', /false|^$/);
+    // and the server refuses it too, whatever the browser does
+    for (const [method, path, data] of [['post', 'plan/trigger', {}], ['post', 'clarify', { answers: [] }], ['post', 'discuss', { userMessage: 'hi' }]] as const) {
+      const res = await page.request[method](`/api/projects/${id}/phase/2/${path}`, { data });
+      expect(res.status()).toBeGreaterThanOrEqual(400);
+      expect(await res.text()).toContain('waiting for an earlier one');
+    }
+  });
+
   test('plan, questions and generation run through the conversation', async ({ page }) => {
     test.setTimeout(150_000);
     await login(page, '/?ui=v2');

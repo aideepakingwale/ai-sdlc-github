@@ -268,7 +268,13 @@ def _plan_chat():
     chat = _chat()
     chat._redis, chat._db = _Redis(), PlanDb()
     chat._authz = SimpleNamespace(assert_project_access=lambda *a: _noop())
+    # an entry stage: nothing upstream to wait for (the dependency guard is tested in test_stage_dependencies.py)
+    chat._stage_for = lambda pid, phase: _stage(phase)
     return chat
+
+
+async def _stage(phase):
+    return {"stages": []}, {"seq": phase, "key": f"s{phase}", "name": f"Stage {phase}", "dependsOn": []}
 
 
 def _built(chat, overlay="Add tests"):
