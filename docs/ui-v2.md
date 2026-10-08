@@ -118,12 +118,28 @@ apps/frontend/src/v2/
 
 ## Testing
 
-`npx vitest run` covers the helpers (`v2/v2.test.ts`). Browser checks were done with Playwright against the local
-stack (mock model) by logging in with `?ui=v2`, walking the six project tabs, the artefact pane, the pipeline page, the
-four configuration pages, and the docked composer. Useful selectors: `v2-workspace`, `v2-sidebar`,
-`v2-project-switcher`, `v2-nav-{all,explorer,pipeline,context,quality,designer,governance,observability}`,
-`v2-stage-{n}`, `v2-open-project-panel`, `v2-ptab-{team,artefacts,files,codebase,audit,skills}`, `v2-pane`,
-`v2-dock`, `v2-composer`, `v2-pipeline`, `v2-attention`.
+- **Unit:** `npx vitest run` covers the pure helpers (`v2/v2.test.ts`).
+- **Browser (Playwright):** `apps/frontend/e2e/v2.pw.ts`, nine tests against a live stack: sign-in, default and
+  classic fallback, the docked composer, the six project tabs, the pipeline page, the configuration pages as pages,
+  dark theme, and the narrow layout (390 px, no sideways scroll). Each test creates its own project and the suite
+  deletes them afterwards. Sign-in happens once in `e2e/global-setup.ts` (the login endpoint is rate limited).
+
+```
+pnpm --filter @sdlc/frontend e2e                       # needs a running stack
+# Docker default: http://localhost:3000, user superadmin@sdlc.local / Password123!
+# Windows PowerShell with other values:
+$env:E2E_BASE_URL="http://localhost:3000"; $env:E2E_EMAIL="superadmin@sdlc.local"; $env:E2E_PASSWORD="Password123!"
+pnpm --filter @sdlc/frontend e2e
+```
+
+The first run needs the browser: `pnpm --filter @sdlc/frontend exec playwright install chromium`. Set
+`E2E_CHROMIUM` to use an existing Chromium binary instead. The user needs the SUPER_ADMIN role because the tests open
+Governance and Observability.
+
+Useful selectors: `v2-workspace`, `v2-sidebar`, `v2-project-switcher`,
+`v2-nav-{all,explorer,pipeline,context,quality,designer,governance,observability}`, `v2-stage-{n}`,
+`v2-open-project-panel`, `v2-ptab-{team,artefacts,files,codebase,audit,skills}`, `v2-pane`, `v2-dock`, `v2-composer`,
+`v2-pipeline`, `v2-attention`, `v2-theme-{light,dark,system}`, `v2-side-toggle`, `v2-drawer`.
 
 ## Not done yet
 
