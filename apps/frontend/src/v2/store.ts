@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-export type ProjectTab = 'team' | 'artefacts' | 'files' | 'codebase' | 'audit' | 'skills';
+export type ProjectTab = 'team' | 'artefacts' | 'files' | 'codebase' | 'memory' | 'audit' | 'skills';
 
 /** What the right-hand pane shows. `null` = closed. */
 export type Pane =

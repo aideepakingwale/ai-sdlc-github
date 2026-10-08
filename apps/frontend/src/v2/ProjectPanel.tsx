@@ -8,6 +8,7 @@ import CodeView, { langForExt } from '../components/CodeView';
 import ProjectFiles from './ProjectFiles';
 import SkillsPanel from '../components/SkillsPanel';
 import ProjectTeam from './ProjectTeam';
+import ProjectMemory from './ProjectMemory';
 import { Icon } from '../components/ui/Icon';
 import type { CodeNode, CodeView as CodeViewData } from '../lib/codeTree';
 import { filterTree, iconFor } from '../lib/codeTree';
@@ -24,6 +25,7 @@ const EXPLAIN: Record<ProjectTab, React.ReactNode> = {
   artefacts: <><b>Artefacts.</b> Every document, diagram and file the agents produced, grouped by stage. Open one to read, export or review it. Newer versions replace older ones; the older ones stay in the version menu.</>,
   files: <><b>Files.</b> The same artefacts as real files in their phase folders, with their exact stored names, plus any uploaded codebase. Use this to see what is on disk or in the bucket.</>,
   codebase: <><b>Codebase.</b> <i>Existing</i> is a codebase you upload (a .zip) so the agents ground designs and changes on it. <i>Generated</i> is the project that the implementation stage writes.</>,
+  memory: <><b>Memory.</b> What your team has decided and learned. The platform suggests memories from your clarification answers and change requests; once someone accepts one, every later stage gets it as context. “Just me” memories are your own working style and never shown to others.</>,
   audit: <><b>Audit.</b> The permanent record: each generation, review decision, guardrail action and security review, with the person, role, stage and model. It cannot be edited.</>,
   skills: <><b>Skills.</b> Small on-demand helpers for the stage you are on, such as linting an API or drafting an ADR. Below them, the model providers and services this project is connected to.</>,
 };
@@ -52,6 +54,7 @@ export default function ProjectPanel({
         {tab === 'artefacts' && <ArtefactsTab projectId={projectId} flow={flow} selectedStage={selectedStage} />}
         {tab === 'files' && <ProjectFiles projectId={projectId} onOpenArtifact={(id) => openPane({ type: 'artefact', id, from: 'files' })} />}
         {tab === 'codebase' && <CodebaseTab projectId={projectId} flow={flow} canWrite={canWrite} canManage={canManageTeam} />}
+        {tab === 'memory' && <ProjectMemory projectId={projectId} flow={flow} />}
         {tab === 'audit' && <AuditTab projectId={projectId} flow={flow} />}
         {tab === 'skills' && <SkillsTab projectId={projectId} selectedStage={selectedStage} stageName={flow?.stages.find((x) => x.phase === selectedStage)?.name} />}
       </div>

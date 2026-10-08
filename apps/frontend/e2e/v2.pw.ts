@@ -155,14 +155,14 @@ test.describe('sidebar', () => {
 });
 
 test.describe('project panel', () => {
-  test('opens the six tabs, each with an explainer', async ({ page }) => {
+  test('opens the seven tabs, each with an explainer', async ({ page }) => {
     await login(page, '/?ui=v2');
     const { name } = await newProject(page);
     await page.reload();
     await openProject(page, name);
     await page.getByTestId('v2-open-project-panel').click();
     await expect(page.getByTestId('v2-project-panel')).toBeVisible();
-    for (const [tab, word] of [['team', 'Team.'], ['artefacts', 'Artefacts.'], ['files', 'Files.'], ['codebase', 'Codebase.'], ['audit', 'Audit.'], ['skills', 'Skills.']] as const) {
+    for (const [tab, word] of [['team', 'Team.'], ['artefacts', 'Artefacts.'], ['files', 'Files.'], ['codebase', 'Codebase.'], ['memory', 'Memory.'], ['audit', 'Audit.'], ['skills', 'Skills.']] as const) {
       await page.getByTestId(`v2-ptab-${tab}`).click();
       await expect(page.getByTestId('v2-explain')).toContainText(word);
     }
@@ -172,6 +172,33 @@ test.describe('project panel', () => {
     await expect(page.getByTestId('v2-audit-cat-Security')).toHaveAttribute('aria-pressed', 'true');
     await page.getByTestId('v2-pane-close').click();
     await expect(page.getByTestId('v2-pane')).toHaveCount(0);
+  });
+});
+
+test.describe('memory', () => {
+  test('a memory is added, reaches the stage context and can be archived', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-open-project-panel').click();
+    await page.getByTestId('v2-ptab-memory').click();
+    await expect(page.getByTestId('v2-memory-tab')).toBeVisible();
+    await expect(page.getByTestId('v2-memory-active')).toContainText('Nothing remembered yet');
+
+    await page.getByTestId('v2-memory-add').click();
+    await page.getByLabel('Title').fill('Queues use SQS FIFO');
+    await page.getByLabel('Memory', { exact: true }).fill('Name them <env>-<service>-q');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByTestId('v2-memory-card').first()).toContainText('Queues use SQS FIFO');
+
+    // it is now a layer of what the stage knows
+    const ctx = await page.request.get(`/api/projects/${id}/phase/1/context`);
+    const layers = ((await ctx.json()) as { preview: { layers: Array<{ id: string; items: unknown[] }> } }).preview.layers;
+    expect(layers.find((l) => l.id === 'memory')?.items).toHaveLength(1);
+
+    await page.getByRole('button', { name: 'Archive' }).first().click();
+    await expect(page.getByText('Archived · 1')).toBeVisible();
   });
 });
 

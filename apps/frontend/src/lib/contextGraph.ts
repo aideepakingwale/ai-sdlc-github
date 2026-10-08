@@ -29,7 +29,7 @@ export interface ContextOverview {
 }
 
 export const LAYER_COLORS: Record<string, string> = {
-  instructions: '#64748b', project: '#0ea5e9', canon: '#8b5cf6', upstream: '#10b981',
+  instructions: '#64748b', project: '#0ea5e9', canon: '#8b5cf6', memory: '#a855f7', upstream: '#10b981',
   input: '#f59e0b', revision: '#f97316', attached: '#ec4899', retrieved: '#14b8a6',
 };
 export const STATUS_LABEL: Record<ItemStatus, string> = {
@@ -66,7 +66,7 @@ const HEAD = 34;           // group header
 const ROWH = 32;           // one item row
 const GAP = 26;            // vertical gap between boxes in a column
 const COLW = 360;          // distance between columns
-const ROOTS = ['instructions', 'project', 'canon', 'input', 'attached', 'revision', 'retrieved'];
+const ROOTS = ['instructions', 'project', 'canon', 'memory', 'input', 'attached', 'revision', 'retrieved'];
 
 export function visibleItems(m: ContextManifest, f: GraphFilter = {}): ManifestItem[] {
   const q = (f.query ?? '').trim().toLowerCase();

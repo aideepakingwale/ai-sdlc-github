@@ -161,3 +161,28 @@ def test_manifest_gets_a_memory_layer():
     layer = next(layer for layer in m["layers"] if layer["id"] == "memory")
     assert [i["label"] for i in layer["items"]] == ["Use SQS"]
     assert any(e["from"] == "memory:memory:m1" for e in m["edges"])
+
+
+@pytest.mark.asyncio
+async def test_answers_and_change_requests_become_suggestions_not_active_memory():
+    from app.services.chat import ChatService
+    from app.services.gates import GateService
+
+    s, db = svc()
+    chat = ChatService.__new__(ChatService)
+    chat._deps = SimpleNamespace(memory=s)
+    await chat._suggest_from_answers("p1", 2, {"name": "Solution Architecture", "template": 2}, user(), [
+        {"question": "Which queue should we use?", "answer": "SQS FIFO"},
+        {"question": "Anything else?", "answer": ""},                      # unanswered: nothing to remember
+    ])
+    assert [(r["kind"], r["status"], r["title"], r["body"]) for r in db.rows.values()] == [
+        ("decision", "suggested", "Which queue should we use", "SQS FIFO")]
+
+    gates = GateService.__new__(GateService)
+    gates.memory = s
+    await gates._suggest_from_changes("p1", 2, {"name": "Solution Architecture", "template": 2}, user(),
+                                      "Add a data-flow diagram. Always include a retry section in designs.")
+    kinds = sorted((r["kind"], r["scope"], r["status"]) for r in db.rows.values())
+    assert ("lesson", "project", "suggested") in kinds
+    assert ("working_style", "user", "suggested") in kinds
+    assert not any(r["status"] == "active" for r in db.rows.values())

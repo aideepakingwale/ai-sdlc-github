@@ -14,6 +14,7 @@ export const PROJECT_TOOLS: Array<{ tab: ProjectTab; label: string; hint: string
   { tab: 'artefacts', label: 'Artefacts', hint: 'Everything the agents generated, by stage', icon: 'box' },
   { tab: 'files', label: 'Files', hint: 'The stored files, exactly as they are on disk', icon: 'folder' },
   { tab: 'codebase', label: 'Codebase', hint: 'Browse an uploaded codebase or the code stage 6 writes', icon: 'code' },
+  { tab: 'memory', label: 'Memory', hint: 'What the team has decided and learned, and what you prefer', icon: 'advice' },
   { tab: 'audit', label: 'Audit', hint: 'Every action, who did it and which model ran', icon: 'log-out' },
   { tab: 'skills', label: 'Skills', hint: 'Small helpers you can run on a stage, and connected services', icon: 'zap' },
 ];
