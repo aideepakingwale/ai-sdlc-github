@@ -17,6 +17,7 @@ import type { ProjectFlow } from '../api/flow';
 import type { ChatMessage, PhaseStateView, User } from '../api/types';
 import { streamKey, useApp, useStream, type ActivityItem } from '../store';
 import ArtifactViewer from './ArtifactViewer';
+import ChatTurn from '../v2/ChatTurn';
 import FeedbackPanel from './FeedbackPanel';
 import GatePanel from './GatePanel';
 import ContextPanel from './ContextPanel';
@@ -1078,7 +1079,7 @@ export default function StageWorkspace({
         )}
       </div>
 
-      <div className={chat ? 'flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-5' : 'min-h-0 flex-1 space-y-4 overflow-y-auto p-5'}>
+      <div className={chat ? 'v2-flat flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-5' : 'min-h-0 flex-1 space-y-4 overflow-y-auto p-5'}>
         {!chat && guideCard}
 
         {/* ---- stale / impact-propagation: advice (yellow), never an error ---- */}
@@ -1724,15 +1725,17 @@ export default function StageWorkspace({
         {/* ---- stage thread ---- */}
         <section className={chat ? 'order-first' : undefined}>
           <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
-            Discussion history ({stageMessages.length}) — saved, with timestamps
+            {chat ? `Conversation (${stageMessages.length})` : `Discussion history (${stageMessages.length}) — saved, with timestamps`}
           </div>
           {stageMessages.length === 0 && !streamingHere ? (
             <div className="rounded-lg border border-dashed border-slate-300 p-4 text-center text-xs text-slate-400">
               The full discussion — your instructions, clarifications, agent summaries and review feedback — is saved here with timestamps and fed back to the agent on re-runs.
             </div>
           ) : (
-            <div className="space-y-2">
-              {stageMessages.map((m) => (
+            <div className={chat ? 'space-y-4' : 'space-y-2'}>
+              {stageMessages.map((m) => chat ? (
+                <ChatTurn key={m.id} role={m.role as 'user' | 'assistant' | 'system'} who={m.role === 'user' ? 'You' : m.role === 'system' ? 'System' : `${stage.persona} agent`} time={fmtTime(m.createdAt)} content={m.content} />
+              ) : (
                 <div key={m.id} className={m.role === 'user' ? 'ml-8' : 'mr-8'}>
                   <div className={`flex items-center gap-1.5 px-1 text-[10px] text-slate-400 ${m.role === 'user' ? 'justify-end' : ''}`}>
                     <span className="font-semibold uppercase tracking-wide">{m.role === 'user' ? 'You' : m.role === 'system' ? 'System' : `${stage.persona} agent`}</span>

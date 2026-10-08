@@ -79,3 +79,7 @@ h1, h2, h3 {
   #doc-print-root pre, #doc-print-root table, #doc-print-root svg, #doc-print-root img { break-inside: avoid; max-width: 100% !important; }
   #doc-print-root section { break-inside: auto; }
 }
+
+/* Redesigned workspace: quieter cards inside the stage conversation. */
+.v2-flat .shadow-sm { box-shadow: none; }
+.v2-flat .rounded-xl.border.bg-white { border-color: theme('colors.slate.200'); }

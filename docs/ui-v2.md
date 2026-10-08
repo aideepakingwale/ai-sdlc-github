@@ -46,7 +46,7 @@ The choice is read once when the page loads (`App.tsx`), so the login redirect c
 the discussion thread first, then the clarification, plan, generation and output cards in order. The gate review,
 the "what to do next" bar and the composer (instructions, attach, Review plan / Update plan) are docked at the
 bottom (`data-testid="v2-dock"`, scrolls itself past 55% of the height). Artefact cards open in the right pane.
-There is deliberately no second copy of the stage logic; the variant only changes layout.
+In the thread (`v2/ChatTurn.tsx`) your turns are soft blue bubbles on the right and the agent's are plain text with a small avatar; turns taller than 240 px fold behind "Show more". Cards in the scroll area lose their shadows (`.v2-flat` in `index.css`). There is deliberately no second copy of the stage logic; the variant only changes layout and styling.
 
 **Pipeline** (`v2/PipelineView.tsx`, helpers in `v2/pipelineLib.ts`): progress bar; "Needs attention" (escalated,
 failed, waiting for review, amending, outdated; most urgent first); stages grouped by step with parallel stages side
