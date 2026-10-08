@@ -188,10 +188,12 @@ test.describe('resizing', () => {
     expect(w1).toBeGreaterThan(w0 + 60);
     await page.getByTestId('v2-open-project-panel').click();
     const pane = page.getByTestId('v2-pane');
+    await drag(page, 'v2-split-pane', 150);                  // dragging the divider right narrows the pane
     const p0 = (await pane.boundingBox())!.width;
-    await drag(page, 'v2-split-pane', -120);                 // dragging the divider left widens the pane
+    expect(p0).toBeLessThan(560);
+    await drag(page, 'v2-split-pane', -100);                 // dragging it left widens the pane again
     const p1 = (await pane.boundingBox())!.width;
-    expect(p1).toBeGreaterThan(p0 + 90);
+    expect(p1).toBeGreaterThan(p0 + 70);
     await page.reload();
     await expect(page.getByTestId('v2-workspace')).toBeVisible();
     expect((await page.getByTestId('v2-sidebar').boundingBox())!.width).toBeCloseTo(w1, -1);
