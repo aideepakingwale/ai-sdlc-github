@@ -19,6 +19,7 @@ import ProjectExplorer from '../components/ProjectExplorer';
 import RightPanel from '../components/RightPanel';
 import StageWorkspace from '../components/StageWorkspace';
 import { useApp } from '../store';
+import { switchUiVersion } from '../v2/uiVersion';
 
 function usePersistedFlag(key: string): [boolean, (v: boolean) => void] {
   const [v, setV] = useState(() => {
@@ -289,6 +290,13 @@ export default function Workspace() {
             </span>
           )}
           <div className="ml-3 flex shrink-0 items-center gap-2">
+          <button
+            onClick={() => switchUiVersion('v2')} data-testid="try-v2"
+            className="rounded-lg border border-brand-200 bg-brand-50 px-2.5 py-1 text-xs font-semibold text-brand-700 hover:border-brand-400"
+            title="Preview the redesigned workspace"
+          >
+            Try the new workspace (beta)
+          </button>
           <button
             onClick={() => setHelpOpen(true)}
             className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:border-brand-300 hover:text-brand-700"

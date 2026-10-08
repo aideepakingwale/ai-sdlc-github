@@ -4,7 +4,12 @@ import { api } from './api/client';
 import type { User } from './api/types';
 import Login from './pages/Login';
 import Workspace from './pages/Workspace';
+import V2Workspace from './v2/V2Workspace';
+import { getUiVersion } from './v2/uiVersion';
 import { useApp } from './store';
+
+// Resolved once at load: `?ui=` is read (and remembered) before login redirects drop the query string.
+const UI_VERSION = getUiVersion();
 
 export default function App() {
   const { user, setUser } = useApp();
@@ -30,7 +35,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <Login />} />
-      <Route path="/*" element={user ? <Workspace /> : <Navigate to="/login" replace />} />
+      <Route path="/*" element={user ? (UI_VERSION === 'v2' ? <V2Workspace /> : <Workspace />) : <Navigate to="/login" replace />} />
     </Routes>
   );
 }

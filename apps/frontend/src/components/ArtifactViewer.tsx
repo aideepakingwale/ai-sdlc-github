@@ -66,12 +66,15 @@ export default function ArtifactViewer({
   artefactId,
   onClose,
   canRepair = false,
+  embedded = false,
 }: {
   projectId: string;
   artefactId: string;
   onClose: () => void;
   /** Show diagram Fix syntax / Regenerate actions (stage writers only). */
   canRepair?: boolean;
+  /** Render inside a pane (no overlay, no Escape handling) instead of as a modal. */
+  embedded?: boolean;
 }) {
   const qc = useQueryClient();
   const [tab, setTab] = useState<string>('');
@@ -159,10 +162,11 @@ export default function ArtifactViewer({
   }
 
   useEffect(() => {
+    if (embedded) return undefined;
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, embedded]);
 
   const a = detail.data?.artefact;
   const ext = extOf(a?.storageKey);
@@ -177,9 +181,9 @@ export default function ArtifactViewer({
   const activeTab = tab || tabs[0] || '';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+    <div className={embedded ? 'h-full min-h-0' : 'fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4'} onClick={embedded ? undefined : onClose}>
       <div
-        className="flex max-h-[90vh] w-full max-w-4xl flex-col rounded-2xl bg-white shadow-2xl"
+        className={embedded ? 'flex h-full min-h-0 flex-col bg-white' : 'flex max-h-[90vh] w-full max-w-4xl flex-col rounded-2xl bg-white shadow-2xl'}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-3 border-b border-slate-200 px-5 py-3">

@@ -14,8 +14,8 @@ import { LAYER_COLORS, STATUS_LABEL, coverage, formatChars, type ContextManifest
  * attached material and retrieved knowledge — with a link to the full interactive view. Shown to anyone
  * who can read the project. `refreshKey` changes when the plan or a run changes what the stage knows.
  */
-export default function ContextPanel({ projectId, seq, refreshKey }: { projectId: string; seq: number; refreshKey: string }) {
-  const [open, setOpen] = useState(false);
+export default function ContextPanel({ projectId, seq, refreshKey, defaultOpen = false }: { projectId: string; seq: number; refreshKey: string; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
   const [full, setFull] = useState(false);
   const [project, setProject] = useState(false);
   const [mode, setMode] = useState<'preview' | 'actual'>('preview');
