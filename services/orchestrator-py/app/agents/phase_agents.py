@@ -645,6 +645,7 @@ class AgentDeps:
     telemetry: Any = None  # TelemetryService (D-35); optional so tests stay lean
     canon: Any = None      # CanonService (D-38) — binding project rules
     formworks: Any = None  # FormworkService (D-38) — output templates
+    memory: Any = None     # MemoryService — confirmed team memory, its own prompt layer
 
 
 @dataclass
@@ -841,6 +842,16 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
         if canon_block:
             emit({"type": "node", "node": "agent",
                   "label": "Canon: applying the project's binding rules and decisions"})
+    if getattr(deps, "memory", None) is not None:
+        try:
+            memory_block, _used = await deps.memory.block_for(
+                state.project_id, state.requested_by, state.stage_template, state.user_input, record_use=True)
+        except Exception:  # noqa: BLE001 - memory is helpful context, never a reason to fail a run
+            memory_block = ""
+        if memory_block:
+            canon_block = f"{canon_block}\n\n{memory_block}" if canon_block else memory_block
+            emit({"type": "node", "node": "agent",
+                  "label": f"Memory: applying {len(_used)} confirmed team memor{'y' if len(_used) == 1 else 'ies'}"})
     formwork_block = ""
     if deps.formworks is not None:
         formwork_block = await deps.formworks.render_block(
@@ -2495,6 +2506,14 @@ async def _generate_layout_doc(
     context_block, _ = await build_context_block(
         state.context_window, deps.settings.CONTEXT_TOKEN_THRESHOLD, deps.llm)
     canon_block = await deps.canon.render_block(state.project_id, state.stage_template) if deps.canon else ""
+    if getattr(deps, "memory", None) is not None:
+        try:
+            memory_block, _ = await deps.memory.block_for(
+                state.project_id, state.requested_by, state.stage_template, state.user_input)
+        except Exception:  # noqa: BLE001
+            memory_block = ""
+        if memory_block:
+            canon_block = f"{canon_block}\n\n{memory_block}" if canon_block else memory_block
     sys_parts = [
         render_prompt("policy.responsible_ai"),
         (render_prompt("phase.system.persona", persona=persona, phase_id=phase.id, phase_name=phase.name)

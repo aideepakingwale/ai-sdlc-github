@@ -220,7 +220,7 @@ class ChatService:
             state = AgentState(
                 project_id=project["id"], session_id=session["id"], current_phase=seq,
                 stage_template=stage["template"], stage_name=stage["name"],
-                stage_reviewer=stage["reviewerRole"],
+                stage_reviewer=stage["reviewerRole"], requested_by=user.id,
                 user_input=message, context_window=window, amend_comments=amend,
                 tech_stack=stack_of(project), tech_stack_source=stack_source(project),
                 model_role=stage.get("modelRole") or "",
@@ -416,7 +416,7 @@ class ChatService:
         return [a for a in raw if a.phase in seqs]
 
     async def _assemble_prompt_preview(self, project: dict, session: dict, stage: dict, overlay: dict, emit: Emit,
-                                       items: list[dict[str, Any]] | None = None):
+                                       items: list[dict[str, Any]] | None = None, user_id: str = ""):
         """Assemble the exact system+user prompt the stage would run with, given the
         editable overlay — WITHOUT calling the LLM. The proprietary craft/quality-bar
         core is included read-only; only the overlay (instructions + curated context)
@@ -431,6 +431,10 @@ class ChatService:
                                                  artifact_phases={a.phase for a in context})
         rag_block = self._deps.rag.render_block(snippets)
         canon_block = await self._deps.canon.render_block(project["id"], stage["template"]) if self._deps.canon else ""
+        if getattr(self._deps, "memory", None):
+            memory_block, _ = await self._deps.memory.block_for(
+                project["id"], user_id, stage["template"], overlay.get("promptOverlay") or stage["name"])
+            canon_block = f"{canon_block}\n\n{memory_block}" if canon_block and memory_block else (canon_block or memory_block)
         produces = list(stage.get("outputs") or [])
         fmts = overlay.get("artifactFormats") or {}
         formwork_block = await self._deps.formworks.render_block(
@@ -743,9 +747,28 @@ class ChatService:
                 )
         except Exception:  # noqa: BLE001
             log.warning("could not persist clarification turn", exc_info=True)
+        await self._suggest_from_answers(project_id, phase, stage, user, answers)
         self._audit.record(project_id=project_id, phase=phase, agent_role="Orchestrator",
                            event="clarification.answered", human_reviewer=user.email,
                            detail={"stage": stage["key"], "count": len(lines)})
+
+    async def _suggest_from_answers(self, project_id: str, phase: int, stage: dict, user: UserPublic,
+                                    answers: list[dict[str, Any]]) -> None:
+        """Each real answer is a decision the team made: propose it as a memory (a person confirms it later)."""
+        memory = getattr(self._deps, "memory", None)
+        if memory is None:
+            return
+        try:
+            for a in answers:
+                q, ans = str(a.get("question") or "").strip(), str(a.get("answer") or "").strip()
+                if not q or not ans:
+                    continue
+                await memory.suggest(
+                    project_id=project_id, kind="decision", title=q.rstrip("?: "), body=ans, stage=stage.get("template"),
+                    source={"type": "clarification", "phase": phase, "stage": stage.get("name"), "by": user.email},
+                    created_by=user.id)
+        except Exception:  # noqa: BLE001 - suggestions must never block answering
+            log.warning("could not propose memories from the answers", exc_info=True)
 
     async def save_discussion_turn(
         self, *, project_id: str, phase: int, user: UserPublic,
@@ -1249,8 +1272,15 @@ class ChatService:
 
     async def _manifest_for(self, *, mode: str, project: dict, session: dict, stage: dict, overlay: dict,
                             context: list[ContextArtifact], attached: list[dict[str, Any]],
-                            traits: dict[str, bool] | None) -> dict[str, Any]:
+                            traits: dict[str, bool] | None, user_id: str = "") -> dict[str, Any]:
         from .context_manifest import build_manifest, lineage_of
+        memories: list[dict[str, Any]] = []
+        if getattr(self._deps, "memory", None):
+            try:
+                memories = await self._deps.memory.select(
+                    project["id"], user_id, stage.get("template"), overlay.get("promptOverlay") or stage.get("name", ""))
+            except Exception:  # noqa: BLE001
+                log.warning("could not load memory for the manifest", exc_info=True)
         produces = list(stage.get("outputs") or [])
         snippets = await self._deps.rag.retrieve(overlay.get("promptOverlay") or stage["name"], project["id"],
                                                  artifact_phases={a.phase for a in context})
@@ -1261,7 +1291,7 @@ class ChatService:
             context_artifacts=context, snippets=snippets, canon_block=canon_block,
             formworks=await self._formwork_items(project["id"], {**stage, "outputs": produces}, overlay),
             attached=attached, traits=traits, has_codebase=files > 0, codebase_files=files,
-            formats=overlay.get("artifactFormats") or {},
+            formats=overlay.get("artifactFormats") or {}, memories=memories,
         )
         try:
             manifest["lineage"] = lineage_of(await self._workflow.view(project["id"]), stage)
@@ -1275,7 +1305,7 @@ class ChatService:
         try:
             manifest = await self._manifest_for(
                 mode="actual", project=project, session=session, stage={**stage, "seq": state.current_phase},
-                overlay=overlay, context=list(state.context_window), attached=attached, traits=state.project_traits)
+                overlay=overlay, context=list(state.context_window), attached=attached, traits=state.project_traits, user_id=user.id)
             manifest["phase"] = state.current_phase
             await self._db.insert_context_manifest(project["id"], state.current_phase, manifest, user.email)
         except Exception:  # noqa: BLE001
@@ -1298,12 +1328,13 @@ class ChatService:
             "artifactFormats": self._formats_of(row),
         }
         attached: list[dict[str, Any]] = []
-        _, _, _, context, _ = await self._assemble_prompt_preview(project, session, stage, overlay, lambda e: None, items=attached)
+        _, _, _, context, _ = await self._assemble_prompt_preview(project, session, stage, overlay, lambda e: None, items=attached, user_id=user.id)
         traits = await self.resolve_project_traits(project=project, phase=phase, user_text=overlay["promptOverlay"],
                                                    upstream=[f"{a.type} {a.title}" for a in context[-30:]], allow_llm=False)
         preview = await self._manifest_for(
             mode="preview", project=project, session=session, stage={**stage, "seq": phase}, overlay=overlay,
-            context=context, attached=attached, traits=trait_values({k: v for k, v in traits.items() if k[0] != "_"}))
+            context=context, attached=attached, traits=trait_values({k: v for k, v in traits.items() if k[0] != "_"}),
+            user_id=user.id)
         preview["phase"] = phase
         runs = await self._db.list_context_manifests(project_id, phase, limit=2)
         actual = runs[0] if runs else None
@@ -1380,7 +1411,7 @@ class ChatService:
                 clarification = None
         step_overrides = self._step_overrides(row)
         system, user_prompt, extra_context, context, snippets = await self._assemble_prompt_preview(
-            project, session or {}, stage, overlay, lambda e: None
+            project, session or {}, stage, overlay, lambda e: None, user_id=user.id
         )
         # Structured multi-model plan (D-68): deterministic, zero-token. Resolve each
         # step's model (auto by tier, or the writer's saved override) from the live roster.
@@ -1993,6 +2024,7 @@ class ChatService:
             project_traits=trait_values({k: v for k, v in trig_traits.items() if k[0] != "_"}),
             project_id=project_id, session_id=session["id"], current_phase=phase,
             stage_template=stage["template"], stage_name=stage["name"], stage_reviewer=stage["reviewerRole"],
+            requested_by=user.id,
             user_input=prompt_overlay or f"Generate {', '.join(stage.get('outputs') or [])} for '{stage['name']}'.",
             context_window=list(context), amend_comments=None,
             tech_stack=stack_of(project), tech_stack_source=stack_source(project),

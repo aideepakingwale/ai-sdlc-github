@@ -1637,6 +1637,49 @@ async def preview_canon(
             "chars": len(canon_block) + len(formwork_block)}
 
 
+# ------------------------------------------------------------------ Memory
+@router.get("/api/projects/{project_id}/memory")
+async def list_memory(
+    project_id: str,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Memories visible here: this project's, the organisation's, and the caller's own."""
+    return await container.memory.list(project_id, user)
+
+
+@router.post("/api/projects/{project_id}/memory")
+async def create_memory(
+    project_id: str, body: dict,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    return {"entry": await container.memory.create(project_id, user, body)}
+
+
+@router.patch("/api/projects/{project_id}/memory/{memory_id}")
+async def update_memory(
+    project_id: str, memory_id: str, body: dict,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    return {"entry": await container.memory.update(project_id, memory_id, user, body)}
+
+
+@router.post("/api/projects/{project_id}/memory/{memory_id}/promote")
+async def promote_memory(
+    project_id: str, memory_id: str,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    return {"entry": await container.memory.promote(project_id, memory_id, user)}
+
+
+@router.delete("/api/projects/{project_id}/memory/{memory_id}")
+async def delete_memory(
+    project_id: str, memory_id: str,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    await container.memory.delete(project_id, memory_id, user)
+    return {"ok": True}
+
+
 # ------------------------------------------------------------------ Formwork Library (D-38)
 @router.get("/api/projects/{project_id}/formworks")
 async def list_project_formworks(

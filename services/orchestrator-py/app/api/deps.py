@@ -38,6 +38,7 @@ class Container:
     workflow: Any = None
     telemetry: Any = None
     canon: Any = None
+    memory: Any = None   # MemoryService: confirmed project / organisation / personal memory
     formworks: Any = None
     code_gen: Any = None  # two-step code generation: structure approval, explorer view, zip
     gen_jobs: Any = None  # durable background stage generation (D-97 L2)

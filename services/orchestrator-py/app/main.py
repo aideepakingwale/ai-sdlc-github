@@ -28,6 +28,7 @@ from .services.audit import AuditService
 from .services.authz import AuthzService
 from .services.build_monitor import BuildMonitor
 from .services.canon import CanonService
+from .services.memory import MemoryService
 from .services.chat import ChatService
 from .services.codebase import CodebaseService
 from .services.content_store import build_content_store
@@ -119,9 +120,10 @@ async def lifespan(app: FastAPI):
     llm.telemetry = telemetry
     canon = CanonService(db, authz, audit)                      # D-38
     formworks = FormworkService(db, authz, audit, content, canon)
+    memory = MemoryService(db, authz, audit)
     agent_deps = AgentDeps(
         llm=llm, mcp=mcp, db=db, audit=audit, rag=rag, content=content, monitor=monitor,
-        settings=settings, telemetry=telemetry, canon=canon, formworks=formworks,
+        settings=settings, telemetry=telemetry, canon=canon, formworks=formworks, memory=memory,
     )
     workflow = WorkflowService(db, dynamo, audit)
     # Deferred external publication (D-67): external writes are queued during
@@ -166,6 +168,8 @@ async def lifespan(app: FastAPI):
     container.extras["publisher"] = publisher
     container.code_gen = code_gen
     container.canon, container.formworks = canon, formworks
+    container.memory = memory
+    gates.memory = memory
     # Durable background stage generation (D-97 L2): jobs survive disconnects, are
     # recorded across restarts, and stream reconnectable progress via Redis.
     from .services.generation_jobs import GenerationJobs

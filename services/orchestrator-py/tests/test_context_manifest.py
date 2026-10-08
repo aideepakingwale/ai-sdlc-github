@@ -35,7 +35,7 @@ def _manifest(**kw):
 def test_every_layer_is_present_with_items_and_totals():
     m = _manifest()
     ids = [layer["id"] for layer in m["layers"]]
-    assert ids == ["instructions", "project", "canon", "upstream", "input", "revision", "attached", "retrieved"]
+    assert ids == ["instructions", "project", "canon", "memory", "upstream", "input", "revision", "attached", "retrieved"]
     by = {layer["id"]: layer for layer in m["layers"]}
     assert any("Quality bar" in i["label"] for i in by["instructions"]["items"])
     assert m["totals"]["tokens"] == tokens_of(m["totals"]["chars"]) and m["totals"]["items"] == sum(len(layer["items"]) for layer in m["layers"])
@@ -208,7 +208,7 @@ async def test_context_view_returns_the_live_preview_the_last_run_and_what_chang
     async def stage_for(pid, phase):
         return {}, stage
 
-    async def preview(project, session, stg, overlay, emit, items=None):
+    async def preview(project, session, stg, overlay, emit, items=None, user_id=""):
         items.append({"kind": "attachment", "id": "a1", "label": "spec.pdf", "chars": 100, "totalChars": 100, "status": "full"})
         return "sys", "usr", "", [], []
 
@@ -216,7 +216,7 @@ async def test_context_view_returns_the_live_preview_the_last_run_and_what_chang
         return {"has_api": {"value": True}}
 
     svc._stage_for, svc._assemble_prompt_preview, svc.resolve_project_traits = stage_for, preview, traits
-    user = SimpleNamespace(email="u@t")
+    user = SimpleNamespace(email="u@t", id="u1")
     out = await svc.context_view(project_id="p1", phase=2, user=user)
     assert svc._authz.checked == ("p1", user)                                   # read access is enforced
     assert out["preview"]["mode"] == "preview" and any(i["label"] == "spec.pdf" for layer in out["preview"]["layers"] for i in layer["items"])

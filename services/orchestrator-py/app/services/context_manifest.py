@@ -26,6 +26,7 @@ LAYERS: list[tuple[str, str, str]] = [
     ("instructions", "Fixed instructions", "Platform policy, engineering standard and the stage's quality bar. Not editable."),
     ("project", "Project profile", "Technology stack, project traits and whether a codebase is attached."),
     ("canon", "Standards & templates", "Organisation canon and the output templates the artifacts must follow."),
+    ("memory", "Team memory", "Decisions, conventions and lessons your team has confirmed, plus your own working style."),
     ("upstream", "Previous stages", "Artifacts approved in earlier stages that this stage builds on."),
     ("input", "Your instructions", "What the reviewer asked for in the plan."),
     ("revision", "Amendment & history", "The previous version being amended, the amendments requested so far and the clarifications already answered."),
@@ -72,7 +73,7 @@ def build_manifest(
     context_artifacts: list[Any], snippets: list[dict[str, Any]], canon_block: str,
     formworks: list[dict[str, Any]], attached: list[dict[str, Any]], traits: dict[str, bool] | None,
     has_codebase: bool, codebase_files: int = 0, formats: dict[str, dict[str, str]] | None = None,
-    generated_at: datetime | None = None,
+    generated_at: datetime | None = None, memories: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Assemble the manifest. `attached` is the per-item record `_resolve_extra_context` kept
     ({kind: attachment|reference|template, id, label, chars, totalChars, status, note, ...})."""
@@ -103,6 +104,12 @@ def build_manifest(
                            chars=int(f.get("chars") or 0), status=f.get("status", "full"), kind="template",
                            source={"type": "formwork", "id": f["id"], "scope": f.get("scope", ""), "artefactType": f["artefactType"]},
                            note=f.get("note", "")))
+
+    for m in memories or []:
+        who = {"user": "yours", "org": "organisation", "project": "project"}.get(m.get("scope"), "project")
+        items.append(_item("memory", f"memory:{m['id']}", f"{m['title']}", chars=len(m["title"]) + len(m["body"]),
+                           kind="memory", source={"type": "memory", "id": m["id"], "kind": m["kind"], "scope": m.get("scope")},
+                           note=f"{m['kind'].replace('_', ' ')} · {who}"))
 
     for i, a in enumerate(context_artifacts):
         body = a.content or a.summary or ""

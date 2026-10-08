@@ -951,6 +951,57 @@ class Database:
             "DELETE FROM project_canon WHERE id=$1 AND project_id=$2", entry_id, project_id)
         return res.endswith("1")
 
+    # ------------------------------------------------------------------ Memory
+    async def list_memory(self, project_id: str, user_id: str) -> list:
+        """Everything visible to this person on this project: the project's, the organisation's, their own."""
+        assert self.pool
+        return await self.pool.fetch(
+            "SELECT * FROM project_memory WHERE (scope='project' AND project_id=$1) OR scope='org' "
+            "OR (scope='user' AND owner_id=$2) ORDER BY CASE status WHEN 'suggested' THEN 0 WHEN 'active' THEN 1 ELSE 2 END, "
+            "created_at DESC", project_id, user_id)
+
+    async def get_memory(self, memory_id: str) -> dict | None:
+        assert self.pool
+        row = await self.pool.fetchrow("SELECT * FROM project_memory WHERE id=$1", memory_id)
+        return dict(row) if row else None
+
+    async def insert_memory(self, *, scope: str, project_id: str | None, owner_id: str | None, kind: str, title: str,
+                            body: str, stage: int | None, status: str, source: dict, fingerprint: str,
+                            created_by: str | None, reviewed_by: str | None = None) -> dict | None:
+        """None when the same memory already exists (same fingerprint in the same scope)."""
+        assert self.pool
+        row = await self.pool.fetchrow(
+            """
+            INSERT INTO project_memory (id, scope, project_id, owner_id, kind, title, body, stage, status, source,
+                                        fingerprint, created_by, reviewed_by, reviewed_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13, CASE WHEN $13::text IS NULL THEN NULL ELSE now() END)
+            ON CONFLICT DO NOTHING RETURNING *
+            """,
+            new_id(), scope, project_id, owner_id, kind, title, body, stage, status, source,
+            fingerprint, created_by, reviewed_by)
+        return dict(row) if row else None
+
+    async def update_memory(self, memory_id: str, patch: dict) -> dict | None:
+        assert self.pool
+        allowed = {"title", "body", "kind", "stage", "status", "scope", "reviewed_by", "reviewed_at", "fingerprint"}
+        fields = {k: v for k, v in patch.items() if k in allowed}
+        if not fields:
+            return await self.get_memory(memory_id)
+        sets = ", ".join(f"{k}=${i + 2}" for i, k in enumerate(fields))
+        row = await self.pool.fetchrow(
+            f"UPDATE project_memory SET {sets}, updated_at=now() WHERE id=$1 RETURNING *", memory_id, *fields.values())
+        return dict(row) if row else None
+
+    async def delete_memory(self, memory_id: str) -> bool:
+        assert self.pool
+        return (await self.pool.execute("DELETE FROM project_memory WHERE id=$1", memory_id)).endswith("1")
+
+    async def touch_memory(self, ids: list[str]) -> None:
+        assert self.pool
+        if ids:
+            await self.pool.execute(
+                "UPDATE project_memory SET uses=uses+1, last_used_at=now() WHERE id = ANY($1::text[])", ids)
+
     async def list_formworks(self, project_id: str | None, *, include_platform: bool = True) -> list:
         assert self.pool
         if project_id and include_platform:

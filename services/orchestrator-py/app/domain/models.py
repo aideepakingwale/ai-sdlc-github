@@ -121,6 +121,7 @@ class AgentState(BaseModel):
     stage_template: int = Field(default=1, ge=1, le=7)
     stage_name: str = ""
     stage_reviewer: str = "PO"
+    requested_by: str = ""  # user id of the person running this stage (for their personal memory)
     user_input: str
     context_window: list[ContextArtifact] = Field(default_factory=list)
     plan: list[PlanStep] = Field(default_factory=list)

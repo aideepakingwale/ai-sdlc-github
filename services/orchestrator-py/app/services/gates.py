@@ -77,6 +77,7 @@ class GateService:
         self._regenerate = regenerate
         self._publisher = publisher  # PublishService (D-67); None disables deferred publish
         self._settings = settings
+        self.memory = None           # MemoryService: lessons are proposed from change requests
         self._code = code            # CodeGenService: two-step code generation (structure approval, commit record)
 
     async def list_states(self, project_id: str, viewer: UserPublic | None = None) -> list[PhaseStateView]:
@@ -163,6 +164,7 @@ class GateService:
             event="gate.amend_requested", human_reviewer=user.email, artefact_body=comments,
             detail={"role": user.role, "stage": stage["key"], "superAdminOverride": override},
         )
+        await self._suggest_from_changes(project_id, phase, stage, user, comments)
         # D-56: no silent regeneration. Seed a Plan Review draft pre-filled with the
         # reviewer's requested changes; a writer reviews the plan and explicitly
         # triggers the re-generation. The stage stays AMEND_REQUESTED until then.
@@ -193,6 +195,24 @@ class GateService:
         except Exception as err:  # noqa: BLE001 — draft seeding is best-effort
             log.error("amend plan-draft seed failed: %s", err)
         return {"projectId": project_id, "phase": phase, "status": "AMEND_REQUESTED", "nextPhase": None, "planReview": True}
+
+    async def _suggest_from_changes(self, project_id: str, phase: int, stage: dict, user: UserPublic, comments: str) -> None:
+        """A change request is a lesson the next run should get right first time; sentences that read like a standing
+        preference ("always ...", "never ...") are also proposed as the reviewer's own working style."""
+        if self.memory is None:
+            return
+        try:
+            from .memory import clip, style_cues
+            src = {"type": "change_request", "phase": phase, "stage": stage["name"], "by": user.email}
+            await self.memory.suggest(
+                project_id=project_id, kind="lesson", title=f"{stage['name']}: {clip(comments, 90)}", body=comments.strip(),
+                stage=stage.get("template"), source=src, created_by=user.id)
+            for cue in style_cues(comments):
+                await self.memory.suggest(
+                    project_id=project_id, kind="working_style", title=clip(cue, 90), body=cue, scope="user",
+                    owner_id=user.id, source={**src, "type": "repeated_instruction"}, created_by=user.id)
+        except Exception as err:  # noqa: BLE001 - suggestions are best-effort
+            log.warning("could not propose memories from the change request: %s", err)
 
     async def _required_reviewer_users(self, project_id: str, stage: dict) -> list[str]:
         """The reviewer USER emails available for this stage (the matrix columns),
