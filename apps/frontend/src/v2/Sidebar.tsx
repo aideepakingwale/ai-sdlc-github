@@ -144,6 +144,10 @@ export default function Sidebar({
               <span><span className="block text-sm font-medium text-navy">{t.label}</span><span className="block text-xs leading-snug text-slate-500">{t.hint}</span></span>
             </Item>
           ))}
+          <Item active={pane?.type === 'context'} onClick={() => selectedStage != null && togglePane({ type: 'context', seq: selectedStage })} testid="v2-nav-stage-context">
+            <Icon name="layers" size={16} className="text-brand-600" />
+            <span><span className="block text-sm font-medium text-navy">What this stage knows</span><span className="block text-xs leading-snug text-slate-500">The context behind the stage you are on</span></span>
+          </Item>
         </>
       )}
 

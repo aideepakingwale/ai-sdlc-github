@@ -5,9 +5,9 @@ import type { ProjectFlow } from '../api/flow';
 import type { Artefact, AuditEvent } from '../api/types';
 import CodeExplorer from '../components/CodeExplorer';
 import CodeView, { langForExt } from '../components/CodeView';
-import FilesPanel from '../components/FilesPanel';
+import ProjectFiles from './ProjectFiles';
 import SkillsPanel from '../components/SkillsPanel';
-import TeamPanel from '../components/TeamPanel';
+import ProjectTeam from './ProjectTeam';
 import { Icon } from '../components/ui/Icon';
 import type { CodeNode, CodeView as CodeViewData } from '../lib/codeTree';
 import { filterTree, iconFor } from '../lib/codeTree';
@@ -45,12 +45,12 @@ export default function ProjectPanel({
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <div className="mb-4 rounded-lg bg-brand-50 px-3 py-2 text-[13px] text-slate-700" data-testid="v2-explain">{EXPLAIN[tab]}</div>
-        {tab === 'team' && <TeamPanel projectId={projectId} canManage={canManageTeam} />}
+        {tab === 'team' && <ProjectTeam projectId={projectId} flow={flow} canManage={canManageTeam} />}
         {tab === 'artefacts' && <ArtefactsTab projectId={projectId} flow={flow} selectedStage={selectedStage} />}
-        {tab === 'files' && <FilesPanel projectId={projectId} onOpenArtifact={(id) => openPane({ type: 'artefact', id, from: 'files' })} />}
+        {tab === 'files' && <ProjectFiles projectId={projectId} onOpenArtifact={(id) => openPane({ type: 'artefact', id, from: 'files' })} />}
         {tab === 'codebase' && <CodebaseTab projectId={projectId} flow={flow} canWrite={canWrite} />}
         {tab === 'audit' && <AuditTab projectId={projectId} flow={flow} />}
-        {tab === 'skills' && <SkillsTab projectId={projectId} selectedStage={selectedStage} />}
+        {tab === 'skills' && <SkillsTab projectId={projectId} selectedStage={selectedStage} stageName={flow?.stages.find((x) => x.phase === selectedStage)?.name} />}
       </div>
     </div>
   );
@@ -299,7 +299,7 @@ function AuditTab({ projectId, flow }: { projectId: string; flow: ProjectFlow | 
 }
 
 /* ---------------------------------------------------------------- skills */
-function SkillsTab({ projectId, selectedStage }: { projectId: string; selectedStage: number | null }) {
+function SkillsTab({ projectId, selectedStage, stageName }: { projectId: string; selectedStage: number | null; stageName?: string }) {
   const [kbQuery, setKbQuery] = useState('');
   const providers = useQuery({
     queryKey: ['providers'],
@@ -319,25 +319,23 @@ function SkillsTab({ projectId, selectedStage }: { projectId: string; selectedSt
   return (
     <div data-testid="v2-skills-tab" className="space-y-5">
       <section>
-        <h3 className="mb-1.5 text-sm font-semibold text-navy">Skills for this stage</h3>
-        <SkillsPanel projectId={projectId} focusedPhase={selectedStage} />
-      </section>
-      <section>
         <h3 className="mb-1.5 flex items-center gap-2 text-sm font-semibold text-navy">
           Connected services
           {p && <Pill tone={p.effectiveMock ? 'amber' : 'green'} title={`GENERATION_MODE=${p.generationMode ?? 'auto'}`}>{p.effectiveMock ? 'Mock generation' : `Real LLM · ${(p.activeProviders ?? []).join(', ') || 'configured'}`}</Pill>}
         </h3>
-        <div className="flex flex-wrap gap-1.5">
-          {(p?.llm ?? []).map((x) => (
-            <span key={x.provider} title={x.configured ? `breaker: ${x.breaker}` : 'no API key configured'}
-              className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${x.provider === 'mock' ? 'bg-slate-200 text-slate-600' : x.configured && x.breaker === 'closed' ? 'bg-emerald-100 text-emerald-700' : x.configured ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-400'}`}>
-              {x.provider} {x.configured ? (x.breaker === 'closed' ? '● live' : `⚠ ${x.breaker}`) : '○ not set up'}
-            </span>
-          ))}
+        <ul className="flex flex-wrap gap-x-4 gap-y-1.5 text-sm text-slate-800">
+          {(p?.llm ?? []).map((x) => {
+            const live = x.configured && x.breaker === 'closed';
+            return <li key={x.provider} className="inline-flex items-center gap-1.5" title={x.configured ? `breaker: ${x.breaker}` : 'no API key configured'}><i className={`h-2 w-2 rounded-full ${live ? 'bg-emerald-600' : x.configured ? 'bg-amber-500' : 'bg-slate-300'}`} />{x.provider}{!x.configured && <span className="text-slate-500"> (not set up)</span>}</li>;
+          })}
           {Object.entries(p?.tools ?? {}).map(([name, mode]) => (
-            <span key={name} className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${mode === 'live' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}>{name} {mode === 'live' ? '● live' : '○ mock'}</span>
+            <li key={name} className="inline-flex items-center gap-1.5"><i className={`h-2 w-2 rounded-full ${mode === 'live' ? 'bg-emerald-600' : 'bg-slate-300'}`} />{name}{mode !== 'live' && <span className="text-slate-500"> (mock)</span>}</li>
           ))}
-        </div>
+        </ul>
+      </section>
+      <section>
+        <h3 className="mb-1.5 text-sm font-semibold text-navy">Skills for {stageName ?? 'this stage'}</h3>
+        <SkillsPanel projectId={projectId} focusedPhase={selectedStage} />
       </section>
       <section>
         <h3 className="mb-1.5 text-sm font-semibold text-navy">Enterprise knowledge base</h3>

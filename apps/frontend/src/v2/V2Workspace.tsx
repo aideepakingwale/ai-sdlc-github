@@ -113,7 +113,7 @@ export default function V2Workspace() {
             ) : !activeProjectId ? (
               <Dashboard projects={projects.data?.projects ?? []} onOpen={setActiveProject} onNewProject={() => setNewProject(true)} canManage={canManage} loading={projects.isLoading} />
             ) : view === 'pipeline' ? (
-              flow.data ? <PipelineView projectId={activeProjectId} flow={flow.data} onOpenStage={goStage} onDesigner={() => setModal('designer')} canDesign={canManage} /> : <div className="mx-auto mt-24 max-w-md px-6 text-center text-slate-500">Loading the pipeline…</div>
+              flow.data ? <PipelineView projectId={activeProjectId} projectName={detail.data?.project.name} currentPhase={activeStage} flow={flow.data} onOpenStage={goStage} onDesigner={() => setModal('designer')} canDesign={canManage} /> : <div className="mx-auto mt-24 max-w-md px-6 text-center text-slate-500">Loading the pipeline…</div>
             ) : flow.data ? (
               <StageChat
                 key={`${activeProjectId}:${activeStage}`} projectId={activeProjectId} flow={flow.data} selectedSeq={activeStage} onSelectStage={goStage}
