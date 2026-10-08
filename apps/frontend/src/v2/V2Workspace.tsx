@@ -12,6 +12,7 @@ import QualityMetricsPanel from '../components/QualityMetricsPanel';
 import StageWorkspace from '../components/StageWorkspace';
 import { useApp } from '../store';
 import GlobalBar from './GlobalBar';
+import PipelineView from './PipelineView';
 import PreviewPane from './PreviewPane';
 import Sidebar, { type V2Modal, type V2View } from './Sidebar';
 import { useV2 } from './store';
@@ -86,7 +87,7 @@ export default function V2Workspace() {
             {!activeProjectId ? (
               <Dashboard projects={projects.data?.projects ?? []} onOpen={setActiveProject} onNewProject={() => setNewProject(true)} canManage={canManage} loading={projects.isLoading} />
             ) : view === 'pipeline' ? (
-              <div className="h-full overflow-y-auto"><PipelineFlow projectId={activeProjectId} focusedPhase={activeStage} onFocusPhase={(p) => { if (p != null) goStage(p); }} /></div>
+              flow.data ? <PipelineView projectId={activeProjectId} flow={flow.data} onOpenStage={goStage} onDesigner={() => setModal('designer')} canDesign={canManage} /> : <div className="mx-auto mt-24 max-w-md px-6 text-center text-slate-500">Loading the pipeline…</div>
             ) : flow.data ? (
               <StageWorkspace
                 key={activeProjectId} projectId={activeProjectId} flow={flow.data} selectedSeq={activeStage} onSelectStage={goStage}

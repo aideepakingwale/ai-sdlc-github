@@ -27,3 +27,17 @@ describe('project panel helpers', () => {
     expect(t.children?.[0].children?.map((c) => c.name)).toEqual(['lib', 'a.ts']);
   });
 });
+
+import { attentionItems, groupByLevel } from './pipelineLib';
+const st = (phase: number, status: string, extra: object = {}) => ({ phase, name: `S${phase}`, status, reviewerRole: 'SA', ...extra }) as never;
+describe('pipeline helpers', () => {
+  it('orders attention by urgency', () => {
+    const a = attentionItems([st(1, 'PENDING_REVIEW'), st(2, 'ESCALATED'), st(3, 'APPROVED', { stale: true })]);
+    expect(a.map((x) => x.kind)).toEqual(['escalated', 'review', 'stale']);
+  });
+  it('groups parallel stages by level and falls back to one per step', () => {
+    const stages = [st(1, 'A'), st(2, 'A'), st(3, 'A')];
+    expect(groupByLevel(stages, [[1], [2, 3]]).map((g) => g.length)).toEqual([1, 2]);
+    expect(groupByLevel(stages, undefined).length).toBe(3);
+  });
+});
