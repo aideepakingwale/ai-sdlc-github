@@ -23,6 +23,7 @@ export default function V2Workspace() {
   const { projects, detail, artefacts, flow } = useWorkspaceData(activeProjectId);
   const sideCollapsed = useV2((s) => s.sideCollapsed);
   const closePane = useV2((s) => s.closePane);
+  const openPane = useV2((s) => s.openPane);
   const [view, setView] = useState<V2View>('dashboard');
   const [selectedStage, setSelectedStage] = useState<number | null>(null);
   const [modal, setModal] = useState<V2Modal | null>(null);
@@ -89,7 +90,7 @@ export default function V2Workspace() {
             ) : flow.data ? (
               <StageWorkspace
                 key={activeProjectId} projectId={activeProjectId} flow={flow.data} selectedSeq={activeStage} onSelectStage={goStage}
-                user={user} messages={detail.data?.messages ?? []} pendingGate={pendingGate}
+                user={user} variant="chat" onOpenArtefact={(id) => openPane({ type: 'artefact', id })} messages={detail.data?.messages ?? []} pendingGate={pendingGate}
                 artefacts={(artefacts.data?.artefacts ?? []).map((a) => ({ id: a.id, phase: a.phase, type: a.type, title: a.title, url: a.url }))}
               />
             ) : (

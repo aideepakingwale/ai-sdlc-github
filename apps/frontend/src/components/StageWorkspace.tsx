@@ -151,7 +151,13 @@ export default function StageWorkspace({
   messages,
   pendingGate,
   artefacts,
+  variant = 'classic',
+  onOpenArtefact,
 }: {
+  /** `chat`: the redesigned conversation layout (thread first, next-step and approval docked at the bottom). */
+  variant?: 'classic' | 'chat';
+  /** Chat variant: open an artefact in the side pane instead of the modal viewer. */
+  onOpenArtefact?: (id: string) => void;
   projectId: string;
   flow: ProjectFlow;
   selectedSeq: number;
@@ -375,6 +381,7 @@ export default function StageWorkspace({
   useStickToBottom(threadRef, [stageMessages.length, activity.length, liveResponse]);
 
   if (!stage) return null;
+  const chat = variant === 'chat';
 
   const blockedReason = !runnable && stage.status !== 'APPROVED' && stage.status !== 'PENDING_REVIEW' && stage.status !== 'IN_PROGRESS'
     ? stage.dependsOn
@@ -891,6 +898,38 @@ export default function StageWorkspace({
     }
   })();
 
+  const guideCard = (
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm" data-testid="stage-guide">
+          {!chat && <Stepper steps={guide.steps} />}
+          <Callout
+            className={chat ? '' : 'mt-4'} tone={guide.next.tone} title={guide.next.title}
+            icon={guide.next.action === 'wait' ? 'loader' : undefined} spin={guide.next.action === 'wait'}
+            action={guideButton && (
+              <Button variant="primary" size="sm" icon={guideButton.icon} disabled={guideButton.disabled} onClick={guideButton.run}>
+                {guideButton.label}
+              </Button>
+            )}
+          >
+            {guide.next.body}
+          </Callout>
+        </div>
+  );
+
+  const gateReview = (
+    <>
+        {pendingGate && pendingGate.phase === selectedSeq && (
+          <div id="gate-review" className="scroll-mt-4">
+            <GatePanel
+              projectId={projectId}
+              pending={pendingGate}
+              artefacts={artefacts as never}
+              user={user}
+            />
+          </div>
+        )}
+    </>
+  );
+
   return (
     <div className="flex h-full flex-col bg-slate-50">
       {/* ---- stage header: where am I, what state is it in, who signs it off ---- */}
@@ -949,22 +988,8 @@ export default function StageWorkspace({
         )}
       </div>
 
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
-        {/* ---- where you are + what to do next ---- */}
-        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm" data-testid="stage-guide">
-          <Stepper steps={guide.steps} />
-          <Callout
-            className="mt-4" tone={guide.next.tone} title={guide.next.title}
-            icon={guide.next.action === 'wait' ? 'loader' : undefined} spin={guide.next.action === 'wait'}
-            action={guideButton && (
-              <Button variant="primary" size="sm" icon={guideButton.icon} disabled={guideButton.disabled} onClick={guideButton.run}>
-                {guideButton.label}
-              </Button>
-            )}
-          >
-            {guide.next.body}
-          </Callout>
-        </div>
+      <div className={chat ? 'flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-5' : 'min-h-0 flex-1 space-y-4 overflow-y-auto p-5'}>
+        {!chat && guideCard}
 
         {/* ---- stale / impact-propagation: advice (yellow), never an error ---- */}
         {stage.stale && (
@@ -1559,17 +1584,7 @@ export default function StageWorkspace({
         {/* ---- two-step code generation: structure → approval → code → commit (implementation stage) ---- */}
         {stage.template === 6 && <CodeExplorer projectId={projectId} phase={selectedSeq} />}
 
-        {/* ---- gate review ---- */}
-        {pendingGate && pendingGate.phase === selectedSeq && (
-          <div id="gate-review" className="scroll-mt-4">
-            <GatePanel
-              projectId={projectId}
-              pending={pendingGate}
-              artefacts={artefacts as never}
-              user={user}
-            />
-          </div>
-        )}
+        {!chat && gateReview}
 
         {/* ---- quality signals & feedback (D-57) ---- */}
         {(stageArtefacts.length > 0 || ['PENDING_REVIEW', 'APPROVED', 'AMEND_REQUESTED'].includes(stage.status)) && (
@@ -1688,7 +1703,7 @@ export default function StageWorkspace({
               {stageArtefacts.map((a) => (
                 <button
                   key={a.id}
-                  onClick={() => setViewArtefactId(a.id)}
+                  onClick={() => (onOpenArtefact ? onOpenArtefact(a.id) : setViewArtefactId(a.id))}
                   className="flex items-start gap-2 rounded-lg border border-slate-200 bg-white p-2.5 text-left transition hover:border-brand-300 hover:shadow-sm"
                 >
                   <span className="mt-0.5 rounded bg-brand-50 px-1.5 py-0.5 text-[10px] font-semibold text-brand-700">{a.type}</span>
@@ -1703,7 +1718,7 @@ export default function StageWorkspace({
         </section>
 
         {/* ---- stage thread ---- */}
-        <section>
+        <section className={chat ? 'order-first' : undefined}>
           <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
             Discussion history ({stageMessages.length}) — saved, with timestamps
           </div>
@@ -1737,7 +1752,14 @@ export default function StageWorkspace({
         </section>
       </div>
 
-      {viewArtefactId && (
+      {chat && (
+        <div className="shrink-0 space-y-3 border-t border-slate-200 bg-white p-4 shadow-[0_-4px_12px_rgba(2,27,65,0.06)]" data-testid="v2-dock">
+          {gateReview}
+          {guideCard}
+        </div>
+      )}
+
+      {viewArtefactId && !onOpenArtefact && (
         <ArtifactViewer projectId={projectId} artefactId={viewArtefactId} onClose={() => setViewArtefactId(null)} canRepair={stage.canRetrigger} />
       )}
     </div>
