@@ -988,8 +988,11 @@ export default function StageWorkspace({
                 </div>
               )}
 
-              {promptError && (
+              {promptError && (chat && promptMissing ? (
+                <p className="mt-2 text-xs text-slate-500">{promptError}</p>
+              ) : (
                 <Callout tone="error" compact className="mt-2">{promptError}</Callout>
+              )
               )}
               <div className="mt-3 flex flex-wrap items-center gap-3">
                 <Button
@@ -1410,7 +1413,9 @@ export default function StageWorkspace({
                       <div className="mb-2 max-h-56 space-y-1.5 overflow-auto pr-1">
                         {thread.map((m, i) => (
                           <div key={`${m.ts}-${i}`} className={`flex ${m.role === 'you' ? 'justify-end' : 'justify-start'}`}>
-                            <div className={'max-w-[85%] rounded-lg px-3 py-2 text-[13px] leading-snug ' + (m.role === 'you' ? 'bg-brand-600 text-white' : 'border border-slate-200 bg-white text-slate-800')}>
+                            <div className={'max-w-[85%] px-3 py-2 text-[13px] leading-snug ' + (chat
+                              ? (m.role === 'you' ? 'rounded-2xl rounded-br-md bg-brand-100 text-navy' : 'rounded-2xl rounded-bl-md bg-slate-100 text-slate-800')
+                              : 'rounded-lg ' + (m.role === 'you' ? 'bg-brand-600 text-white' : 'border border-slate-200 bg-white text-slate-800'))}>
                               <div className="mb-0.5 text-[11px] font-semibold opacity-70">{m.role === 'you' ? 'You' : `${plan.agent.persona} agent`}</div>
                               {m.text}
                             </div>
