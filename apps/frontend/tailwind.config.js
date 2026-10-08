@@ -14,23 +14,23 @@ export default {
       colors: {
         // Primary interactive — BA blue
         brand: {
-          50: '#eef3fa',
-          100: '#dfe7f2',  // BA light blue (selected/current)
-          200: '#c2d3ea',
-          300: '#9ab6da',
-          400: '#6690c6',
-          500: '#3468ad',  // BA blue
-          600: '#2c5896',
-          700: '#244873',
-          800: '#1d3a5c',
-          900: '#16304f',
+          50: 'rgb(var(--c-brand-50) / <alpha-value>)',
+          100: 'rgb(var(--c-brand-100) / <alpha-value>)',  // BA light blue (selected/current)
+          200: 'rgb(var(--c-brand-200) / <alpha-value>)',
+          300: 'rgb(var(--c-brand-300) / <alpha-value>)',
+          400: 'rgb(var(--c-brand-400) / <alpha-value>)',
+          500: 'rgb(var(--c-brand-500) / <alpha-value>)',  // BA blue
+          600: 'rgb(var(--c-brand-600) / <alpha-value>)',
+          700: 'rgb(var(--c-brand-700) / <alpha-value>)',
+          800: 'rgb(var(--c-brand-800) / <alpha-value>)',
+          900: 'rgb(var(--c-brand-900) / <alpha-value>)',
         },
         // BA navy / "Midnight" — primary text & dark chrome
         navy: {
-          DEFAULT: '#021b41',
-          900: '#021b41',
-          800: '#0a2350',
-          700: '#16304f',
+          DEFAULT: 'rgb(var(--c-navy-default) / <alpha-value>)',
+          900: 'rgb(var(--c-navy-900) / <alpha-value>)',
+          800: 'rgb(var(--c-navy-800) / <alpha-value>)',
+          700: 'rgb(var(--c-navy-700) / <alpha-value>)',
         },
         // BA red / alert accent
         bared: {
@@ -42,16 +42,16 @@ export default {
         // Neutrals shifted to BA's cool navy-grey family so existing slate-* utilities
         // adopt the BA palette without touching every component.
         slate: {
-          50: '#f9f9fa',
-          100: '#f1f2f4',
-          200: '#e7e8ec',
-          300: '#cfd0d9',
-          400: '#b7b9c6',
-          500: '#989cae',
-          600: '#70758f',
-          700: '#3d4761',
-          800: '#1b2b4d',
-          900: '#021b41',
+          50: 'rgb(var(--c-slate-50) / <alpha-value>)',
+          100: 'rgb(var(--c-slate-100) / <alpha-value>)',
+          200: 'rgb(var(--c-slate-200) / <alpha-value>)',
+          300: 'rgb(var(--c-slate-300) / <alpha-value>)',
+          400: 'rgb(var(--c-slate-400) / <alpha-value>)',
+          500: 'rgb(var(--c-slate-500) / <alpha-value>)',
+          600: 'rgb(var(--c-slate-600) / <alpha-value>)',
+          700: 'rgb(var(--c-slate-700) / <alpha-value>)',
+          800: 'rgb(var(--c-slate-800) / <alpha-value>)',
+          900: 'rgb(var(--c-slate-900) / <alpha-value>)',
         },
       },
       borderRadius: {

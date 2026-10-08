@@ -8,6 +8,7 @@ import { Icon } from '../components/ui/Icon';
 import { initials } from './bits';
 import { switchUiVersion } from './uiVersion';
 import { useV2 } from './store';
+import { getThemeChoice, setThemeChoice, type ThemeChoice } from './theme';
 
 function Popover({ label, button, children, align = 'right', testid }: { label: string; button: ReactNode; children: ReactNode; align?: 'left' | 'right'; testid?: string }) {
   const [open, setOpen] = useState(false);
@@ -48,6 +49,7 @@ export default function GlobalBar({
   const togglePane = useV2((s) => s.togglePane);
   const pane = useV2((s) => s.pane);
   const [help, setHelp] = useState(false);
+  const [theme, setTheme] = useState<ThemeChoice>(getThemeChoice);
   const stack = detail?.project.techStack;
   const decided = Boolean(detail?.project.techStackDecided);
   const canSetStack = (detail?.me?.canManageTeam ?? false) || detail?.me?.membershipRole === 'TA';
@@ -81,7 +83,17 @@ export default function GlobalBar({
             <div className="text-sm font-semibold text-navy">{user.displayName}</div>
             <div className="text-xs text-slate-500">{user.email}</div>
             <div className="mt-0.5 text-xs font-semibold text-brand-600">{ROLE_LABELS[user.role]}</div>
-            <div className="mt-3 space-y-1 border-t border-slate-100 pt-2">
+            <div className="mt-3 border-t border-slate-100 pt-2" role="radiogroup" aria-label="Theme">
+              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Theme</div>
+              <div className="inline-flex overflow-hidden rounded-lg border border-slate-300 text-xs font-semibold">
+                {(['light', 'dark', 'system'] as const).map((t) => (
+                  <button key={t} type="button" role="radio" aria-checked={theme === t} data-testid={`v2-theme-${t}`}
+                    onClick={() => { setTheme(t); setThemeChoice(t); }}
+                    className={`px-3 py-1 capitalize ${theme === t ? 'bg-brand-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-100'}`}>{t}</button>
+                ))}
+              </div>
+            </div>
+            <div className="mt-2 space-y-1 border-t border-slate-100 pt-2">
               <button type="button" onClick={() => switchUiVersion('classic')} className="block w-full rounded-lg px-2 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100" data-testid="v2-back-classic">Switch to the classic workspace</button>
               {projectId && (detail?.me?.canManageTeam ?? false) && (
                 <button type="button" onClick={onDelete} disabled={deleting} className="block w-full rounded-lg px-2 py-1.5 text-left text-sm text-bared-600 hover:bg-bared-200/50 disabled:opacity-50">{deleting ? 'Deleting…' : 'Delete this project'}</button>

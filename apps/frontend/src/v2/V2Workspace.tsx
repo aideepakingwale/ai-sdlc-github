@@ -16,6 +16,7 @@ import PipelineView from './PipelineView';
 import PreviewPane from './PreviewPane';
 import Sidebar, { type V2Modal, type V2View } from './Sidebar';
 import { useV2 } from './store';
+import { applyTheme, watchSystemTheme } from './theme';
 import { useWorkspaceData } from './useWorkspaceData';
 
 export default function V2Workspace() {
@@ -33,6 +34,7 @@ export default function V2Workspace() {
   const [newProject, setNewProject] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
+  useEffect(() => { applyTheme(); const off = watchSystemTheme(); return () => { off(); document.documentElement.classList.remove('dark'); }; }, []);
   useEffect(() => { setModalRaw(null); setSelectedStage(null); closePane(); setView(activeProjectId ? 'stage' : 'dashboard'); }, [activeProjectId, closePane]);
 
   if (!user) return null;

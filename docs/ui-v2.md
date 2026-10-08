@@ -74,6 +74,18 @@ Each tab opens with a one-paragraph explainer (`EXPLAIN` in `v2/ProjectPanel.tsx
 Audit categories come from the event name prefix (`security.`, `guardrail.`, `gate.`, `ai.`/`stage.`/`build.`); events
 with a human reviewer and no other prefix are "Human" (`v2/projectPanelLib.ts`).
 
+## Theme
+
+Account menu → Theme: Light, Dark or System (default; follows the OS and updates live). Stored in `localStorage`
+(`sdlc:theme`) and applied as a `dark` class on `<html>` by `v2/theme.ts`; the class is removed when you leave the
+new workspace, so the classic workspace is always light.
+
+Mechanism: the Tailwind `slate`, `brand` and `navy` scales are CSS variables (`src/theme.css`, `rgb(var(--c-…) / <alpha-value>)`),
+so existing utilities recolour without per-component `dark:` variants. `.dark` redefines the variables (the slate scale
+is inverted), sets `bg-white` to the card surface, and re-tints the status colours (red, amber, emerald, orange, violet,
+yellow, blue). If you add a new colour family to a component, add its dark rules to `theme.css`. Restart the Vite dev
+server after changing `tailwind.config.js`.
+
 ## Reused components
 
 The artefact viewer is the classic `ArtifactViewer` with `embedded` (no overlay, no Escape handler). `ContextPanel`
@@ -104,7 +116,6 @@ four configuration pages, and the docked composer. Useful selectors: `v2-workspa
 
 ## Not done yet
 
-- Dark theme (the classic app has none either; v2 is light only).
 - Mobile layout below ~900 px (the sidebar can be collapsed, the right pane is a fixed-width column).
 - The workflow designer is still an overlay and the guided stepper is hidden in the dock (the next-step bar remains).
 - A design-token pass: v2 uses the existing BAgel Tailwind tokens (navy `#021b41`, blue `#3468ad`, light blue
