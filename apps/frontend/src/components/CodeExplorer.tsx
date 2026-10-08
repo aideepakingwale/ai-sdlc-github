@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import CodeView from './CodeView';
+import SplitPair from '../v2/SplitPair';
 import { Badge } from './ui/Badge';
 import { Button } from './ui/Button';
 import { Icon } from './ui/Icon';
@@ -104,8 +105,9 @@ export default function CodeExplorer({ projectId, phase }: { projectId: string; 
         </div>
       )}
 
-      <div className="mt-3 grid min-h-[360px] gap-0 border-t border-slate-100 md:grid-cols-[minmax(260px,340px)_1fr]">
-        <div className="border-b border-slate-100 p-3 md:border-b-0 md:border-r">
+      <SplitPair className="mt-3 min-h-[360px] border-t border-slate-100" storageKey="sdlc:v2:code-split" def={320} min={200} max={620} label="Resize the file tree"
+        left={(
+          <div className="p-3">
           <div className="mb-2 flex items-center gap-1.5">
             <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Find a file or purpose…" aria-label="Find a file"
               className="min-w-0 flex-1 rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-brand-400 focus:outline-none" />
@@ -116,11 +118,13 @@ export default function CodeExplorer({ projectId, phase }: { projectId: string; 
             {shown && (shown.children ?? []).map((n) => <Row key={n.path} node={n} depth={0} isOpen={isOpen} toggle={toggle} selected={selected} onSelect={setSelected} />)}
             {shown && (shown.children ?? []).length === 0 && <div className="py-4 text-center text-slate-400">No file matches.</div>}
           </div>
-        </div>
-        <div className="min-w-0 p-3">
+          </div>
+        )}
+        right={(
+          <div className="min-w-0 p-3">
           {sel ? <FileDetail projectId={projectId} file={sel} /> : <div className="py-10 text-center text-xs text-slate-400">Select a file.</div>}
-        </div>
-      </div>
+          </div>
+        )} />
     </section>
   );
 }

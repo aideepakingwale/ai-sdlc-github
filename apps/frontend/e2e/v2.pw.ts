@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { crc32 } from 'node:zlib';
 
 const EMAIL = process.env.E2E_EMAIL ?? 'superadmin@sdlc.local';
 const PASSWORD = process.env.E2E_PASSWORD ?? 'Password123!';
@@ -24,6 +25,20 @@ async function openProject(page: Page, name: string) {
   await page.getByTestId('v2-project-switcher').click();
   await page.getByRole('option', { name: new RegExp(name) }).click();
   await expect(page.getByTestId('v2-stage-1')).toBeVisible();
+}
+
+/** A tiny stored (uncompressed) zip, so the codebase upload can be tested without a zip library. */
+function makeZip(files: Record<string, string>): Buffer {
+  const parts: Buffer[] = []; const central: Buffer[] = []; let offset = 0;
+  for (const [name, text] of Object.entries(files)) {
+    const n = Buffer.from(name), d = Buffer.from(text), crc = crc32(d);
+    const local = Buffer.alloc(30); local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt32LE(crc, 14); local.writeUInt32LE(d.length, 18); local.writeUInt32LE(d.length, 22); local.writeUInt16LE(n.length, 26);
+    const cen = Buffer.alloc(46); cen.writeUInt32LE(0x02014b50, 0); cen.writeUInt16LE(20, 4); cen.writeUInt16LE(20, 6); cen.writeUInt32LE(crc, 16); cen.writeUInt32LE(d.length, 20); cen.writeUInt32LE(d.length, 24); cen.writeUInt16LE(n.length, 28); cen.writeUInt32LE(offset, 42);
+    parts.push(local, n, d); central.push(cen, n); offset += 30 + n.length + d.length;
+  }
+  const cd = Buffer.concat(central), end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(Object.keys(files).length, 8); end.writeUInt16LE(Object.keys(files).length, 10); end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...parts, cd, end]);
 }
 
 test.afterAll(async ({ browser }) => {
@@ -219,6 +234,31 @@ test.describe('resizing', () => {
     await page.getByTestId('v2-pane-full').click();
     await page.getByTestId('v2-pane-full').click();         // the same button leaves full screen
     await expect(pane).toHaveAttribute('data-full', 'false');
+  });
+});
+
+test.describe('codebase', () => {
+  test('the file tree and the file viewer can be resized, and Remove clears the codebase', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    const up = await page.request.post(`/api/projects/${id}/codebase`, { multipart: { file: { name: 'app.zip', mimeType: 'application/zip', buffer: makeZip({ 'src/main/App.java': 'class App {}', 'src/main/Util.java': 'class Util {}', 'pom.xml': '<project/>' }) } } });
+    expect(up.ok()).toBeTruthy();
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-open-project-panel').click();
+    await page.getByTestId('v2-ptab-codebase').click();
+    const left = page.getByTestId('v2-split-left');
+    await expect(left).toBeVisible();
+    const w0 = (await left.boundingBox())!.width;
+    const sp = (await page.getByTestId('v2-split-inner').boundingBox())!;
+    await page.mouse.move(sp.x + sp.width / 2, sp.y + 30); await page.mouse.down(); await page.mouse.move(sp.x + 60, sp.y + 30, { steps: 6 }); await page.mouse.up();
+    const w1 = (await left.boundingBox())!.width;
+    expect(w1).toBeGreaterThan(w0 + 40);
+    await page.getByTestId('v2-split-inner').dblclick();
+    expect((await left.boundingBox())!.width).toBeCloseTo(260, -1);
+    page.once('dialog', (d) => void d.accept());
+    await page.getByTestId('v2-codebase-remove').click();
+    await expect(page.getByText('No codebase uploaded')).toBeVisible();
   });
 });
 

@@ -49,7 +49,7 @@ The dividers between the sidebar, the centre and the details pane can be dragged
 keys, Shift for bigger steps, Home/End for the limits); double-click a divider to reset it. The widths are remembered
 per browser (`sdlc:v2:side-w` 220 to 440 px, `sdlc:v2:pane-w` from 340 px, always leaving 420 px for the centre).
 The details pane has a full-screen button in its header (Esc or the same button leaves it); on narrow screens the pane
-already covers the page, so the button is hidden. Test hooks: `v2-split-side`, `v2-split-pane`, `v2-pane-full`.
+already covers the page, so the button is hidden. The tree / file split in the Codebase tab (and in the generated-code card) is draggable the same way (`v2/SplitPair.tsx`, remembered under `sdlc:v2:codebase-split` and `sdlc:v2:code-split`, stacked on narrow screens). Test hooks: `v2-split-side`, `v2-split-pane`, `v2-split-inner`, `v2-pane-full`.
 
 ## Centre views
 

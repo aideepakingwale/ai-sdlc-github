@@ -15,6 +15,7 @@ import { auditCategory, auditCsv, buildPathTree, languageMix, AUDIT_CATEGORIES, 
 
 const MIX_COLORS = ['bg-brand-500', 'bg-navy', 'bg-bared-500', 'bg-slate-400', 'bg-brand-300'];
 import { Pill, StageDot, stageTone } from './bits';
+import SplitPair from './SplitPair';
 import { PROJECT_TOOLS } from './Sidebar';
 import { useV2, type ProjectTab } from './store';
 
@@ -228,10 +229,13 @@ function ExistingCodebase({ projectId, canWrite, canManage, onChanged }: { proje
         <div className="mt-3">
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search file names…" aria-label="Search the codebase"
             className="mb-2 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-sm focus:border-brand-500 focus:outline-none" />
-          <div className="grid gap-3 md:grid-cols-[minmax(180px,260px)_minmax(0,1fr)]">
+          <SplitPair storageKey="sdlc:v2:codebase-split" def={260} min={160} max={560} label="Resize the file tree"
+            left={(
             <div className="max-h-[28rem] overflow-auto rounded-lg border border-slate-200 bg-white p-1.5">
               {shown ? <TreeNodes node={shown} open={open} toggle={toggle} selected={selected} onSelect={setSelected} searching={Boolean(query.trim())} /> : <div className="p-2 text-xs text-slate-500">No file matches.</div>}
             </div>
+            )}
+            right={(
             <div className="min-w-0">
               {!sel && <div className="rounded-lg bg-slate-100 p-4 text-sm text-slate-500">Select a file to read it.</div>}
               {sel && (
@@ -246,7 +250,7 @@ function ExistingCodebase({ projectId, canWrite, canManage, onChanged }: { proje
                 </>
               )}
             </div>
-          </div>
+            )} />
         </div>
       )}
     </div>
