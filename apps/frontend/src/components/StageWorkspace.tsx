@@ -143,18 +143,7 @@ type PlanState = {
   generating: boolean; locked: boolean;
 };
 
-export default function StageWorkspace({
-  projectId,
-  flow,
-  selectedSeq,
-  onSelectStage,
-  user,
-  messages,
-  pendingGate,
-  artefacts,
-  variant = 'classic',
-  onOpenArtefact,
-}: {
+export type StageControllerProps = {
   /** `chat`: the redesigned conversation layout (thread first, next-step and approval docked at the bottom). */
   variant?: 'classic' | 'chat';
   /** Chat variant: open an artefact in the side pane instead of the modal viewer. */
@@ -167,7 +156,22 @@ export default function StageWorkspace({
   messages: ChatMessage[];
   pendingGate: PhaseStateView | null;
   artefacts: Array<{ id: string; phase: number; type: string; title: string; url: string | null }>;
-}) {
+};
+
+/** All of a stage's state and actions (plan, clarification, generation, review). Both stage views render from it. */
+export function useStageController({
+  projectId,
+  flow,
+  selectedSeq,
+  onSelectStage,
+  user,
+  messages,
+  pendingGate,
+  artefacts,
+  variant = 'classic',
+  onOpenArtefact,
+}: StageControllerProps) {
+
   const qc = useQueryClient();
   const { beginStream, pushEvent, endStream } = useApp();
   // Only THIS project's stage: a run elsewhere (another project, another stage) never shows up here.
@@ -1023,6 +1027,16 @@ export default function StageWorkspace({
         )}
     </>
   );
+  return { projectId, flow, selectedSeq, onSelectStage, user, messages, pendingGate, artefacts, variant, onOpenArtefact, qc, beginStream, pushEvent, endStream, runKey, streaming, activity, liveResponse, liveParts, prompt, setPrompt, viewArtefactId, setViewArtefactId, refIds, setRefIds, formworkIds, setFormworkIds, uploading, setUploading, uploadNotes, setUploadNotes, uploadProgress, setUploadProgress, plan, setPlan, planBusy, setPlanBusy, produceSel, setProduceSel, suggestSel, setSuggestSel, showSystemPrompt, setShowSystemPrompt, docOpen, setDocOpen, thread, setThread, refineText, setRefineText, threadEndRef, fileInputRef, textareaRef, threadRef, reconnectKeyRef, attachmentsQ, attachments, fmtSel, setFmtSel, formatOf, setFormat, formworksQ, formworks, partsQ, parts, regenerable, picked, setPicked, clarificationQ, clarification, clarifyAns, setClarifyAns, clarifyStep, setClarifyStep, resetComposer, retrigger, stages, byKey, stage, amendUndecided, amendStatus, idx, runnable, stageMessages, streamingHere, chat, blockedReason, overlayBody, productionDirective, renderArtifacts, proposalSummary, overrideTrait, amendBusy, setAmendBusy, chooseAmend, reviewPlan, sendRefinement, onReviewSubmit, triggerPlan, runPartsJob, retriggerPart, regenerateParts, submitClarification, onAttach, removeAttachment, stageArtefacts, priorArtefacts, allMentions, pickMention, unpickMention, selectedRefChips, selectedTemplateChips, trimmedPrompt, hasBrief, promptRequired, promptMissing, promptTooShort, promptError, planStateQ, ps, locked, sameIds, planBaseline, localDirty, planBuilding, planOutdated, planFresh, canReviewPlan, blockedNames, guide, guideButton, guideCard, composer, gateReview };
+}
+
+export type StageController = NonNullable<ReturnType<typeof useStageController>>;
+
+export default function StageWorkspace(props: StageControllerProps) {
+  const c = useStageController(props);
+  if (!c) return null;
+  const { projectId, flow, selectedSeq, onSelectStage, user, pendingGate, onOpenArtefact, streaming, activity, liveResponse, liveParts, viewArtefactId, setViewArtefactId, uploading, plan, planBusy, suggestSel, setSuggestSel, showSystemPrompt, setShowSystemPrompt, docOpen, setDocOpen, thread, refineText, setRefineText, threadEndRef, fileInputRef, threadRef, attachments, parts, regenerable, picked, setPicked, clarification, clarifyAns, setClarifyAns, clarifyStep, setClarifyStep, retrigger, stages, stage, amendUndecided, idx, runnable, stageMessages, streamingHere, chat, blockedReason, renderArtifacts, overrideTrait, amendBusy, chooseAmend, sendRefinement, triggerPlan, retriggerPart, regenerateParts, submitClarification, stageArtefacts, locked, planOutdated, planFresh, guideCard, composer, gateReview } = c;
+
 
   return (
     <div className="flex h-full flex-col bg-slate-50">
