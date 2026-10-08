@@ -54,9 +54,10 @@ by side; the per-stage context bars and the project context graph; Edit workflow
 
 **Dashboard.** The existing `Dashboard` when no project is selected.
 
-**Configuration pages.** Project Context, Quality, Governance, Observability and Project Explorer render in the centre
-(the panels' `page` prop turns the modal chrome off). Navigating anywhere else closes them. The Workflow designer
-stays an overlay because it is an editor.
+**Configuration pages.** Project Context, Quality, Governance, Observability, Project Explorer and the Workflow
+designer render in the centre (the components' `page` prop turns the modal chrome off). Navigating anywhere else
+closes them. Saving or closing the designer returns to the pipeline page; a newly created project opens the designer
+page straight away.
 
 ## Project panel (right pane)
 
@@ -123,6 +124,6 @@ four configuration pages, and the docked composer. Useful selectors: `v2-workspa
 
 ## Not done yet
 
-- The workflow designer is still an overlay and the guided stepper is hidden in the dock (the next-step bar remains).
+- The guided four-step stepper is hidden in the dock (the next-step bar remains).
 - A design-token pass: v2 uses the existing BAgel Tailwind tokens (navy `#021b41`, blue `#3468ad`, light blue
   `#dfe7f2`, red `#ce210f`); the clickable mockup used approximate values.

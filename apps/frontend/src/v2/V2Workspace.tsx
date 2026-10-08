@@ -5,7 +5,7 @@ import Dashboard from '../components/Dashboard';
 import GovernancePanel from '../components/GovernancePanel';
 import NewProjectModal from '../components/NewProjectModal';
 import ObservabilityPanel from '../components/ObservabilityPanel';
-import PipelineFlow from '../components/PipelineFlow';
+import WorkflowDesigner from '../components/WorkflowDesigner';
 import ProjectContextPanel from '../components/ProjectContextPanel';
 import ProjectExplorer from '../components/ProjectExplorer';
 import QualityMetricsPanel from '../components/QualityMetricsPanel';
@@ -34,8 +34,8 @@ export default function V2Workspace() {
   const [view, setView] = useState<V2View>('dashboard');
   const [selectedStage, setSelectedStage] = useState<number | null>(null);
   const [modal, setModalRaw] = useState<V2Modal | null>(null);
-  // Configuration screens open as pages in the centre; only the workflow designer stays an overlay.
-  const setModal = (m: V2Modal | null) => { setModalRaw(m); if (m && m !== 'designer') setView('stage'); };
+  // Configuration screens (and the workflow designer) open as pages in the centre.
+  const setModal = (m: V2Modal | null) => { setModalRaw(m); if (m) setView('stage'); };
   const [newProject, setNewProject] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -67,7 +67,7 @@ export default function V2Workspace() {
     } catch (err) { window.alert(err instanceof Error ? err.message : 'Delete failed'); } finally { setDeleting(false); }
   }
 
-  const PAGE_NAMES: Record<string, string> = { explorer: 'Project Explorer', context: 'Project Context', quality: 'Quality', governance: 'Governance', observability: 'Observability' };
+  const PAGE_NAMES: Record<string, string> = { explorer: 'Project Explorer', context: 'Project Context', quality: 'Quality', governance: 'Governance', observability: 'Observability', designer: 'Workflow designer' };
   const crumb = modal && PAGE_NAMES[modal]
     ? `${activeProjectId ? `${detail.data?.project.name ?? ''} › ` : ''}${PAGE_NAMES[modal]}`
     : activeProjectId
@@ -101,10 +101,11 @@ export default function V2Workspace() {
         )}
         <div className="flex min-h-0 flex-1">
           <main className="min-w-0 flex-1 overflow-hidden" data-testid="v2-main">
-            {modal && modal !== 'designer' && (modal === 'explorer' || modal === 'governance' || modal === 'observability' || activeProjectId) ? (
+            {modal && (modal === 'explorer' || modal === 'governance' || modal === 'observability' || activeProjectId) ? (
               modal === 'explorer' ? <ProjectExplorer page onClose={() => setModal(null)} onOpen={(id) => { setActiveProject(id); setModal(null); }} />
               : modal === 'governance' ? <GovernancePanel page onClose={() => setModal(null)} />
               : modal === 'observability' ? <ObservabilityPanel page onClose={() => setModal(null)} />
+              : modal === 'designer' ? <WorkflowDesigner page projectId={activeProjectId!} onClose={() => { setModalRaw(null); setView('pipeline'); }} />
               : modal === 'quality' ? <QualityMetricsPanel page projectId={activeProjectId!} onClose={() => setModal(null)} />
               : <ProjectContextPanel page projectId={activeProjectId!} techStack={detail.data?.project.techStack} techStackDecided={detail.data?.project.techStackDecided}
                   techStackSource={detail.data?.project.techStackSource}
@@ -131,14 +132,6 @@ export default function V2Workspace() {
         </div>
       </div>
 
-      {modal === 'designer' && activeProjectId && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-auto bg-black/50 p-6" onClick={() => setModal(null)}>
-          <div className="w-full max-w-6xl rounded-xl bg-white p-2" onClick={(e) => e.stopPropagation()}>
-            <button className="float-right m-2 text-slate-500" onClick={() => setModal(null)} aria-label="Close">✕</button>
-            <PipelineFlow projectId={activeProjectId} focusedPhase={activeStage} onFocusPhase={() => undefined} autoOpenDesigner />
-          </div>
-        </div>
-      )}
       {newProject && <NewProjectModal onClose={() => setNewProject(false)} onCreated={(id) => { setNewProject(false); void qc.invalidateQueries({ queryKey: ['projects'] }); setActiveProject(id); setModal('designer'); }} />}
     </div>
   );

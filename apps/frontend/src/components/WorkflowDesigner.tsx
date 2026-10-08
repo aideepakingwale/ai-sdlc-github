@@ -103,7 +103,7 @@ const TEMPLATE_SHORT: Record<number, string> = {
  * Live validation mirrors the server rules and gates Save; amendments bump the
  * persisted version.
  */
-export default function WorkflowDesigner({ projectId, onClose }: { projectId: string; onClose: () => void }) {
+export default function WorkflowDesigner({ projectId, onClose, page = false }: { projectId: string; onClose: () => void; /** Render as a page inside the workspace instead of a modal. */ page?: boolean }) {
   const qc = useQueryClient();
   const [stages, setStages] = useState<StageConfig[] | null>(null);
   const [validation, setValidation] = useState<ValidateResult | null>(null);
@@ -396,9 +396,9 @@ export default function WorkflowDesigner({ projectId, onClose }: { projectId: st
   const errors = validation?.errors ?? [];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-3" onClick={onClose}>
+    <div className={page ? 'h-full bg-slate-50 p-3' : 'fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-3'} onClick={page ? undefined : onClose}>
       <div
-        className="flex h-[95vh] w-full max-w-[1440px] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+        className={page ? 'mx-auto flex h-full w-full max-w-[1440px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white' : 'flex h-[95vh] w-full max-w-[1440px] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl'}
         onClick={(e) => e.stopPropagation()}
       >
         {/* ---------------- top bar ---------------- */}
