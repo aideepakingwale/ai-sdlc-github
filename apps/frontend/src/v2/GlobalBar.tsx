@@ -44,6 +44,9 @@ export default function GlobalBar({
   onDelete: () => void;
   deleting: boolean;
 }) {
+  const narrow = useV2((s) => s.narrow);
+  const drawer = useV2((s) => s.drawer);
+  const setDrawer = useV2((s) => s.setDrawer);
   const side = useV2((s) => s.sideCollapsed);
   const setSide = useV2((s) => s.setSideCollapsed);
   const togglePane = useV2((s) => s.togglePane);
@@ -55,14 +58,14 @@ export default function GlobalBar({
   const canSetStack = (detail?.me?.canManageTeam ?? false) || detail?.me?.membershipRole === 'TA';
 
   return (
-    <header className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-4 py-2" data-testid="v2-globalbar">
-      <button type="button" onClick={() => setSide(!side)} aria-label={side ? 'Show the sidebar' : 'Hide the sidebar'} className="rounded-lg border border-slate-200 p-1.5 text-slate-600 hover:bg-slate-100">
+    <header className="flex items-center gap-2 border-b border-slate-200 bg-white px-4 py-2 max-[899px]:px-3" data-testid="v2-globalbar">
+      <button type="button" onClick={() => (narrow ? setDrawer(!drawer) : setSide(!side))} aria-label={(narrow ? !drawer : side) ? 'Show the sidebar' : 'Hide the sidebar'} data-testid="v2-side-toggle" className="rounded-lg border border-slate-200 p-1.5 text-slate-600 hover:bg-slate-100">
         <Icon name="layers" size={15} />
       </button>
       <div className="min-w-0 truncate text-sm font-semibold text-navy" data-testid="v2-crumb">{crumb ?? projectName ?? 'All projects'}</div>
-      <div className="ml-auto flex flex-wrap items-center gap-2">
+      <div className="ml-auto flex items-center gap-2">
         {projectId && (
-          <Popover label="Technology stack" testid="v2-stack" button={<><Icon name="server" size={13} />Stack: {decided && stack ? stack : 'not decided yet'}<Icon name="chevron-down" size={12} /></>}>
+          <Popover label="Technology stack" testid="v2-stack" button={<><Icon name="server" size={13} /><span className="max-[899px]:hidden">Stack: {decided && stack ? stack : 'not decided yet'}</span><Icon name="chevron-down" size={12} /></>}>
             <div className="w-80 text-xs text-slate-500">
               <TechStackBar projectId={projectId} techStack={stack} decided={decided} source={detail?.project.techStackSource} canSet={canSetStack} />
             </div>
@@ -71,11 +74,11 @@ export default function GlobalBar({
         {projectId && (
           <button type="button" onClick={() => togglePane({ type: 'project', tab: 'team' })} aria-pressed={pane?.type === 'project'} data-testid="v2-open-project-panel"
             className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-semibold ${pane?.type === 'project' ? 'border-brand-300 bg-brand-50 text-brand-700' : 'border-slate-200 bg-white text-slate-600 hover:border-brand-300'}`}>
-            <Icon name="folder" size={13} />Project panel
+            <Icon name="folder" size={13} /><span className="max-[899px]:hidden">Project panel</span>
           </button>
         )}
         <button type="button" onClick={() => setHelp(true)} className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600 hover:border-brand-300">
-          <Icon name="help" size={13} />Help
+          <Icon name="help" size={13} /><span className="max-[899px]:hidden">Help</span>
         </button>
         {projectId && <NotificationBell projectId={projectId} onGoToStage={onGoToStage} />}
         <Popover label="Account" testid="v2-user" button={<span className="flex h-5 w-5 items-center justify-center rounded-full bg-brand-600 text-[10px] font-bold text-white">{initials(user.displayName)}</span>}>

@@ -74,6 +74,13 @@ Each tab opens with a one-paragraph explainer (`EXPLAIN` in `v2/ProjectPanel.tsx
 Audit categories come from the event name prefix (`security.`, `guardrail.`, `gate.`, `ai.`/`stage.`/`build.`); events
 with a human reviewer and no other prefix are "Human" (`v2/projectPanelLib.ts`).
 
+## Narrow screens
+
+Below 900 px (`v2/narrow.ts`) the sidebar becomes a drawer opened from the button in the global bar (it closes when you
+pick something), the right pane covers the whole page with its close button, and the global bar shows icons only. The
+docked composer is capped at 38% of the height so the conversation stays visible. Checked at 390 px and 820 px: no
+horizontal scroll.
+
 ## Theme
 
 Account menu → Theme: Light, Dark or System (default; follows the OS and updates live). Stored in `localStorage`
@@ -116,7 +123,6 @@ four configuration pages, and the docked composer. Useful selectors: `v2-workspa
 
 ## Not done yet
 
-- Mobile layout below ~900 px (the sidebar can be collapsed, the right pane is a fixed-width column).
 - The workflow designer is still an overlay and the guided stepper is hidden in the dock (the next-step bar remains).
 - A design-token pass: v2 uses the existing BAgel Tailwind tokens (navy `#021b41`, blue `#3468ad`, light blue
   `#dfe7f2`, red `#ce210f`); the clickable mockup used approximate values.

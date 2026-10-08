@@ -51,3 +51,11 @@ describe('theme', () => {
     expect(resolveTheme('dark', false)).toBe('dark');
   });
 });
+
+import { isNarrow, NARROW_PX } from './narrow';
+describe('narrow layout', () => {
+  it('switches at the breakpoint', () => {
+    expect(isNarrow(NARROW_PX - 1)).toBe(true);
+    expect(isNarrow(NARROW_PX)).toBe(false);
+  });
+});

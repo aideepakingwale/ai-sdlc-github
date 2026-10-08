@@ -15,10 +15,11 @@ export default function PreviewPane({
   const pane = useV2((s) => s.pane);
   const openPane = useV2((s) => s.openPane);
   const closePane = useV2((s) => s.closePane);
+  const narrow = useV2((s) => s.narrow);
   if (!pane) return null;
   const back = pane.type === 'artefact' && pane.from ? PROJECT_TOOLS.find((t) => t.tab === pane.from) : undefined;
   return (
-    <aside className="flex h-full w-[min(640px,48vw)] min-w-[340px] shrink-0 flex-col border-l border-slate-200 bg-white" aria-label="Details" data-testid="v2-pane">
+    <aside className={narrow ? 'fixed inset-0 z-40 flex flex-col bg-white' : 'flex h-full w-[min(640px,48vw)] min-w-[340px] shrink-0 flex-col border-l border-slate-200 bg-white'} aria-label="Details" data-testid="v2-pane">
       <div className="flex shrink-0 items-center gap-2 border-b border-slate-200 px-3 py-2">
         {back && (
           <button type="button" onClick={() => openPane({ type: 'project', tab: back.tab })} className="rounded-lg px-2 py-1 text-xs font-semibold text-brand-600 hover:bg-brand-50" data-testid="v2-pane-back">← {back.label}</button>

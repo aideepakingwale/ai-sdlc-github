@@ -13,6 +13,11 @@ export type Pane =
 interface V2State {
   pane: Pane;
   sideCollapsed: boolean;
+  /** Narrow screens: the sidebar is a drawer and the right pane covers the page. */
+  narrow: boolean;
+  drawer: boolean;
+  setNarrow: (v: boolean) => void;
+  setDrawer: (v: boolean) => void;
   openPane: (p: Pane) => void;
   closePane: () => void;
   togglePane: (p: NonNullable<Pane>) => void;
@@ -34,6 +39,10 @@ function same(a: Pane, b: Pane): boolean {
 export const useV2 = create<V2State>((set, get) => ({
   pane: null,
   sideCollapsed: readSide(),
+  narrow: false,
+  drawer: false,
+  setNarrow: (v) => set(v ? { narrow: true } : { narrow: false, drawer: false }),
+  setDrawer: (v) => set({ drawer: v }),
   openPane: (p) => set({ pane: p }),
   closePane: () => set({ pane: null }),
   togglePane: (p) => set({ pane: same(get().pane, p) ? null : p }),

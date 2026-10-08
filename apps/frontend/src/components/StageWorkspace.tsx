@@ -1757,7 +1757,7 @@ export default function StageWorkspace({
       </div>
 
       {chat && (
-        <div className="max-h-[55vh] shrink-0 space-y-3 overflow-y-auto border-t border-slate-200 bg-white p-4 shadow-[0_-4px_12px_rgba(2,27,65,0.06)]" data-testid="v2-dock">
+        <div className="max-h-[55vh] max-[899px]:max-h-[38vh] shrink-0 space-y-3 overflow-y-auto border-t border-slate-200 bg-white p-4 shadow-[0_-4px_12px_rgba(2,27,65,0.06)]" data-testid="v2-dock">
           {gateReview}
           {guideCard}
           {runnable && <div data-testid="v2-composer">{composer}</div>}

@@ -16,6 +16,7 @@ import PipelineView from './PipelineView';
 import PreviewPane from './PreviewPane';
 import Sidebar, { type V2Modal, type V2View } from './Sidebar';
 import { useV2 } from './store';
+import { useNarrowSync } from './narrow';
 import { applyTheme, watchSystemTheme } from './theme';
 import { useWorkspaceData } from './useWorkspaceData';
 
@@ -23,6 +24,10 @@ export default function V2Workspace() {
   const qc = useQueryClient();
   const { user, setUser, activeProjectId, setActiveProject } = useApp();
   const { projects, detail, artefacts, flow } = useWorkspaceData(activeProjectId);
+  useNarrowSync();
+  const narrow = useV2((s) => s.narrow);
+  const drawer = useV2((s) => s.drawer);
+  const setDrawer = useV2((s) => s.setDrawer);
   const sideCollapsed = useV2((s) => s.sideCollapsed);
   const closePane = useV2((s) => s.closePane);
   const openPane = useV2((s) => s.openPane);
@@ -71,14 +76,19 @@ export default function V2Workspace() {
 
   return (
     <div className="flex h-full bg-white" data-testid="v2-workspace">
-      {!sideCollapsed && (
+      {(narrow ? drawer : !sideCollapsed) && (
+        <div className={narrow ? 'fixed inset-0 z-40 flex' : 'contents'} data-testid={narrow ? 'v2-drawer' : undefined}>
         <Sidebar
           projects={projects.data?.projects ?? []} activeProjectId={activeProjectId}
-          onPickProject={(id) => setActiveProject(id)} onNewProject={() => setNewProject(true)}
+          onPickProject={(id) => { setDrawer(false); setActiveProject(id); }} onNewProject={() => setNewProject(true)}
           canManage={canManage} isAdmin={user.role === 'SUPER_ADMIN'} flow={flow.data}
-          selectedStage={activeStage} view={view} onView={(v) => { setModalRaw(null); setView(v); }} onStage={goStage} onModal={setModal}
+          selectedStage={activeStage} view={view} onView={(v) => { setDrawer(false); setModalRaw(null); setView(v); }} onStage={(n) => { setDrawer(false); goStage(n); }} onModal={(m) => { setDrawer(false); setModal(m); }}
         />
+      
+          {narrow && <button type="button" aria-label="Close the sidebar" className="flex-1 bg-black/40" onClick={() => setDrawer(false)} />}
+        </div>
       )}
+
       <div className="flex min-w-0 flex-1 flex-col">
         <GlobalBar
           user={user} detail={detail.data} projectId={activeProjectId} projectName={detail.data?.project.name ?? null}
