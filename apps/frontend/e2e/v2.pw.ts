@@ -280,6 +280,34 @@ test.describe('codebase', () => {
   });
 });
 
+test.describe('context graph', () => {
+  test('"What this stage knows" is a layered hierarchy with the earlier stages chained, not a hub', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { name } = await newProject(page);
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-stage-3').click();                      // stage 3 builds on stages 1 and 2, whatever their state
+    await page.getByTestId('v2-nav-stage-context').click();
+    await page.getByRole('button', { name: 'Open full view' }).click();
+    const svg = page.getByTestId('context-graph');
+    await expect(svg).toBeVisible();
+    // the stages it builds on are boxes of their own, in dependency order
+    await expect(svg.locator('[data-group="group:stage:1"]')).toBeVisible();
+    await expect(svg.locator('[data-group="group:stage:2"]')).toBeVisible();
+    const x = async (id: string) => (await svg.locator(`[data-group="${id}"]`).boundingBox())!.x;
+    expect(await x('group:stage:1')).toBeLessThan(await x('group:stage:2'));
+    // stage -> stage links exist (the hierarchy), alongside the links into the prompt
+    await expect(svg.locator('[data-edge][data-kind="depends"]').first()).toBeAttached();
+    await expect(svg.locator('[data-edge][data-kind="feeds"]').first()).toBeAttached();
+    // no spoke from every single item straight to the prompt
+    const itemSpokes = await svg.locator('[data-edge^="u"][data-edge$="->prompt"], [data-edge*=":"][data-edge$="->prompt"]:not([data-edge^="group:"])').count();
+    expect(itemSpokes).toBe(0);
+    // selecting a box shows what it holds
+    await svg.locator('[data-group="group:stage:2"]').click();
+    await expect(page.getByRole('dialog').getByLabel('Details')).toContainText('Solution Architecture');
+  });
+});
+
 test.describe('theme', () => {
   test('dark is applied from the account menu, persists, and classic stays light', async ({ page }) => {
     await login(page, '/?ui=v2');
