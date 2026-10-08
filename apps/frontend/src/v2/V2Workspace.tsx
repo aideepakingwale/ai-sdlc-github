@@ -9,7 +9,7 @@ import WorkflowDesigner from '../components/WorkflowDesigner';
 import ProjectContextPanel from '../components/ProjectContextPanel';
 import ProjectExplorer from '../components/ProjectExplorer';
 import QualityMetricsPanel from '../components/QualityMetricsPanel';
-import StageWorkspace from '../components/StageWorkspace';
+import StageChat from './stage/StageChat';
 import { useApp } from '../store';
 import GlobalBar from './GlobalBar';
 import PipelineView from './PipelineView';
@@ -115,9 +115,10 @@ export default function V2Workspace() {
             ) : view === 'pipeline' ? (
               flow.data ? <PipelineView projectId={activeProjectId} flow={flow.data} onOpenStage={goStage} onDesigner={() => setModal('designer')} canDesign={canManage} /> : <div className="mx-auto mt-24 max-w-md px-6 text-center text-slate-500">Loading the pipeline…</div>
             ) : flow.data ? (
-              <StageWorkspace
-                key={activeProjectId} projectId={activeProjectId} flow={flow.data} selectedSeq={activeStage} onSelectStage={goStage}
-                user={user} variant="chat" onOpenArtefact={(id) => openPane({ type: 'artefact', id })} messages={detail.data?.messages ?? []} pendingGate={pendingGate}
+              <StageChat
+                key={`${activeProjectId}:${activeStage}`} projectId={activeProjectId} flow={flow.data} selectedSeq={activeStage} onSelectStage={goStage}
+                user={user} onOpenArtefact={(id) => openPane({ type: 'artefact', id })} onOpenPipeline={() => { setModalRaw(null); setView('pipeline'); }}
+                messages={detail.data?.messages ?? []} pendingGate={pendingGate}
                 artefacts={(artefacts.data?.artefacts ?? []).map((a) => ({ id: a.id, phase: a.phase, type: a.type, title: a.title, url: a.url }))}
               />
             ) : (

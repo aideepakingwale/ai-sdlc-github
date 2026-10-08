@@ -27,7 +27,7 @@ import type { Mention } from '../lib/mentions';
 
 
 /** Plain-language names + icons for the AI-judged project traits. */
-const TRAIT_META: Record<string, { label: string; icon: IconName; hint: string }> = {
+export const TRAIT_META: Record<string, { label: string; icon: IconName; hint: string }> = {
   ui: { label: 'User interface', icon: 'monitor', hint: 'Has screens users interact with' },
   api: { label: 'API', icon: 'code', hint: 'Exposes or consumes an API' },
   database: { label: 'Database', icon: 'database', hint: 'Stores data in a database' },

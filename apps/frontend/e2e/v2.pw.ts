@@ -65,18 +65,47 @@ test.describe('which workspace', () => {
 });
 
 test.describe('stage view', () => {
-  test('shows the conversation with the composer and next step docked', async ({ page }) => {
+  test('is a conversation: slim header, next step on top, composer pinned at the bottom', async ({ page }) => {
     await login(page, '/?ui=v2');
     const { name } = await newProject(page);
     await page.reload();
     await openProject(page, name);
     await page.getByTestId('v2-stage-1').click();
-    const dock = page.getByTestId('v2-dock');
-    await expect(dock).toBeVisible();
+    await expect(page.getByTestId('v2-stagechat')).toBeVisible();
+    await expect(page.getByTestId('v2-stage-header')).toBeVisible();
+    await expect(page.getByTestId('v2-minimap')).toBeVisible();
+    await expect(page.getByTestId('v2-next')).toBeVisible();
+    const composer = page.getByTestId('v2-composer');
+    await expect(composer).toBeVisible();
+    const box = await composer.boundingBox();
+    expect(box!.y + box!.height).toBeGreaterThan(780); // pinned to the bottom of the window
+    await expect(page.getByTestId('v2-primary')).toHaveText('Review plan');
+  });
+
+  test('plan, questions and generation run through the conversation', async ({ page }) => {
+    test.setTimeout(150_000);
+    await login(page, '/?ui=v2');
+    const { name } = await newProject(page);
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-stage-1').click();
+    await page.getByTestId('v2-composer').getByRole('textbox').first().click();
+    await page.keyboard.type('Build a loyalty points API for a retail bank. Python 3.12 and FastAPI on AWS.');
+    await page.getByTestId('v2-primary').click();
+    await expect(page.getByTestId('v2-stagechat')).toHaveAttribute('data-mode', 'plan', { timeout: 60_000 });
+    await expect(page.getByTestId('plan-card')).toBeVisible();
+    await expect(page.getByTestId('v2-primary')).toHaveText('Generate');
+    await page.getByTestId('v2-primary').click();
+    // the agent may ask questions first: answer them one at a time
+    for (let i = 0; i < 4; i++) {
+      const q = page.getByTestId('v2-questions');
+      if (!(await q.isVisible().catch(() => false))) { await page.waitForTimeout(1500); if (!(await q.isVisible().catch(() => false))) break; }
+      await q.locator('button[aria-pressed]').first().click();
+      await page.getByTestId('v2-primary').click();
+      await page.waitForTimeout(800);
+    }
+    await expect(page.getByTestId('v2-stagechat')).toHaveAttribute('data-mode', /review|escalated/, { timeout: 90_000 });
     await expect(page.getByTestId('v2-composer')).toBeVisible();
-    // the dock sits below the scrolling conversation
-    const box = await dock.boundingBox();
-    expect(box!.y + box!.height).toBeGreaterThan(800);
   });
 });
 
