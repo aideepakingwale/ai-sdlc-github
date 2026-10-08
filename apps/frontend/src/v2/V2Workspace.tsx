@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import Dashboard from '../components/Dashboard';
 import GovernancePanel from '../components/GovernancePanel';
+import ModelRoutesControl from '../components/ModelRoutesControl';
 import NewProjectModal from '../components/NewProjectModal';
 import ObservabilityPanel from '../components/ObservabilityPanel';
 import WorkflowDesigner from '../components/WorkflowDesigner';
@@ -67,7 +68,7 @@ export default function V2Workspace() {
     } catch (err) { window.alert(err instanceof Error ? err.message : 'Delete failed'); } finally { setDeleting(false); }
   }
 
-  const PAGE_NAMES: Record<string, string> = { explorer: 'Project Explorer', context: 'Project Context', quality: 'Quality', governance: 'Governance', observability: 'Observability', designer: 'Workflow designer' };
+  const PAGE_NAMES: Record<string, string> = { explorer: 'Project Explorer', context: 'Project Context', quality: 'Quality', governance: 'Governance', observability: 'Observability', models: 'Model routes', designer: 'Workflow designer' };
   const crumb = modal && PAGE_NAMES[modal]
     ? `${activeProjectId ? `${detail.data?.project.name ?? ''} › ` : ''}${PAGE_NAMES[modal]}`
     : activeProjectId
@@ -101,10 +102,11 @@ export default function V2Workspace() {
         )}
         <div className="flex min-h-0 flex-1">
           <main className="min-w-0 flex-1 overflow-hidden" data-testid="v2-main">
-            {modal && (modal === 'explorer' || modal === 'governance' || modal === 'observability' || activeProjectId) ? (
+            {modal && (modal === 'explorer' || modal === 'governance' || modal === 'observability' || modal === 'models' || activeProjectId) ? (
               modal === 'explorer' ? <ProjectExplorer page onClose={() => setModal(null)} onOpen={(id) => { setActiveProject(id); setModal(null); }} />
               : modal === 'governance' ? <GovernancePanel page onClose={() => setModal(null)} />
               : modal === 'observability' ? <ObservabilityPanel page onClose={() => setModal(null)} />
+              : modal === 'models' ? <div className="h-full overflow-y-auto bg-slate-50 p-6"><div className="mx-auto max-w-4xl"><h1 className="mb-1 font-display text-xl font-bold text-navy">Model routes</h1><p className="mb-4 text-sm text-slate-500">Which models serve which kind of work. The first in each chain is preferred, the rest are fallbacks. Changes apply at once.</p><ModelRoutesControl /></div></div>
               : modal === 'designer' ? <WorkflowDesigner page projectId={activeProjectId!} onClose={() => { setModalRaw(null); setView('pipeline'); }} />
               : modal === 'quality' ? <QualityMetricsPanel page projectId={activeProjectId!} onClose={() => setModal(null)} />
               : <ProjectContextPanel page projectId={activeProjectId!} techStack={detail.data?.project.techStack} techStackDecided={detail.data?.project.techStackDecided}

@@ -34,7 +34,7 @@ Only an explicit choice is remembered; the default is not stored. The choice is 
 └───────────────┴─────────────────────────────────────────────┴──────────────────────┘
 ```
 
-- **Sidebar** (`v2/Sidebar.tsx`): project switcher, All projects, Project Explorer (PM/admin), Pipeline, the stages
+- **Sidebar** (`v2/Sidebar.tsx`): project switcher with a **New project** button right under it (managers and admins), All projects, Project Explorer (PM/admin), Pipeline, the stages
   with their status, Configure (Project Context, Quality, Workflow designer) and the six project tools. The collapse
   button in the global bar hides it (`sdlc:v2:side-collapsed`).
 - **Global bar** (`v2/GlobalBar.tsx`): breadcrumb, technology-stack popover, Project panel toggle, Help, notifications,
@@ -89,7 +89,7 @@ Each tab opens with a one-paragraph explainer (`EXPLAIN` in `v2/ProjectPanel.tsx
 | Team | people with role and stage, remove, and an "Add a member" form (`v2/ProjectTeam.tsx`) |
 | Artefacts | everything generated, grouped by stage; All stages / this stage; click opens the artefact preview |
 | Files | storage chip and path, filter, phase folders with file sizes (`v2/ProjectFiles.tsx`) |
-| Codebase | Existing: upload a `.zip`, search the tree, read a file, download. Generated: `CodeExplorer` for the code stage |
+| Codebase | Existing: upload a `.zip` (language mix bar, Remove for managers and admins), search the tree, read a file, download. Generated: `CodeExplorer` for the code stage |
 | Audit | live (5 s) events; filters Gate / Generation / Security / Guardrail / Human and by stage; expandable JSON; the artefact names and formats the user selected; CSV export |
 | Skills | connected services as dots, then the stage's skills (`SkillsPanel`), knowledge-base search, active tools |
 
@@ -161,13 +161,14 @@ Useful selectors: `v2-workspace`, `v2-sidebar`, `v2-project-switcher`,
 
 ## Known differences from the design mock
 
-- Artefact cards have no quality score chip (the API has no per-artefact score).
-- The composer has no model picker (there is no per-message model setting; models are chosen by the routing settings).
-- No "Security review at gate" chip in the stage header or "Security HIGH" chip on pipeline cards.
-- The sidebar has no "Model routes" entry; the stage-6 code flow still uses the existing `CodeExplorer` card, not the
-  mock's four-step code card with a file tree in the side pane.
-- The plan card has no "Pipeline & models" fold; context is the existing context panel, not the mock's inline strip.
-- Headings use the app's sans-serif, not the mock's serif display face.
-- The Codebase tab has no language-mix bar or Remove button.
-- A design-token pass: v2 uses the existing BAgel Tailwind tokens (navy `#021b41`, blue `#3468ad`, light blue `#dfe7f2`,
-  red `#ce210f`).
+- The composer has no model picker: there is no per-message model setting. Models are chosen under Model routes
+  (admins, in the sidebar) and per stage in the Workflow designer; the plan card's "Pipeline & models" fold shows what
+  the stage's agent will run.
+- Pipeline cards do not show a security chip (the stage header does, once a security review exists).
+- The stage-6 code flow is the existing `CodeExplorer` card inside the conversation (steps, structure, file tree, file
+  viewer), not a card plus a file tree in the side pane.
+- The plan card's context uses the existing context panel, not the mock's inline strip; the pipeline cards do show the
+  three-colour strip.
+- Headings use a serif display face (`font-display`, Source Serif 4 then Georgia). The app's content-security policy
+  blocks external fonts, so Georgia is what renders unless the font is installed.
+- The Quality chip on the Artefacts card comes from the stage's quality-score finding; individual artefacts have no score.

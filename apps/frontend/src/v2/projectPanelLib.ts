@@ -47,3 +47,29 @@ export function buildPathTree(paths: string[]): CodeNode {
   order(root);
   return root;
 }
+
+const LANG: Record<string, string> = {
+  java: 'Java', kt: 'Kotlin', py: 'Python', ts: 'TypeScript', tsx: 'TypeScript', js: 'JavaScript', jsx: 'JavaScript', go: 'Go', cs: 'C#', rb: 'Ruby', rs: 'Rust',
+  php: 'PHP', scala: 'Scala', swift: 'Swift', xml: 'XML', yml: 'YAML', yaml: 'YAML', json: 'JSON', sql: 'SQL', md: 'Markdown', html: 'HTML', css: 'CSS', sh: 'Shell',
+};
+
+/** Share of files per language, largest first; the tail folds into "Other". */
+export function languageMix(paths: string[], keep = 4): Array<{ name: string; pct: number }> {
+  if (!paths.length) return [];
+  const counts = new Map<string, number>();
+  for (const p of paths) {
+    const ext = p.includes('.') ? p.slice(p.lastIndexOf('.') + 1).toLowerCase() : '';
+    const name = LANG[ext] ?? 'Other';
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const top = sorted.filter(([n]) => n !== 'Other').slice(0, keep);
+  const rest = sorted.reduce((sum, [n, c]) => sum + (top.some(([t]) => t === n) ? 0 : c), 0);
+  const rows = [...top.map(([name, c]) => ({ name, c })), ...(rest ? [{ name: 'Other', c: rest }] : [])];
+  let acc = 0;
+  return rows.map((r, i) => {
+    const pct = i === rows.length - 1 ? 100 - acc : Math.round((r.c / paths.length) * 100);
+    acc += pct;
+    return { name: r.name, pct };
+  });
+}

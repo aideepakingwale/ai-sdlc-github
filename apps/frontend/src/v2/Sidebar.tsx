@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ProjectFlow } from '../api/flow';
 import { COLOR_CLASSES } from '../api/flow';
 import type { Project } from '../api/types';
@@ -7,7 +7,7 @@ import { StageDot } from './bits';
 import { useV2, type ProjectTab } from './store';
 
 export type V2View = 'dashboard' | 'pipeline' | 'stage';
-export type V2Modal = 'explorer' | 'context' | 'quality' | 'governance' | 'observability' | 'designer';
+export type V2Modal = 'explorer' | 'context' | 'quality' | 'governance' | 'observability' | 'models' | 'designer';
 
 export const PROJECT_TOOLS: Array<{ tab: ProjectTab; label: string; hint: string; icon: IconName }> = [
   { tab: 'team', label: 'Team', hint: 'Who is on this project and which stage each person covers', icon: 'users' },
@@ -52,15 +52,24 @@ export default function Sidebar({
   const pane = useV2((s) => s.pane);
   const togglePane = useV2((s) => s.togglePane);
   const [pick, setPick] = useState(false);
+  const pickRef = useRef<HTMLDivElement>(null);
+  // The project list closes on Escape and when you click anywhere else.
+  useEffect(() => {
+    if (!pick) return;
+    const off = (e: MouseEvent) => { if (!pickRef.current?.contains(e.target as Node)) setPick(false); };
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') setPick(false); };
+    document.addEventListener('mousedown', off); document.addEventListener('keydown', key);
+    return () => { document.removeEventListener('mousedown', off); document.removeEventListener('keydown', key); };
+  }, [pick]);
   const active = projects.find((p) => p.id === activeProjectId);
   const doneCount = flow?.stages.filter((s) => s.status === 'APPROVED').length ?? 0;
 
   return (
     <aside className="flex w-72 max-w-[85vw] shrink-0 flex-col overflow-y-auto border-r border-slate-200 bg-slate-100" aria-label="Projects and stages" data-testid="v2-sidebar">
       <div className="px-4 pb-1 pt-4">
-        <div className="text-lg font-bold text-navy">DevMind</div>
+        <div className="font-display text-xl font-bold text-navy">DevMind</div>
       </div>
-      <div className="relative mx-3 mt-1">
+      <div className="relative mx-3 mt-1" ref={pickRef}>
         <button
           type="button" onClick={() => setPick((v) => !v)} aria-haspopup="listbox" aria-expanded={pick}
           className="flex w-full items-center justify-between rounded-lg border border-slate-300 bg-white px-3 py-2 text-left text-sm font-semibold text-navy"
@@ -80,14 +89,18 @@ export default function Sidebar({
               </button>
             ))}
             {projects.length === 0 && <div className="px-3 py-2 text-sm text-slate-500">No projects yet.</div>}
-            {canManage && (
-              <button type="button" onClick={() => { setPick(false); onNewProject(); }} className="mt-1 block w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-brand-600 hover:bg-brand-50">
-                + New project
-              </button>
-            )}
           </div>
         )}
       </div>
+
+      {canManage && (
+        <div className="mx-3 mt-2">
+          <button type="button" onClick={onNewProject} data-testid="v2-new-project"
+            className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">
+            <span aria-hidden="true" className="text-base leading-none">+</span> New project
+          </button>
+        </div>
+      )}
 
       <div className="mt-3">
         <Item active={view === 'dashboard' && !activeProjectId} onClick={() => { onPickProject(null); onView('dashboard'); }} testid="v2-nav-all">
@@ -154,6 +167,7 @@ export default function Sidebar({
       <div className="mt-auto border-t border-slate-200 p-2 pt-2">
         <button type="button" onClick={() => onModal('governance')} className="block w-full rounded-lg px-3 py-1.5 text-left text-sm text-slate-600 hover:bg-slate-200/60" data-testid="v2-nav-governance">Governance</button>
         {isAdmin && <button type="button" onClick={() => onModal("observability")} className="block w-full rounded-lg px-3 py-1.5 text-left text-sm text-slate-600 hover:bg-slate-200/60" data-testid="v2-nav-observability">Observability</button>}
+        {isAdmin && <button type="button" onClick={() => onModal('models')} className="block w-full rounded-lg px-3 py-1.5 text-left text-sm text-slate-600 hover:bg-slate-200/60" data-testid="v2-nav-models">Model routes</button>}
       </div>
     </aside>
   );

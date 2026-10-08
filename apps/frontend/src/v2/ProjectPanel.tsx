@@ -11,7 +11,9 @@ import ProjectTeam from './ProjectTeam';
 import { Icon } from '../components/ui/Icon';
 import type { CodeNode, CodeView as CodeViewData } from '../lib/codeTree';
 import { filterTree, iconFor } from '../lib/codeTree';
-import { auditCategory, auditCsv, buildPathTree, AUDIT_CATEGORIES, type AuditCategory } from './projectPanelLib';
+import { auditCategory, auditCsv, buildPathTree, languageMix, AUDIT_CATEGORIES, type AuditCategory } from './projectPanelLib';
+
+const MIX_COLORS = ['bg-brand-500', 'bg-navy', 'bg-bared-500', 'bg-slate-400', 'bg-brand-300'];
 import { Pill, StageDot, stageTone } from './bits';
 import { PROJECT_TOOLS } from './Sidebar';
 import { useV2, type ProjectTab } from './store';
@@ -48,7 +50,7 @@ export default function ProjectPanel({
         {tab === 'team' && <ProjectTeam projectId={projectId} flow={flow} canManage={canManageTeam} />}
         {tab === 'artefacts' && <ArtefactsTab projectId={projectId} flow={flow} selectedStage={selectedStage} />}
         {tab === 'files' && <ProjectFiles projectId={projectId} onOpenArtifact={(id) => openPane({ type: 'artefact', id, from: 'files' })} />}
-        {tab === 'codebase' && <CodebaseTab projectId={projectId} flow={flow} canWrite={canWrite} />}
+        {tab === 'codebase' && <CodebaseTab projectId={projectId} flow={flow} canWrite={canWrite} canManage={canManageTeam} />}
         {tab === 'audit' && <AuditTab projectId={projectId} flow={flow} />}
         {tab === 'skills' && <SkillsTab projectId={projectId} selectedStage={selectedStage} stageName={flow?.stages.find((x) => x.phase === selectedStage)?.name} />}
       </div>
@@ -132,7 +134,7 @@ function TreeNodes({ node, open, toggle, selected, onSelect, searching }: {
   );
 }
 
-function CodebaseTab({ projectId, flow, canWrite }: { projectId: string; flow: ProjectFlow | undefined; canWrite: boolean }) {
+function CodebaseTab({ projectId, flow, canWrite, canManage }: { projectId: string; flow: ProjectFlow | undefined; canWrite: boolean; canManage: boolean }) {
   const qc = useQueryClient();
   const [mode, setMode] = useState<'existing' | 'generated'>('existing');
   const codeStage = flow?.stages.find((s) => s.template === 6);
@@ -142,7 +144,7 @@ function CodebaseTab({ projectId, flow, canWrite }: { projectId: string; flow: P
         <button type="button" aria-pressed={mode === 'existing'} onClick={() => setMode('existing')} className={`px-3 py-1 ${mode === 'existing' ? 'bg-brand-600 text-white' : 'bg-white text-slate-600'}`}>Existing (uploaded)</button>
         <button type="button" aria-pressed={mode === 'generated'} onClick={() => setMode('generated')} className={`px-3 py-1 ${mode === 'generated' ? 'bg-brand-600 text-white' : 'bg-white text-slate-600'}`}>Generated ({codeStage ? `stage ${codeStage.phase}` : 'no code stage'})</button>
       </div>
-      {mode === 'existing' ? <ExistingCodebase projectId={projectId} canWrite={canWrite} onChanged={() => void qc.invalidateQueries({ queryKey: ['codebase', projectId] })} /> : <GeneratedCodebase projectId={projectId} phase={codeStage?.phase ?? null} />}
+      {mode === 'existing' ? <ExistingCodebase projectId={projectId} canWrite={canWrite} canManage={canManage} onChanged={() => void qc.invalidateQueries({ queryKey: ['codebase', projectId] })} /> : <GeneratedCodebase projectId={projectId} phase={codeStage?.phase ?? null} />}
     </div>
   );
 }
@@ -159,7 +161,7 @@ function GeneratedCodebase({ projectId, phase }: { projectId: string; phase: num
   return <CodeExplorer projectId={projectId} phase={phase} />;
 }
 
-function ExistingCodebase({ projectId, canWrite, onChanged }: { projectId: string; canWrite: boolean; onChanged: () => void }) {
+function ExistingCodebase({ projectId, canWrite, canManage, onChanged }: { projectId: string; canWrite: boolean; canManage: boolean; onChanged: () => void }) {
   const input = useRef<HTMLInputElement>(null);
   const [msg, setMsg] = useState('');
   const [query, setQuery] = useState('');
@@ -189,6 +191,12 @@ function ExistingCodebase({ projectId, canWrite, onChanged }: { projectId: strin
     onSuccess: (r) => { setMsg(`Indexed ${r.files} source files. The agents now ground on this codebase.`); onChanged(); },
     onError: (e) => setMsg(`${e instanceof Error ? e.message : 'Upload failed'}`),
   });
+  const remove = useMutation({
+    mutationFn: () => api.del(`/api/projects/${projectId}/codebase`),
+    onSuccess: () => { setMsg('The codebase was removed.'); setSelected(null); onChanged(); },
+    onError: (e) => setMsg(e instanceof Error ? e.message : 'Could not remove the codebase'),
+  });
+  const mix = useMemo(() => languageMix(files.map((f) => f.path)), [files]);
   const toggle = (p: string) => setOpen((cur) => { const n = new Set(cur); if (n.has(p)) n.delete(p); else n.add(p); return n; });
   return (
     <div>
@@ -202,8 +210,18 @@ function ExistingCodebase({ projectId, canWrite, onChanged }: { projectId: strin
             className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50">
             {upload.isPending ? 'Indexing…' : files.length ? 'Replace .zip' : 'Upload .zip'}
           </button>
+ {files.length > 0 && canManage && (
+            <button type="button" onClick={() => { if (window.confirm('Remove the uploaded codebase? The agents will no longer ground on it.')) remove.mutate(); }} disabled={remove.isPending} data-testid="v2-codebase-remove"
+              className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:border-bared-500 hover:text-bared-600">{remove.isPending ? 'Removing…' : 'Remove'}</button>
+          )}
           <input ref={input} type="file" accept=".zip" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) upload.mutate(f); e.target.value = ''; }} />
         </div>
+        {mix.length > 0 && (
+          <div className="mt-3" aria-label="Language mix">
+            <div className="flex h-2 overflow-hidden rounded-full bg-slate-200">{mix.map((m, i) => <span key={m.name} style={{ width: `${m.pct}%` }} className={MIX_COLORS[i % MIX_COLORS.length]} />)}</div>
+            <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600">{mix.map((m, i) => <span key={m.name} className="inline-flex items-center gap-1.5"><i className={`h-2 w-2 rounded-sm ${MIX_COLORS[i % MIX_COLORS.length]}`} />{m.name} {m.pct}%</span>)}</div>
+          </div>
+        )}
         {msg && <div className="mt-2 text-xs text-slate-600" role="status">{msg}</div>}
       </div>
       {files.length > 0 && (

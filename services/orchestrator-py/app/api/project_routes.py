@@ -1469,6 +1469,23 @@ async def upload_codebase(
     return result
 
 
+@router.delete("/api/projects/{project_id}/codebase")
+async def remove_codebase(
+    project_id: str,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """Remove the uploaded codebase (its files and retrieval entries). Project managers and admins only."""
+    await container.authz.assert_project_access(project_id, user)
+    if user.role not in ("SUPER_ADMIN", "PROJECT_MANAGER"):
+        raise SdlcError("FORBIDDEN", "Only a project manager or admin can remove the codebase")
+    removed = await container.db.delete_codebase(project_id)
+    container.audit.record(
+        project_id=project_id, agent_role="Orchestrator", event="codebase.removed",
+        human_reviewer=user.email, detail={"files": removed},
+    )
+    return {"removed": removed}
+
+
 @router.get("/api/projects/{project_id}/codebase")
 async def list_codebase(
     project_id: str,

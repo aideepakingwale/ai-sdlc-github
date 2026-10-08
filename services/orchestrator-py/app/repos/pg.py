@@ -1242,6 +1242,14 @@ class Database:
             "SELECT * FROM codebase_files WHERE project_id=$1 AND id=$2", project_id, file_id
         )
 
+    async def delete_codebase(self, project_id: str) -> int:
+        """Remove the project's uploaded codebase: its files and the retrieval entries built from them."""
+        async with self.pool.acquire() as conn:
+            n = await conn.fetchval("SELECT count(*) FROM codebase_files WHERE project_id=$1", project_id)
+            await conn.execute("DELETE FROM codebase_files WHERE project_id=$1", project_id)
+            await conn.execute("DELETE FROM kb_documents WHERE scope=$1 AND source='codebase'", project_id)
+        return int(n or 0)
+
     async def count_codebase_files(self, project_id: str) -> int:
         assert self.pool
         return await self.pool.fetchval(

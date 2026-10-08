@@ -93,6 +93,7 @@ export default function StageChat(props: StageControllerProps & { onOpenPipeline
   const openArt = (id: string) => (onOpenArtefact ? onOpenArtefact(id) : setViewArtefactId(id));
   const canDecide = user.role === 'SUPER_ADMIN' || stage.canReview;
   const color = COLOR_CLASSES[stage.color];
+  const qualityScore = (() => { const f = fb.validation.find((x) => x.category === 'quality-score'); const m = f?.comment.match(/(\d+)\s*\/\s*100/); return f?.rating ?? (m ? Number(m[1]) : null); })();
   const afterRun = mode === 'review' || mode === 'approved' || mode === 'escalated';
 
   /* ---- header: one slim line ---- */
@@ -102,11 +103,12 @@ export default function StageChat(props: StageControllerProps & { onOpenPipeline
         <button type="button" aria-label="Previous stage" disabled={idx <= 0} onClick={() => stages[idx - 1] && onSelectStage(stages[idx - 1]!.phase)} className="rounded-lg border border-slate-200 px-2 py-1 text-slate-600 hover:bg-slate-100 disabled:opacity-30"><Icon name="chevron-left" size={14} /></button>
         <button type="button" aria-label="Next stage" disabled={idx >= stages.length - 1} onClick={() => stages[idx + 1] && onSelectStage(stages[idx + 1]!.phase)} className="rounded-lg border border-slate-200 px-2 py-1 text-slate-600 hover:bg-slate-100 disabled:opacity-30"><Icon name="chevron-right" size={14} /></button>
       </div>
-      <h1 className="text-lg font-bold text-navy">{stage.name}</h1>
+      <h1 className="font-display text-xl font-bold text-navy">{stage.name}</h1>
       <Pill tone={stageTone(stage.color)}>{color.label}</Pill>
       <Pill>{stage.persona}</Pill>
       <Pill title="The role that signs off this stage">Reviewer: {stage.reviewerRole}</Pill>
       {stage.stale && <Pill tone="amber" title={stage.staleReason ?? 'An upstream input changed'}>Outdated</Pill>}
+      {fb.security.length > 0 && <Pill tone={fb.openBlocking ? 'red' : 'brand'} title="The security review runs when the output reaches review">{fb.openBlocking ? 'Security review: HIGH' : 'Security review at gate'}</Pill>}
       {locked && <Pill tone="brand">Editing locked</Pill>}
       <button type="button" onClick={props.onOpenPipeline} aria-label="Open the pipeline view" data-testid="v2-minimap"
         className="ml-auto flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-600 hover:border-brand-300">
@@ -199,6 +201,15 @@ export default function StageChat(props: StageControllerProps & { onOpenPipeline
       {(plan.intel?.recommendation) && <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-slate-700"><b>Advice.</b> {plan.intel.recommendation}</p>}
       {(plan.intel?.outOfScope?.length ?? 0) > 0 && <p className="mt-2 text-xs text-slate-500"><b>Not covered here:</b> {plan.intel!.outOfScope.join('; ')}</p>}
       <div className="mt-4"><ContextPanel projectId={projectId} seq={selectedSeq} refreshKey={`v2|${locked}|${stage.status}|${attachments.length}|${plan.planState?.fresh ?? ''}|${(plan.overlay.promptOverlay ?? '').length}`} /></div>
+      <details className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2" data-testid="v2-plan-models">
+        <summary className="cursor-pointer text-sm"><b>Pipeline &amp; models</b> <span className="text-slate-500">{plan.agent.nodes.length} steps</span></summary>
+        <div className="mt-2 space-y-1.5 text-sm">
+          <div className="flex justify-between gap-3"><span>Agent</span><span className="text-slate-600">{plan.agent.persona} · {plan.agent.tier} model</span></div>
+          {plan.agent.nodes.map((n) => <div key={n} className="flex justify-between gap-3"><span className="capitalize">{n.replace(/[_-]/g, ' ')}</span><span className="text-slate-500">step</span></div>)}
+          {fb.security.length > 0 && <div className="flex justify-between gap-3"><span>Security review</span><Pill tone="green">on at the gate</Pill></div>}
+          <p className="pt-1 text-xs text-slate-500">Which models run each kind of work is set under Model routes (admins) and per stage in the Workflow designer.</p>
+        </div>
+      </details>
       {(plan.traits?.filter((t) => !t.trait.startsWith('_')).length ?? 0) > 0 && (
         <details className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
           <summary className="cursor-pointer text-sm"><b>Project fit</b> <span className="text-slate-500">what the AI judged about your project</span></summary>
@@ -259,7 +270,7 @@ export default function StageChat(props: StageControllerProps & { onOpenPipeline
   /* ---- outputs ---- */
   const outputs = stageArtefacts.length > 0 && (
     <Card title="Artefacts" sub="Each opens in the preview with its own tools and exports."
-      aside={<button type="button" onClick={() => setDocOpen(true)} className="rounded-lg border border-slate-300 px-3 py-1 text-xs font-semibold hover:border-brand-400">Open as one document</button>}>
+      aside={<span className="flex items-center gap-2">{qualityScore != null && <Pill tone={qualityScore >= 70 ? 'green' : 'amber'} title="The validation agent's score for this stage">Quality {qualityScore}</Pill>}<button type="button" onClick={() => setDocOpen(true)} className="rounded-lg border border-slate-300 px-3 py-1 text-xs font-semibold hover:border-brand-400">Open as one document</button></span>}>
       <div className="space-y-1.5">
         {stageArtefacts.map((a) => (
           <button key={a.id} type="button" onClick={() => openArt(a.id)} data-testid={`v2-art-${a.id}`} className="flex w-full items-center gap-3 rounded-lg border border-slate-200 px-3 py-2 text-left hover:border-brand-400">

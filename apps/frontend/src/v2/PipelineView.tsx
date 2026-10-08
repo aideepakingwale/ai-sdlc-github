@@ -70,7 +70,7 @@ export default function PipelineView({
     <div className="h-full overflow-y-auto bg-slate-50" data-testid="v2-pipeline">
       <div className="mx-auto max-w-[1200px] space-y-4 p-5">
         <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-lg font-bold text-navy">Pipeline</h1>
+          <h1 className="font-display text-xl font-bold text-navy">Pipeline</h1>
           <Pill tone={done === total && total > 0 ? 'green' : 'slate'}>{done} of {total} approved</Pill>
           {projectName && <Pill>{projectName}</Pill>}
           <span className="ml-auto flex gap-2">

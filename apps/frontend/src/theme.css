@@ -130,3 +130,5 @@
 .dark [class*="bg-yellow-100/"] { background-color: #4a3f14; }
 .dark [class*="bg-blue-50/"] { background-color: #14233f; }
 .dark [class*="bg-blue-100/"] { background-color: #1b3157; }
+.dark [class*="bg-bared-200/"] { background-color: rgb(206 33 15 / 0.18); }
+.dark [class*="bg-amber-50/"] { background-color: rgb(245 158 11 / 0.12); }

@@ -109,6 +109,18 @@ test.describe('stage view', () => {
   });
 });
 
+test.describe('sidebar', () => {
+  test('New project sits outside the project dropdown, and admin pages are reachable', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    await expect(page.getByTestId('v2-new-project')).toBeVisible();          // visible without opening the switcher
+    await page.getByTestId('v2-project-switcher').click();
+    await expect(page.getByRole('option', { name: /New project/ })).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await page.getByTestId('v2-new-project').click();
+    await expect(page.getByRole('dialog').or(page.getByText(/New project/i).first())).toBeVisible();
+  });
+});
+
 test.describe('project panel', () => {
   test('opens the six tabs, each with an explainer', async ({ page }) => {
     await login(page, '/?ui=v2');
@@ -148,7 +160,7 @@ test.describe('pipeline and configuration pages', () => {
     const { name } = await newProject(page);
     await page.reload();
     await openProject(page, name);
-    for (const [nav, crumb] of [['context', 'Project Context'], ['quality', 'Quality'], ['governance', 'Governance'], ['observability', 'Observability'], ['designer', 'Workflow designer']] as const) {
+    for (const [nav, crumb] of [['models', 'Model routes'], ['context', 'Project Context'], ['quality', 'Quality'], ['governance', 'Governance'], ['observability', 'Observability'], ['designer', 'Workflow designer']] as const) {
       await page.getByTestId(`v2-nav-${nav}`).click();
       await expect(page.getByTestId('v2-crumb')).toContainText(crumb);
       await expect(page.locator('.fixed.inset-0.z-50')).toHaveCount(0);

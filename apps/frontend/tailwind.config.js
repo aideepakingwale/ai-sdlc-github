@@ -7,6 +7,8 @@ export default {
   theme: {
     extend: {
       fontFamily: {
+        // Headings of the redesigned workspace; Georgia when the web font is not available (the app's CSP blocks external fonts).
+        display: ['"Source Serif 4"', 'Georgia', '"Times New Roman"', 'serif'],
         // "Mylius Modern" is BA's proprietary face (not shipped); Open Sans is the
         // documented web fallback. Degrades to Helvetica/Arial offline/air-gapped.
         sans: ['"Mylius Modern"', '"Open Sans"', '"Helvetica Neue"', 'Helvetica', 'Arial', 'sans-serif'],

@@ -63,3 +63,14 @@ describe('narrow layout', () => {
     expect(isNarrow(NARROW_PX)).toBe(false);
   });
 });
+
+import { languageMix } from './projectPanelLib';
+describe('languageMix', () => {
+  it('shares sum to 100 and fold the tail into Other', () => {
+    const m = languageMix(['a.java', 'b.java', 'c.java', 'd.xml', 'e.yml', 'f.txt']);
+    expect(m.reduce((s, x) => s + x.pct, 0)).toBe(100);
+    expect(m[0]).toEqual({ name: 'Java', pct: 50 });
+    expect(m[m.length - 1]!.name).toBe('Other');
+  });
+  it('is empty without files', () => expect(languageMix([])).toEqual([]));
+});
