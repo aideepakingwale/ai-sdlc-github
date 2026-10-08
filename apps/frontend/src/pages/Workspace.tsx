@@ -295,7 +295,7 @@ export default function Workspace() {
             className="rounded-lg border border-brand-200 bg-brand-50 px-2.5 py-1 text-xs font-semibold text-brand-700 hover:border-brand-400"
             title="Preview the redesigned workspace"
           >
-            Try the new workspace (beta)
+            Switch to the new workspace
           </button>
           <button
             onClick={() => setHelpOpen(true)}

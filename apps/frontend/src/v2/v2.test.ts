@@ -3,12 +3,16 @@ import { auditCategory, auditCsv, buildPathTree } from './projectPanelLib';
 import { resolveUiVersion } from './uiVersion';
 
 describe('resolveUiVersion', () => {
-  it('defaults to classic', () => expect(resolveUiVersion('', null)).toBe('classic'));
+  it('defaults to the new workspace', () => expect(resolveUiVersion('', null)).toBe('v2'));
   it('honours the query over storage', () => {
     expect(resolveUiVersion('?ui=v2', 'classic')).toBe('v2');
     expect(resolveUiVersion('?ui=classic', 'v2')).toBe('classic');
   });
-  it('uses the remembered choice', () => expect(resolveUiVersion('', 'v2')).toBe('v2'));
+  it('uses a remembered classic choice, and ignores anything else', () => {
+    expect(resolveUiVersion('', 'classic')).toBe('classic');
+    expect(resolveUiVersion('', 'v2')).toBe('v2');
+    expect(resolveUiVersion('', 'junk')).toBe('v2');
+  });
 });
 
 describe('project panel helpers', () => {

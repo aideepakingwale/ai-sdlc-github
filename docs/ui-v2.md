@@ -1,19 +1,22 @@
 # Redesigned workspace (v2)
 
-An opt-in redesign of the project workspace, modelled on a conversation-style layout (sessions on the left, one
+The redesigned project workspace (the default), modelled on a conversation-style layout (sessions on the left, one
 focus in the centre, details on the right) with British Airways / BAgel colours. The classic workspace is unchanged
-and stays the default.
+and remains available as a fallback.
 
-## Turning it on
+## Which workspace you get
+
+The new workspace is the default. The classic one is still available:
 
 | Action | Effect |
 |---|---|
-| open `/?ui=v2` | use the new workspace; remembered in this browser (`localStorage` key `sdlc:ui`) |
-| open `/?ui=classic` | go back to the classic workspace |
-| "Try the new workspace (beta)" in the classic header | same as `?ui=v2` |
+| open `/?ui=classic` | use the classic workspace; remembered in this browser (`localStorage` key `sdlc:ui-choice`) |
+| open `/?ui=v2` | use the new workspace again |
 | account menu → "Switch to the classic workspace" | same as `?ui=classic` |
+| "Switch to the new workspace" in the classic header | same as `?ui=v2` |
 
-The choice is read once when the page loads (`App.tsx`), so the login redirect cannot drop it.
+Only an explicit choice is remembered; the default is not stored. The choice is read once when the page loads
+(`App.tsx`), so the login redirect cannot drop it.
 
 ## Layout
 

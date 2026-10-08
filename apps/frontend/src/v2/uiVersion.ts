@@ -1,21 +1,25 @@
 /**
- * Which workspace the user sees. The redesigned workspace ("v2") is opt-in while it settles:
- * `?ui=v2` turns it on, `?ui=classic` turns it off, and the choice is remembered in this browser.
+ * Which workspace the user sees. The redesigned workspace ("v2") is the default; `?ui=classic` switches to the
+ * previous one and `?ui=v2` switches back. An explicit choice is remembered in this browser; the default is not
+ * stored, so it can change later without being overridden by an old value.
  */
 export type UiVersion = 'classic' | 'v2';
-const KEY = 'sdlc:ui';
+// A new key: the previous one auto-saved whichever workspace was shown, which would pin everyone to "classic".
+const KEY = 'sdlc:ui-choice';
 
 export function resolveUiVersion(search: string, stored: string | null): UiVersion {
   const q = new URLSearchParams(search).get('ui');
   if (q === 'v2' || q === 'classic') return q;
-  return stored === 'v2' ? 'v2' : 'classic';
+  return stored === 'classic' ? 'classic' : 'v2';
 }
 
 export function getUiVersion(): UiVersion {
   let stored: string | null = null;
   try { stored = localStorage.getItem(KEY); } catch { /* storage may be blocked */ }
-  const v = resolveUiVersion(typeof window === 'undefined' ? '' : window.location.search, stored);
-  try { localStorage.setItem(KEY, v); } catch { /* ignore */ }
+  const search = typeof window === 'undefined' ? '' : window.location.search;
+  const v = resolveUiVersion(search, stored);
+  const explicit = new URLSearchParams(search).get('ui');
+  if (explicit === 'v2' || explicit === 'classic') { try { localStorage.setItem(KEY, v); } catch { /* ignore */ } }
   return v;
 }
 
