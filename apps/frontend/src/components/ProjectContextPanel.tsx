@@ -51,7 +51,7 @@ const PRIORITY_CHIP: Record<string, string> = {
 };
 
 export default function ProjectContextPanel({
-  projectId, techStack, techStackDecided = !!techStack, techStackSource, canSetStack = false, onClose,
+  projectId, techStack, techStackDecided = !!techStack, techStackSource, canSetStack = false, onClose, page = false,
 }: {
   projectId: string;
   techStack?: string;
@@ -59,6 +59,8 @@ export default function ProjectContextPanel({
   techStackSource?: string;
   canSetStack?: boolean;
   onClose: () => void;
+  /** Render as a page inside the workspace instead of a modal. */
+  page?: boolean;
 }) {
   const qc = useQueryClient();
   const [tab, setTab] = useState<'canon' | 'formwork' | 'preview'>('canon');
@@ -132,7 +134,7 @@ export default function ProjectContextPanel({
   });
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !page && onClose();
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
@@ -145,9 +147,9 @@ export default function ProjectContextPanel({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4" onClick={onClose}>
+    <div className={page ? 'h-full overflow-y-auto bg-slate-50 p-6' : 'fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4'} onClick={page ? undefined : onClose}>
       <div
-        className="flex max-h-[94vh] w-full max-w-4xl flex-col rounded-2xl bg-slate-50 shadow-2xl"
+        className={page ? 'mx-auto flex w-full max-w-5xl flex-col rounded-2xl border border-slate-200 bg-slate-50' : 'flex max-h-[94vh] w-full max-w-4xl flex-col rounded-2xl bg-slate-50 shadow-2xl'}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-3">

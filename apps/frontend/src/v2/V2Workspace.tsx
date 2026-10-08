@@ -27,11 +27,13 @@ export default function V2Workspace() {
   const openPane = useV2((s) => s.openPane);
   const [view, setView] = useState<V2View>('dashboard');
   const [selectedStage, setSelectedStage] = useState<number | null>(null);
-  const [modal, setModal] = useState<V2Modal | null>(null);
+  const [modal, setModalRaw] = useState<V2Modal | null>(null);
+  // Configuration screens open as pages in the centre; only the workflow designer stays an overlay.
+  const setModal = (m: V2Modal | null) => { setModalRaw(m); if (m && m !== 'designer') setView('stage'); };
   const [newProject, setNewProject] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  useEffect(() => { setSelectedStage(null); closePane(); setView(activeProjectId ? 'stage' : 'dashboard'); }, [activeProjectId, closePane]);
+  useEffect(() => { setModalRaw(null); setSelectedStage(null); closePane(); setView(activeProjectId ? 'stage' : 'dashboard'); }, [activeProjectId, closePane]);
 
   if (!user) return null;
   const canManage = user.role === 'PROJECT_MANAGER' || user.role === 'SUPER_ADMIN';
@@ -41,7 +43,7 @@ export default function V2Workspace() {
   const currentPhase = detail.data?.project.currentPhase ?? 1;
   const activeStage = selectedStage ?? pendingGate?.phase ?? escalated?.phase ?? currentPhase;
   const stage = flow.data?.stages.find((s) => s.phase === activeStage);
-  const goStage = (n: number) => { setSelectedStage(n); setView('stage'); };
+  const goStage = (n: number) => { setModalRaw(null); setSelectedStage(n); setView('stage'); };
 
   async function logout() {
     await api.post('/api/auth/logout');
@@ -58,7 +60,10 @@ export default function V2Workspace() {
     } catch (err) { window.alert(err instanceof Error ? err.message : 'Delete failed'); } finally { setDeleting(false); }
   }
 
-  const crumb = activeProjectId
+  const PAGE_NAMES: Record<string, string> = { explorer: 'Project Explorer', context: 'Project Context', quality: 'Quality', governance: 'Governance', observability: 'Observability' };
+  const crumb = modal && PAGE_NAMES[modal]
+    ? `${activeProjectId ? `${detail.data?.project.name ?? ''} › ` : ''}${PAGE_NAMES[modal]}`
+    : activeProjectId
     ? `${detail.data?.project.name ?? ''} › ${view === 'pipeline' ? 'Pipeline' : stage ? `Stage ${stage.phase} · ${stage.name}` : ''}`
     : 'All projects';
 
@@ -69,7 +74,7 @@ export default function V2Workspace() {
           projects={projects.data?.projects ?? []} activeProjectId={activeProjectId}
           onPickProject={(id) => setActiveProject(id)} onNewProject={() => setNewProject(true)}
           canManage={canManage} isAdmin={user.role === 'SUPER_ADMIN'} flow={flow.data}
-          selectedStage={activeStage} view={view} onView={setView} onStage={goStage} onModal={setModal}
+          selectedStage={activeStage} view={view} onView={(v) => { setModalRaw(null); setView(v); }} onStage={goStage} onModal={setModal}
         />
       )}
       <div className="flex min-w-0 flex-1 flex-col">
@@ -84,7 +89,15 @@ export default function V2Workspace() {
         )}
         <div className="flex min-h-0 flex-1">
           <main className="min-w-0 flex-1 overflow-hidden" data-testid="v2-main">
-            {!activeProjectId ? (
+            {modal && modal !== 'designer' && (modal === 'explorer' || modal === 'governance' || modal === 'observability' || activeProjectId) ? (
+              modal === 'explorer' ? <ProjectExplorer page onClose={() => setModal(null)} onOpen={(id) => { setActiveProject(id); setModal(null); }} />
+              : modal === 'governance' ? <GovernancePanel page onClose={() => setModal(null)} />
+              : modal === 'observability' ? <ObservabilityPanel page onClose={() => setModal(null)} />
+              : modal === 'quality' ? <QualityMetricsPanel page projectId={activeProjectId!} onClose={() => setModal(null)} />
+              : <ProjectContextPanel page projectId={activeProjectId!} techStack={detail.data?.project.techStack} techStackDecided={detail.data?.project.techStackDecided}
+                  techStackSource={detail.data?.project.techStackSource}
+                  canSetStack={(detail.data?.me?.canManageTeam ?? false) || detail.data?.me?.membershipRole === 'TA'} onClose={() => setModal(null)} />
+            ) : !activeProjectId ? (
               <Dashboard projects={projects.data?.projects ?? []} onOpen={setActiveProject} onNewProject={() => setNewProject(true)} canManage={canManage} loading={projects.isLoading} />
             ) : view === 'pipeline' ? (
               flow.data ? <PipelineView projectId={activeProjectId} flow={flow.data} onOpenStage={goStage} onDesigner={() => setModal('designer')} canDesign={canManage} /> : <div className="mx-auto mt-24 max-w-md px-6 text-center text-slate-500">Loading the pipeline…</div>
@@ -106,15 +119,6 @@ export default function V2Workspace() {
         </div>
       </div>
 
-      {modal === 'explorer' && <ProjectExplorer onClose={() => setModal(null)} onOpen={(id) => { setActiveProject(id); setModal(null); }} />}
-      {modal === 'governance' && <GovernancePanel onClose={() => setModal(null)} />}
-      {modal === 'observability' && <ObservabilityPanel onClose={() => setModal(null)} />}
-      {modal === 'quality' && activeProjectId && <QualityMetricsPanel projectId={activeProjectId} onClose={() => setModal(null)} />}
-      {modal === 'context' && activeProjectId && (
-        <ProjectContextPanel projectId={activeProjectId} techStack={detail.data?.project.techStack} techStackDecided={detail.data?.project.techStackDecided}
-          techStackSource={detail.data?.project.techStackSource}
-          canSetStack={(detail.data?.me?.canManageTeam ?? false) || detail.data?.me?.membershipRole === 'TA'} onClose={() => setModal(null)} />
-      )}
       {modal === 'designer' && activeProjectId && (
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-auto bg-black/50 p-6" onClick={() => setModal(null)}>
           <div className="w-full max-w-6xl rounded-xl bg-white p-2" onClick={(e) => e.stopPropagation()}>

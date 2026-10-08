@@ -345,7 +345,7 @@ function Kpi({ label, value, sub }: { label: string; value: string; sub?: string
   );
 }
 
-export default function ObservabilityPanel({ onClose }: { onClose: () => void }) {
+export default function ObservabilityPanel({ onClose, page = false }: { onClose: () => void; page?: boolean }) {
   const [days, setDays] = useState(7);
   // D-104: which trace's captured request/response is expanded.
   const [openTrace, setOpenTrace] = useState<string | null>(null);
@@ -367,7 +367,7 @@ export default function ObservabilityPanel({ onClose }: { onClose: () => void })
   });
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !page && onClose();
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
@@ -376,9 +376,9 @@ export default function ObservabilityPanel({ onClose }: { onClose: () => void })
   const maxDailyCalls = Math.max(1, ...(summary.data?.daily ?? []).map((d) => Number(d.llm_calls)));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4" onClick={onClose}>
+    <div className={page ? 'h-full overflow-y-auto bg-slate-50 p-6' : 'fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4'} onClick={page ? undefined : onClose}>
       <div
-        className="flex max-h-[94vh] w-full max-w-5xl flex-col rounded-2xl bg-slate-50 shadow-2xl"
+        className={page ? 'mx-auto flex w-full max-w-5xl flex-col rounded-2xl border border-slate-200 bg-slate-50' : 'flex max-h-[94vh] w-full max-w-5xl flex-col rounded-2xl bg-slate-50 shadow-2xl'}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-3">

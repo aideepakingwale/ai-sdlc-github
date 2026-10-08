@@ -41,7 +41,7 @@ const CATEGORY_CHIP: Record<string, string> = {
   secret: 'bg-amber-100 text-amber-700',
 };
 
-export default function GovernancePanel({ onClose }: { onClose: () => void }) {
+export default function GovernancePanel({ onClose, page = false }: { onClose: () => void; page?: boolean }) {
   const [tab, setTab] = useState<'guardrails' | 'prompts' | 'skills'>('guardrails');
   const [openPrompt, setOpenPrompt] = useState<string | null>(null);
 
@@ -59,15 +59,15 @@ export default function GovernancePanel({ onClose }: { onClose: () => void }) {
   });
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !page && onClose();
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4" onClick={onClose}>
+    <div className={page ? 'h-full overflow-y-auto bg-slate-50 p-6' : 'fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4'} onClick={page ? undefined : onClose}>
       <div
-        className="flex max-h-[92vh] w-full max-w-4xl flex-col rounded-2xl bg-white shadow-2xl"
+        className={page ? 'mx-auto flex w-full max-w-5xl flex-col rounded-2xl border border-slate-200 bg-white' : 'flex max-h-[92vh] w-full max-w-4xl flex-col rounded-2xl bg-white shadow-2xl'}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">

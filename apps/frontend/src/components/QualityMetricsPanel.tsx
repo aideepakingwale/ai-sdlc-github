@@ -79,7 +79,7 @@ function Bar({ label, value, max, suffix, color }: { label: string; value: numbe
   );
 }
 
-export default function QualityMetricsPanel({ projectId, onClose }: { projectId: string; onClose: () => void }) {
+export default function QualityMetricsPanel({ projectId, onClose, page = false }: { projectId: string; onClose: () => void; page?: boolean }) {
   const q = useQuery({
     queryKey: ['quality-metrics', projectId],
     queryFn: () => api.get<QualityMetrics>(`/api/projects/${projectId}/quality-metrics`),
@@ -87,7 +87,7 @@ export default function QualityMetricsPanel({ projectId, onClose }: { projectId:
   });
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !page && onClose();
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
@@ -97,8 +97,8 @@ export default function QualityMetricsPanel({ projectId, onClose }: { projectId:
   const hasData = m && (m.scoreTrend.length > 0 || (gate?.graded ?? 0) > 0);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-navy/40 p-4 backdrop-blur-sm" onClick={onClose}>
-      <div className="flex max-h-[94vh] w-full max-w-4xl flex-col rounded-2xl bg-slate-50 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+    <div className={page ? 'h-full overflow-y-auto bg-slate-50 p-6' : 'fixed inset-0 z-50 flex items-start justify-center bg-navy/40 p-4 backdrop-blur-sm'} onClick={page ? undefined : onClose}>
+      <div className={page ? 'mx-auto flex w-full max-w-5xl flex-col rounded-2xl border border-slate-200 bg-slate-50' : 'flex max-h-[94vh] w-full max-w-4xl flex-col rounded-2xl bg-slate-50 shadow-2xl'} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-3">
           <div>
             <div className="text-sm font-bold text-navy">📊 Quality Metrics</div>

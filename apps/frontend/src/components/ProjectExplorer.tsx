@@ -6,6 +6,8 @@ import type { Project } from '../api/types';
 interface Props {
   onOpen: (projectId: string) => void;
   onClose: () => void;
+  /** Render as a page inside the workspace instead of a modal. */
+  page?: boolean;
 }
 
 /**
@@ -14,16 +16,16 @@ interface Props {
  * click-through into the workspace. Backed by the same RBAC-scoped
  * /api/projects list, so a PM sees their projects and SUPER_ADMIN sees all.
  */
-export default function ProjectExplorer({ onOpen, onClose }: Props) {
+export default function ProjectExplorer({ onOpen, onClose, page = false }: Props) {
   const projects = useQuery({
     queryKey: ['projects'],
     queryFn: () => api.get<{ projects: Project[] }>('/api/projects'),
   });
 
   return (
-    <div className="fixed inset-0 z-40 flex items-start justify-center bg-black/40 p-6" onClick={onClose}>
+    <div className={page ? 'h-full overflow-y-auto bg-slate-50 p-6' : 'fixed inset-0 z-40 flex items-start justify-center bg-black/40 p-6'} onClick={page ? undefined : onClose}>
       <div
-        className="flex max-h-[88vh] w-full max-w-5xl flex-col rounded-2xl bg-slate-50 shadow-2xl"
+        className={page ? 'mx-auto flex w-full max-w-5xl flex-col rounded-2xl border border-slate-200 bg-slate-50' : 'flex max-h-[88vh] w-full max-w-5xl flex-col rounded-2xl bg-slate-50 shadow-2xl'}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-3">
