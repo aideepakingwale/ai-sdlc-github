@@ -5,7 +5,6 @@ import { api } from '../../api/client';
 import type { Artefact } from '../../api/types';
 import CodeExplorer from '../../components/CodeExplorer';
 import ContextPanel from '../../components/ContextPanel';
-import FeedbackPanel from '../../components/FeedbackPanel';
 import GatePanel from '../../components/GatePanel';
 import { PartTabs } from '../../components/PartTabs';
 import { PromptEditor } from '../../components/PromptEditor';
@@ -14,6 +13,7 @@ import { useStageController, TRAIT_META, type StageControllerProps } from '../..
 import { Icon } from '../../components/ui/Icon';
 import { COLOR_CLASSES } from '../../api/flow';
 import { Pill, StageDot, stageTone } from '../bits';
+import QualityCards, { useFeedback } from './QualityCards';
 import { stageMode, type StageMode } from './stageMode';
 
 const fmtTime = (iso: string): string => {
@@ -66,6 +66,7 @@ export default function StageChat(props: StageControllerProps & { onOpenPipeline
     queryKey: ['artefacts', props.projectId],
     queryFn: () => api.get<{ artefacts: Artefact[] }>(`/api/projects/${props.projectId}/artefacts`),
   });
+  const fb = useFeedback(props.projectId, props.selectedSeq);
   const decide = useMutation({
     mutationFn: (v: { decision: 'APPROVE' | 'AMEND'; comments?: string }) =>
       api.post(`/api/gates/${props.projectId}/phase/${props.selectedSeq}/review`, v),
@@ -92,6 +93,7 @@ export default function StageChat(props: StageControllerProps & { onOpenPipeline
   const openArt = (id: string) => (onOpenArtefact ? onOpenArtefact(id) : setViewArtefactId(id));
   const canDecide = user.role === 'SUPER_ADMIN' || stage.canReview;
   const color = COLOR_CLASSES[stage.color];
+  const afterRun = mode === 'review' || mode === 'approved' || mode === 'escalated';
 
   /* ---- header: one slim line ---- */
   const header = (
@@ -278,8 +280,9 @@ export default function StageChat(props: StageControllerProps & { onOpenPipeline
     dock = (
       <div className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-lg" data-testid="v2-approval">
         <div className="min-w-0 flex-1"><div className="text-sm font-semibold text-navy">Approve {stage.name}?</div>
-          <div className="text-xs text-slate-500">{gateError || (canDecide ? 'Quality checks and any security findings are above. Critical findings block approval.' : `Only ${stage.reviewerRole} can sign this gate.`)}</div></div>
-        <button type="button" onClick={() => decide.mutate({ decision: 'APPROVE' })} disabled={!canDecide || decide.isPending} data-testid="v2-approve"
+          <div className="text-xs text-slate-500">{gateError || (fb.openBlocking ? `${fb.openBlocking} critical security finding${fb.openBlocking > 1 ? 's' : ''} block${fb.openBlocking > 1 ? '' : 's'} approval. Resolve ${fb.openBlocking > 1 ? 'them' : 'it'}, or request changes.` : canDecide ? 'No blocking findings. Quality checks are above.' : `Only ${stage.reviewerRole} can sign this gate.`)}</div></div>
+        {fb.openBlocking > 0 && <button type="button" onClick={() => document.getElementById('v2-checks')?.scrollIntoView({ behavior: 'smooth', block: 'center' })} className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold hover:border-brand-400">Show finding</button>}
+        <button type="button" onClick={() => decide.mutate({ decision: 'APPROVE' })} disabled={!canDecide || decide.isPending || fb.openBlocking > 0} data-testid="v2-approve"
           className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50">{decide.isPending ? 'Approving…' : 'Approve stage'}</button>
       </div>
     );
@@ -363,22 +366,22 @@ export default function StageChat(props: StageControllerProps & { onOpenPipeline
           ))}
           {(mode === 'plan' || (mode === 'amend' && !amendUndecided)) && planCard}
           {runRows}
-          {!streamingHere && parts.length > 0 && mode !== 'new' && mode !== 'plan' && (
+          {!streamingHere && parts.length > 0 && afterRun && (
             <Fold icon={failed.length ? '✗' : '✓'} label={failed.length ? `${failed.length} file(s) failed` : `Generated ${done} files`} detail={`${done} of ${parts.length}`} open={!!open.run || failed.length > 0} onToggle={() => toggle('run')}>
               <PartTabs parts={parts.map((p) => (p.status === 'running' ? { ...p, status: 'failed' as const, error: 'Interrupted — partial text kept' } : p))} retrigger={retriggerPart} />
               {regenerable.length > 0 && !streaming && <p className="mt-2 text-xs text-slate-500">Retry a file to regenerate just that one; the others are kept.</p>}
             </Fold>
           )}
-          {(mode === 'review' || mode === 'approved' || mode === 'escalated') && (
+          {afterRun && (
             <Said who={`DevMind · ${mode === 'approved' ? 'approved' : 'ready for review'}`}>{stage.template === 6 ? 'Open the files to review them.' : 'Open an artefact to read it, then approve or ask for changes.'}</Said>
           )}
-          {stage.template === 6 && mode !== 'new' && mode !== 'plan' && <CodeExplorer projectId={projectId} phase={selectedSeq} />}
-          {mode !== 'new' && mode !== 'plan' && outputs}
-          {(stageArtefacts.length > 0 || ['PENDING_REVIEW', 'APPROVED', 'AMEND_REQUESTED'].includes(stage.status)) && (
-            <FeedbackPanel projectId={projectId} phase={selectedSeq} user={user} onUploadMissing={() => fileInputRef.current?.click()} uploading={uploading}
+          {stage.template === 6 && afterRun && <CodeExplorer projectId={projectId} phase={selectedSeq} />}
+          {afterRun && outputs}
+          {afterRun && (stageArtefacts.length > 0 || ['PENDING_REVIEW', 'APPROVED'].includes(stage.status)) && (
+            <QualityCards projectId={projectId} phase={selectedSeq} onUploadMissing={() => fileInputRef.current?.click()} uploading={uploading}
               canResolve={user.role === 'SUPER_ADMIN' || user.role === 'PROJECT_MANAGER' || Boolean(pendingGate && pendingGate.phase === selectedSeq && pendingGate.canReview)} />
           )}
-          {pendingGate && pendingGate.phase === selectedSeq && (
+          {afterRun && pendingGate && pendingGate.phase === selectedSeq && (
             <Fold icon="👥" label="Review matrix" detail="who signs what" open={!!open.matrix} onToggle={() => toggle('matrix')}>
               <GatePanel projectId={projectId} pending={pendingGate} artefacts={c.artefacts as never} user={user} />
             </Fold>

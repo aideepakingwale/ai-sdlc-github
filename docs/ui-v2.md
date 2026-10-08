@@ -45,15 +45,33 @@ Only an explicit choice is remembered; the default is not stored. The choice is 
 
 ## Centre views
 
-**Stage (conversation).** The existing `StageWorkspace` rendered with `variant="chat"`:
-the discussion thread first, then the clarification, plan, generation and output cards in order. The gate review,
-the four-step strip (Describe, Review plan, Generate, Review and approve; one slim row) with the "what to do next" bar and the composer (instructions, attach, Review plan / Update plan) are docked at the
-bottom (`data-testid="v2-dock"`, scrolls itself past 55% of the height). Artefact cards open in the right pane.
-In the thread (`v2/ChatTurn.tsx`) your turns are soft blue bubbles on the right and the agent's are plain text with a small avatar; turns taller than 240 px fold behind "Show more". Cards in the scroll area lose their shadows (`.v2-flat` in `index.css`). There is deliberately no second copy of the stage logic; the variant only changes layout and styling.
+**Stage (conversation).** `v2/stage/StageChat.tsx`, built to the design mock and driven by the same logic as the classic
+stage view (`useStageController` in `components/StageWorkspace.tsx`, so there is one copy of the plan, clarification,
+generation and review code). Top to bottom: a slim header (previous/next, name, status, persona, reviewer, outdated and
+locked chips, and the pipeline mini-map); a "Next:" banner; the conversation (your brief as a grey card, agent turns as
+plain text, the long "Plan triggered" echo folded); then whatever the stage needs, by state:
 
-**Pipeline** (`v2/PipelineView.tsx`, helpers in `v2/pipelineLib.ts`): progress bar; "Needs attention" (escalated,
-failed, waiting for review, amending, outdated; most urgent first); stages grouped by step with parallel stages side
-by side; the per-stage context bars and the project context graph; Edit workflow (PM/admin, opens the designer).
+| State | What shows |
+|---|---|
+| New | agent intro, one question at a time (option pills, Other, Back / Next, "Forgot a document? Upload it") |
+| Plan ready | the plan card (summary, artefact table with layout and file type, context, project fit Auto / Yes / No) |
+| Generating | one row per file (Queued / Writing / Wrote), live text, "editing is locked" |
+| Awaiting review | folds for the plan and the run, artefact cards, security review and quality checks, review matrix |
+| Changes requested | "How should I re-plan?" (amend or blank slate), then the plan |
+| Approved / Escalated | artefacts with Re-run, or the escalation prompt with Retry |
+
+The composer is pinned at the bottom with chips for references, templates and attached files, "+ Document", and one
+primary button that follows the state (Review plan, Generate, Request changes, Update plan, Re-run stage; Next and
+Submit answers while questions are open). The decision that needs you (Approve stage, with the blocking security
+findings) sits just above it. Test hooks: `v2-stagechat` (with `data-mode`), `v2-stage-header`, `v2-minimap`,
+`v2-next`, `v2-questions`, `plan-card`, `v2-approval`, `v2-approve`, `v2-composer`, `v2-primary`.
+
+The earlier `variant="chat"` of the classic view is no longer used by the new workspace.
+
+**Pipeline** (`v2/PipelineView.tsx`, helpers in `v2/pipelineLib.ts`): the levels left to right with arrows, parallel
+stages stacked inside a level, each card showing status, artefact count and a three-colour context bar (instructions and
+project, earlier stages, your brief and attachments); "Needs your attention" below (escalated, failed, waiting for
+review, amending, outdated; most urgent first); Project context graph and Workflow designer (PM/admin) at the top.
 
 **Dashboard.** The existing `Dashboard` when no project is selected.
 
@@ -68,12 +86,12 @@ Each tab opens with a one-paragraph explainer (`EXPLAIN` in `v2/ProjectPanel.tsx
 
 | Tab | Content |
 |---|---|
-| Team | `TeamPanel` (who covers each stage; managers can edit) |
+| Team | people with role and stage, remove, and an "Add a member" form (`v2/ProjectTeam.tsx`) |
 | Artefacts | everything generated, grouped by stage; All stages / this stage; click opens the artefact preview |
-| Files | `FilesPanel`: stored files in their phase folders |
+| Files | storage chip and path, filter, phase folders with file sizes (`v2/ProjectFiles.tsx`) |
 | Codebase | Existing: upload a `.zip`, search the tree, read a file, download. Generated: `CodeExplorer` for the code stage |
 | Audit | live (5 s) events; filters Gate / Generation / Security / Guardrail / Human and by stage; expandable JSON; the artefact names and formats the user selected; CSV export |
-| Skills | stage skills (`SkillsPanel`), connected model providers and tools, knowledge-base search, active tools |
+| Skills | connected services as dots, then the stage's skills (`SkillsPanel`), knowledge-base search, active tools |
 
 Audit categories come from the event name prefix (`security.`, `guardrail.`, `gate.`, `ai.`/`stage.`/`build.`); events
 with a human reviewer and no other prefix are "Human" (`v2/projectPanelLib.ts`).
@@ -141,7 +159,15 @@ Useful selectors: `v2-workspace`, `v2-sidebar`, `v2-project-switcher`,
 `v2-open-project-panel`, `v2-ptab-{team,artefacts,files,codebase,audit,skills}`, `v2-pane`, `v2-dock`, `v2-composer`,
 `v2-pipeline`, `v2-attention`, `v2-theme-{light,dark,system}`, `v2-side-toggle`, `v2-drawer`.
 
-## Not done yet
+## Known differences from the design mock
 
-- A design-token pass: v2 uses the existing BAgel Tailwind tokens (navy `#021b41`, blue `#3468ad`, light blue
-  `#dfe7f2`, red `#ce210f`); the clickable mockup used approximate values.
+- Artefact cards have no quality score chip (the API has no per-artefact score).
+- The composer has no model picker (there is no per-message model setting; models are chosen by the routing settings).
+- No "Security review at gate" chip in the stage header or "Security HIGH" chip on pipeline cards.
+- The sidebar has no "Model routes" entry; the stage-6 code flow still uses the existing `CodeExplorer` card, not the
+  mock's four-step code card with a file tree in the side pane.
+- The plan card has no "Pipeline & models" fold; context is the existing context panel, not the mock's inline strip.
+- Headings use the app's sans-serif, not the mock's serif display face.
+- The Codebase tab has no language-mix bar or Remove button.
+- A design-token pass: v2 uses the existing BAgel Tailwind tokens (navy `#021b41`, blue `#3468ad`, light blue `#dfe7f2`,
+  red `#ce210f`).
