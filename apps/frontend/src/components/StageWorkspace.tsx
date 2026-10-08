@@ -915,6 +915,96 @@ export default function StageWorkspace({
         </div>
   );
 
+  const composer = (
+            <form onSubmit={onReviewSubmit}>
+              <PromptEditor
+                ref={textareaRef}
+                value={prompt}
+                onChange={setPrompt}
+                mentions={allMentions}
+                onPick={pickMention}
+                onUnpick={unpickMention}
+                disabled={locked}
+                placeholder={
+                  stage.phase === 1
+                    ? 'Describe what to build. Type @ to reference generated content, templates or uploaded files.'
+                    : `Add guidance for the ${stage.persona} (optional). Type @ to pull in prior outputs, templates or files.`
+                }
+              />
+
+              {/* ---- attach + selected-context chips (D-54/D-56) ---- */}
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => onAttach(e.target.files)} />
+                <Button size="sm" icon="paperclip" loading={uploading} disabled={locked} onClick={() => fileInputRef.current?.click()}
+                  title="Attach any documents the agent should read — or follow the format of: PDF, Word, PowerPoint, Excel, draw.io, Visio, SVG, images (diagrams and screenshots are read), HTML, Markdown, CSV, JSON…">
+                  {uploading ? (uploadProgress || 'Analysing…') : 'Attach files'}
+                </Button>
+                <span className="text-xs text-slate-400">or type <kbd className="rounded bg-slate-100 px-1 font-mono text-slate-500">@</kbd> to reference earlier outputs and templates</span>
+              </div>
+
+              {(attachments.length > 0 || selectedRefChips.length > 0 || selectedTemplateChips.length > 0) && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {selectedRefChips.map((a) => (
+                    <span key={`r-${a.id}`} className="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2 py-0.5 text-[11px] text-brand-700" title="Pinned prior output">
+                      <Icon name="file" size={11} /> {a.title}
+                      <button type="button" aria-label={`Remove ${a.title}`} onClick={() => setRefIds((p) => p.filter((id) => id !== a.id))} className="ml-0.5 text-brand-400 hover:text-red-600"><Icon name="x" size={11} /></button>
+                    </span>
+                  ))}
+                  {selectedTemplateChips.map((f) => (
+                    <span key={`t-${f.id}`} className="inline-flex items-center gap-1 rounded-full bg-violet-50 px-2 py-0.5 text-[11px] text-violet-700" title="Template applied">
+                      <Icon name="layers" size={11} /> {f.name}
+                      <button type="button" aria-label={`Remove ${f.name}`} onClick={() => setFormworkIds((p) => p.filter((id) => id !== f.id))} className="ml-0.5 text-violet-400 hover:text-red-600"><Icon name="x" size={11} /></button>
+                    </span>
+                  ))}
+                  {attachments.map((a) => {
+                    // "converted from .doc via LibreOffice" is informational, not a read problem.
+                    const allNotes = a.extraction?.warnings ?? [];
+                    const infoNotes = allNotes.filter((w) => /^converted from /i.test(w));
+                    const warns = allNotes.filter((w) => !/^converted from /i.test(w));
+                    return (
+                    <span key={`a-${a.id}`} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600"
+                      title={a.isText
+                        ? `Inlined into the prompt${infoNotes.length ? ` (${infoNotes.join('; ')})` : ''}${warns.length ? ` — note: ${warns.join('; ')}` : ''}`
+                        : 'Binary — kept but not inlined'}>
+                      <Icon name="paperclip" size={11} /> {a.filename}
+                      {summariseExtraction(a.extraction?.stats) && <span className="text-slate-400">· {summariseExtraction(a.extraction?.stats)}</span>}
+                      {warns.length > 0 && <span className="text-amber-600" aria-label="Partly read">⚠</span>}
+                      {!a.isText && <span className="text-amber-600">(binary)</span>}
+                      <button type="button" aria-label={`Remove ${a.filename}`} onClick={() => removeAttachment(a.id)} disabled={locked} className="ml-0.5 text-slate-400 hover:text-red-600 disabled:opacity-30"><Icon name="x" size={11} /></button>
+                    </span>
+                    );
+                  })}
+                </div>
+              )}
+
+              {uploadNotes.length > 0 && (
+                <div className="mt-2 space-y-1" role="status" data-testid="upload-notes">
+                  {uploadNotes.map((n) => (
+                    <Callout key={n.name} tone={n.tone === 'error' ? 'error' : 'warning'} compact>
+                      <strong>{n.name}</strong> — {n.tone === 'error' ? `could not be attached: ${n.text}` : `attached, but only partly read: ${n.text}`}
+                    </Callout>
+                  ))}
+                </div>
+              )}
+
+              {promptError && (
+                <Callout tone="error" compact className="mt-2">{promptError}</Callout>
+              )}
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <Button
+                  type="submit" variant={plan ? 'secondary' : 'primary'} icon={plan ? 'refresh' : 'search'}
+                  loading={planBuilding} disabled={!canReviewPlan || amendUndecided}
+                  title={locked ? 'Editing is locked while this stage generates' : amendUndecided ? 'Choose how to re-plan first' : undefined}
+                >
+                  {planBuilding ? 'Building plan…' : plan ? 'Update plan' : 'Review plan'}
+                </Button>
+                <span className="text-xs text-slate-400">
+                  Earlier stages’ approved outputs are included automatically. Nothing is generated yet.
+                </span>
+              </div>
+            </form>
+  );
+
   const gateReview = (
     <>
         {pendingGate && pendingGate.phase === selectedSeq && (
@@ -1197,93 +1287,7 @@ export default function StageWorkspace({
                 </Callout>
               )
             )}
-            <form onSubmit={onReviewSubmit}>
-              <PromptEditor
-                ref={textareaRef}
-                value={prompt}
-                onChange={setPrompt}
-                mentions={allMentions}
-                onPick={pickMention}
-                onUnpick={unpickMention}
-                disabled={locked}
-                placeholder={
-                  stage.phase === 1
-                    ? 'Describe what to build. Type @ to reference generated content, templates or uploaded files.'
-                    : `Add guidance for the ${stage.persona} (optional). Type @ to pull in prior outputs, templates or files.`
-                }
-              />
-
-              {/* ---- attach + selected-context chips (D-54/D-56) ---- */}
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => onAttach(e.target.files)} />
-                <Button size="sm" icon="paperclip" loading={uploading} disabled={locked} onClick={() => fileInputRef.current?.click()}
-                  title="Attach any documents the agent should read — or follow the format of: PDF, Word, PowerPoint, Excel, draw.io, Visio, SVG, images (diagrams and screenshots are read), HTML, Markdown, CSV, JSON…">
-                  {uploading ? (uploadProgress || 'Analysing…') : 'Attach files'}
-                </Button>
-                <span className="text-xs text-slate-400">or type <kbd className="rounded bg-slate-100 px-1 font-mono text-slate-500">@</kbd> to reference earlier outputs and templates</span>
-              </div>
-
-              {(attachments.length > 0 || selectedRefChips.length > 0 || selectedTemplateChips.length > 0) && (
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {selectedRefChips.map((a) => (
-                    <span key={`r-${a.id}`} className="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2 py-0.5 text-[11px] text-brand-700" title="Pinned prior output">
-                      <Icon name="file" size={11} /> {a.title}
-                      <button type="button" aria-label={`Remove ${a.title}`} onClick={() => setRefIds((p) => p.filter((id) => id !== a.id))} className="ml-0.5 text-brand-400 hover:text-red-600"><Icon name="x" size={11} /></button>
-                    </span>
-                  ))}
-                  {selectedTemplateChips.map((f) => (
-                    <span key={`t-${f.id}`} className="inline-flex items-center gap-1 rounded-full bg-violet-50 px-2 py-0.5 text-[11px] text-violet-700" title="Template applied">
-                      <Icon name="layers" size={11} /> {f.name}
-                      <button type="button" aria-label={`Remove ${f.name}`} onClick={() => setFormworkIds((p) => p.filter((id) => id !== f.id))} className="ml-0.5 text-violet-400 hover:text-red-600"><Icon name="x" size={11} /></button>
-                    </span>
-                  ))}
-                  {attachments.map((a) => {
-                    // "converted from .doc via LibreOffice" is informational, not a read problem.
-                    const allNotes = a.extraction?.warnings ?? [];
-                    const infoNotes = allNotes.filter((w) => /^converted from /i.test(w));
-                    const warns = allNotes.filter((w) => !/^converted from /i.test(w));
-                    return (
-                    <span key={`a-${a.id}`} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600"
-                      title={a.isText
-                        ? `Inlined into the prompt${infoNotes.length ? ` (${infoNotes.join('; ')})` : ''}${warns.length ? ` — note: ${warns.join('; ')}` : ''}`
-                        : 'Binary — kept but not inlined'}>
-                      <Icon name="paperclip" size={11} /> {a.filename}
-                      {summariseExtraction(a.extraction?.stats) && <span className="text-slate-400">· {summariseExtraction(a.extraction?.stats)}</span>}
-                      {warns.length > 0 && <span className="text-amber-600" aria-label="Partly read">⚠</span>}
-                      {!a.isText && <span className="text-amber-600">(binary)</span>}
-                      <button type="button" aria-label={`Remove ${a.filename}`} onClick={() => removeAttachment(a.id)} disabled={locked} className="ml-0.5 text-slate-400 hover:text-red-600 disabled:opacity-30"><Icon name="x" size={11} /></button>
-                    </span>
-                    );
-                  })}
-                </div>
-              )}
-
-              {uploadNotes.length > 0 && (
-                <div className="mt-2 space-y-1" role="status" data-testid="upload-notes">
-                  {uploadNotes.map((n) => (
-                    <Callout key={n.name} tone={n.tone === 'error' ? 'error' : 'warning'} compact>
-                      <strong>{n.name}</strong> — {n.tone === 'error' ? `could not be attached: ${n.text}` : `attached, but only partly read: ${n.text}`}
-                    </Callout>
-                  ))}
-                </div>
-              )}
-
-              {promptError && (
-                <Callout tone="error" compact className="mt-2">{promptError}</Callout>
-              )}
-              <div className="mt-3 flex flex-wrap items-center gap-3">
-                <Button
-                  type="submit" variant={plan ? 'secondary' : 'primary'} icon={plan ? 'refresh' : 'search'}
-                  loading={planBuilding} disabled={!canReviewPlan || amendUndecided}
-                  title={locked ? 'Editing is locked while this stage generates' : amendUndecided ? 'Choose how to re-plan first' : undefined}
-                >
-                  {planBuilding ? 'Building plan…' : plan ? 'Update plan' : 'Review plan'}
-                </Button>
-                <span className="text-xs text-slate-400">
-                  Earlier stages’ approved outputs are included automatically. Nothing is generated yet.
-                </span>
-              </div>
-            </form>
+            {!chat && composer}
 
             <ContextPanel projectId={projectId} seq={selectedSeq} refreshKey={`${locked}|${stage.status}|${attachments.length}|${plan?.planState?.fresh ?? ''}|${(plan?.overlay.promptOverlay ?? '').length}`} />
 
@@ -1753,9 +1757,10 @@ export default function StageWorkspace({
       </div>
 
       {chat && (
-        <div className="shrink-0 space-y-3 border-t border-slate-200 bg-white p-4 shadow-[0_-4px_12px_rgba(2,27,65,0.06)]" data-testid="v2-dock">
+        <div className="max-h-[55vh] shrink-0 space-y-3 overflow-y-auto border-t border-slate-200 bg-white p-4 shadow-[0_-4px_12px_rgba(2,27,65,0.06)]" data-testid="v2-dock">
           {gateReview}
           {guideCard}
+          {runnable && <div data-testid="v2-composer">{composer}</div>}
         </div>
       )}
 
