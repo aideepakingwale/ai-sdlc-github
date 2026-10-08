@@ -901,9 +901,9 @@ export default function StageWorkspace({
 
   const guideCard = (
         <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm" data-testid="stage-guide">
-          {!chat && <Stepper steps={guide.steps} />}
+          <Stepper steps={guide.steps} compact={chat} />
           <Callout
-            className={chat ? '' : 'mt-4'} tone={guide.next.tone} title={guide.next.title}
+            className={chat ? 'mt-2.5' : 'mt-4'} tone={guide.next.tone} title={guide.next.title}
             icon={guide.next.action === 'wait' ? 'loader' : undefined} spin={guide.next.action === 'wait'}
             action={guideButton && (
               <Button variant="primary" size="sm" icon={guideButton.icon} disabled={guideButton.disabled} onClick={guideButton.run}>

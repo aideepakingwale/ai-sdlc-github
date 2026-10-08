@@ -47,7 +47,7 @@ Only an explicit choice is remembered; the default is not stored. The choice is 
 
 **Stage (conversation).** The existing `StageWorkspace` rendered with `variant="chat"`:
 the discussion thread first, then the clarification, plan, generation and output cards in order. The gate review,
-the "what to do next" bar and the composer (instructions, attach, Review plan / Update plan) are docked at the
+the four-step strip (Describe, Review plan, Generate, Review and approve; one slim row) with the "what to do next" bar and the composer (instructions, attach, Review plan / Update plan) are docked at the
 bottom (`data-testid="v2-dock"`, scrolls itself past 55% of the height). Artefact cards open in the right pane.
 In the thread (`v2/ChatTurn.tsx`) your turns are soft blue bubbles on the right and the agent's are plain text with a small avatar; turns taller than 240 px fold behind "Show more". Cards in the scroll area lose their shadows (`.v2-flat` in `index.css`). There is deliberately no second copy of the stage logic; the variant only changes layout and styling.
 
@@ -143,6 +143,5 @@ Useful selectors: `v2-workspace`, `v2-sidebar`, `v2-project-switcher`,
 
 ## Not done yet
 
-- The guided four-step stepper is hidden in the dock (the next-step bar remains).
 - A design-token pass: v2 uses the existing BAgel Tailwind tokens (navy `#021b41`, blue `#3468ad`, light blue
   `#dfe7f2`, red `#ce210f`); the clickable mockup used approximate values.
