@@ -38,6 +38,7 @@ from ..services.artifact_formats import attachment_layout_types, kind_of, norm_t
 from ..services.text_diagrams import convert_text_diagrams
 from ..services.model_routes import role_for_stage
 from ..services.stack import decide_from_text, is_stack_owner, record_decision, stack_of, stack_source
+from . import specialists
 from .prompts import build_phase_prompt, openapi_fix_prompt, render_stack
 from .schemas import (
     PHASE_SCHEMAS,
@@ -350,6 +351,206 @@ async def _generate_markdown_in_parts(
         emit({"type": "node", "node": "guardrail", "status": "error",
               "label": f"A part of {field_name} was still cut off - retrigger that part to complete it"})
     return text, parts[-1][1] if parts else res
+
+
+async def _generate_with_specialists(
+    *, deps: "AgentDeps", state: "AgentState", schema: type[BaseModel], base_tag: str, intent: str, max_tokens: int,
+    model: str | None, emit: Emit, canon_block: str, memory_all: str, memory_redacted: str, stage_system: str, stage_user: str,
+    stage_system_recorded: str, amend: str | None,
+) -> tuple[BaseModel, LlmResult]:
+    """Write the stage's artefacts with SPECIALIST agents (see agents/specialists.py).
+
+    Each specialist gets its own instructions and ONLY the context it declared (the brief, the upstream artefacts it reads, the
+    outputs of this stage it builds on), runs on the model role that suits its work, and leaves a record of exactly what it was
+    given. Independent specialists run in parallel; one that builds on another's output waits for it (waves). A specialist that
+    fails does not stop the rest: its fields get a typed placeholder and the part is retriggerable, as before. Fields no
+    specialist owns are generated from the stage-wide prompt. Raises only when nothing at all could be produced."""
+    fields = list(schema.model_fields.keys())
+    template = state.stage_template
+    values: dict[str, Any] = {}
+    results: list[LlmResult] = []
+    failures: dict[str, str] = {}
+    runs: dict[str, dict[str, Any]] = {}
+
+    retrigger = set(getattr(state, "retrigger_fields", []) or [])
+    resume = bool(getattr(state, "resume", False))
+    cache: dict[str, dict] = {}
+    if retrigger or resume:
+        try:
+            cache = {p["field"]: p for p in await deps.db.list_generation_parts(state.project_id, state.current_phase)}
+        except Exception:  # noqa: BLE001
+            cache = {}
+        if resume and not retrigger:
+            retrigger = {fn for fn in fields if (cache.get(fn) or {}).get("status") != "done"}
+            emit({"type": "node", "node": "agent",
+                  "label": f"↻ Resuming interrupted run — {len(fields) - len(retrigger)} part(s) already done, {len(retrigger)} to generate"})
+    else:
+        try:
+            await deps.db.clear_generation_parts(state.project_id, state.current_phase)
+        except Exception:  # noqa: BLE001
+            log.warning("could not clear stale generation parts", exc_info=True)
+
+    def reuse_value(fn: str) -> Any:
+        if not retrigger or fn in retrigger:
+            return _NO_REUSE
+        p = cache.get(fn)
+        if not p or not p.get("value_json"):
+            return _NO_REUSE
+        try:
+            return TypeAdapter(schema.model_fields[fn].annotation).validate_json(p["value_json"])
+        except Exception:  # noqa: BLE001
+            return _NO_REUSE
+
+    async def persist(fn: str, status: str, value: Any = None, error: str | None = None, run: dict | None = None) -> None:
+        try:
+            vj = TypeAdapter(schema.model_fields[fn].annotation).dump_json(value).decode() if value is not None else None
+        except Exception:  # noqa: BLE001
+            vj = None
+        try:
+            extra = {"run": run} if run else {}
+            await deps.db.upsert_generation_part(project_id=state.project_id, phase=state.current_phase, field=fn,
+                                                 status=status, error=error, value_json=vj, **extra)
+        except Exception:  # noqa: BLE001
+            log.warning("generation part upsert failed for %s", fn, exc_info=True)
+        emit({"type": "part", "part": fn, "status": status, "error": error, "text": _part_text(vj) if status == "done" else ""})
+
+    out_of_scope = set(scope_skipped_fields(state, fields))
+    for fn in out_of_scope:
+        fi = schema.model_fields[fn]
+        values[fn] = _minimal_value(fi.annotation, "Not produced — outside the confirmed production scope", _min_len(fi))
+        emit({"type": "node", "node": "agent", "label": f"⏭ {fn} skipped — outside the confirmed scope"})
+    to_gen: list[str] = []
+    for fn in fields:
+        if fn in out_of_scope:
+            continue
+        rv = reuse_value(fn)
+        if rv is _NO_REUSE:
+            to_gen.append(fn)
+            continue
+        values[fn] = rv
+        if (cache[fn].get("status") or "done") == "failed":
+            failures[fn] = cache[fn].get("error") or "still failed (not retriggered)"
+        prior = cache[fn].get("run")
+        if isinstance(prior, dict):
+            runs[fn] = {**prior, "reused": True}
+        emit({"type": "node", "node": "agent", "label": f"↺ {fn} reused from last run"})
+        emit({"type": "part", "part": fn, "status": cache[fn].get("status", "done"),
+              "text": _part_text(cache[fn].get("value_json")) if cache[fn].get("status", "done") == "done" else ""})
+
+    owned = {f for s in specialists.BY_TEMPLATE.get(template, []) for f in s.fields}
+    specs = [s for s in specialists.units(template, to_gen)]
+    stage_wide = [f for f in to_gen if f not in owned]
+    sem = asyncio.Semaphore(max(1, getattr(deps.settings, "PER_ARTIFACT_MAX_PARALLEL", 4)))
+
+    async def run_spec(spec: "specialists.Specialist") -> None:
+        todo = [f for f in spec.fields if f in to_gen]
+        async with sem:
+            for f in todo:
+                emit({"type": "part", "part": f, "status": "running", "text": ""})
+            fw = ""
+            if deps.formworks is not None and spec.artifacts:       # only the templates for THIS agent's artefacts
+                try:
+                    fw = await deps.formworks.render_block(state.project_id, list(spec.artifacts), selected=state.formwork_selection,
+                                                           skip=set(state.skip_types))
+                except Exception:  # noqa: BLE001
+                    fw = ""
+            prompt = specialists.build_prompt(
+                spec, state, canon_block=canon_block, memory_all=memory_all, memory_redacted=memory_redacted, formwork_block=fw,
+                siblings={k: v for k, v in values.items() if k not in failures}, amend=amend)
+            wrapper = create_model(f"{schema.__name__}__{spec.id}", **{f: (schema.model_fields[f].annotation, schema.model_fields[f]) for f in todo})
+            emit({"type": "node", "node": "agent", "label": f"{spec.name} writing {', '.join(todo)} (own context: {len(prompt.items)} item(s))…"})
+            single_text = len(todo) == 1 and schema.model_fields[todo[0]].annotation is str
+            user = (f"{prompt.user}\n\n---\nProduce ONLY " + ("the `" + todo[0] + "` portion" if len(todo) == 1 else "these portions: " + ", ".join(f"`{f}`" for f in todo))
+                    + " of the deliverable, to the enterprise standard and consistent with the context above. Return JSON of exactly the form "
+                    + "{" + ", ".join(f'"{f}": ...' for f in todo) + "} conforming to the schema — nothing else.")
+            role = state.model_role or spec.role
+            try:
+                try:
+                    inst, res = await deps.llm.generate_json(
+                        intent=intent, tag=f"{base_tag}:{spec.id}",
+                        messages=[{"role": "system", "content": prompt.system, "cache": True}, {"role": "user", "content": user}],
+                        schema=wrapper, max_tokens=max_tokens, model=(model if role == "generate" else None), role=role,
+                        max_attempts=1 if single_text else 3)
+                except SdlcError as err:
+                    if not single_text:
+                        raise
+                    log.info("%s did not fit one response (%s); writing it in parts", todo[0], str(err)[:120])
+                    text, res = await _generate_markdown_in_parts(
+                        deps=deps, system=prompt.system, user=prompt.user, field_name=todo[0], intent=intent,
+                        base_tag=f"{base_tag}:{spec.id}", max_tokens=max_tokens, model=(model if role == "generate" else None), role=role, emit=emit)
+                    inst = wrapper.model_validate({todo[0]: text})
+            except Exception as err:  # noqa: BLE001 - one specialist's failure must not sink the rest
+                for f in todo:
+                    failures[f] = str(err)
+                    await persist(f, "failed", error=str(err))
+                emit({"type": "node", "node": "guardrail", "status": "error", "label": f"✗ {spec.name} failed — {str(err)[:160]}"})
+                return
+            record = {
+                "agentId": spec.id, "agentName": spec.name, "kind": spec.kind, "role": role, "fields": list(todo),
+                "provider": res.provider, "model": res.model, "system": prompt.recorded_system, "user": user,
+                "context": prompt.items, "tokens": {"prompt": res.usage.get("promptTokens", 0), "completion": res.usage.get("completionTokens", 0)},
+                "at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+            }
+            results.append(res)
+            for f in todo:
+                values[f] = getattr(inst, f)
+                runs[f] = record
+                await persist(f, "done", values[f], run=record)
+            emit({"type": "node", "node": "agent", "label": f"✓ {spec.name}: {', '.join(todo)} generated ({res.model})"})
+
+    async def run_stage_wide() -> None:
+        """Fields no specialist owns (e.g. the code files of the implementation stage) keep the stage-wide prompt."""
+        async with sem:
+            wrapper = create_model(f"{schema.__name__}__stage", **{f: (schema.model_fields[f].annotation, schema.model_fields[f]) for f in stage_wide})
+            for f in stage_wide:
+                emit({"type": "part", "part": f, "status": "running", "text": ""})
+            user = (f"{stage_user}\n\n---\nProduce ONLY " + ", ".join(f"`{f}`" for f in stage_wide)
+                    + ". Return JSON of exactly the form {" + ", ".join(f'"{f}": ...' for f in stage_wide) + "} conforming to the schema — nothing else.")
+            role = state.model_role or role_for_stage(state.stage_template)
+            try:
+                inst, res = await deps.llm.generate_json(
+                    intent=intent, tag=f"{base_tag}:stage", messages=[{"role": "system", "content": stage_system, "cache": True}, {"role": "user", "content": user}],
+                    schema=wrapper, max_tokens=max_tokens, model=model, role=role)
+            except Exception as err:  # noqa: BLE001
+                for f in stage_wide:
+                    failures[f] = str(err)
+                    await persist(f, "failed", error=str(err))
+                emit({"type": "node", "node": "guardrail", "status": "error", "label": f"✗ {', '.join(stage_wide)} failed — {str(err)[:160]}"})
+                return
+            record = {"agentId": "stage", "agentName": f"{get_phase(template).agent_persona} (whole stage)", "kind": "stage", "role": role,
+                      "fields": list(stage_wide), "provider": res.provider, "model": res.model, "system": stage_system_recorded, "user": user,
+                      "context": [{"layer": "stage", "label": "Stage-wide prompt and context", "chars": len(stage_system) + len(stage_user)}],
+                      "tokens": {"prompt": res.usage.get("promptTokens", 0), "completion": res.usage.get("completionTokens", 0)},
+                      "at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()}
+            results.append(res)
+            for f in stage_wide:
+                values[f] = getattr(inst, f)
+                runs[f] = record
+                await persist(f, "done", values[f], run=record)
+
+    for wave in specialists.waves(specs):
+        await asyncio.gather(*(run_spec(s) for s in wave))
+    if stage_wide:
+        await run_stage_wide()
+    succeeded = {fn for fn in values if fn not in failures}
+    if not succeeded:
+        raise SdlcError("PROVIDER_ERROR", f"specialist agents produced no parts ({len(failures)} failed)")
+    for fn in fields:
+        if fn not in values:
+            values[fn] = _failed_placeholder(schema, fn, failures.get(fn, "not generated"))
+    data = schema.model_validate(values)
+    if failures:
+        emit({"type": "node", "node": "guardrail", "status": "error",
+              "label": f"⚠ {len(failures)} part(s) failed: {', '.join(failures)}. Successful artifacts are saved; retrigger to complete the rest."})
+    state.agent_runs.update(runs)
+    last = results[-1] if results else None
+    combined = LlmResult(
+        provider=last.provider if last else "reused", model=last.model if last else "reused", content=data.model_dump_json(),
+        usage={"promptTokens": sum(r.usage.get("promptTokens", 0) for r in results), "completionTokens": sum(r.usage.get("completionTokens", 0) for r in results)},
+        attempts=[a for r in results for a in r.attempts], tier=last.tier if last else "auto",
+    )
+    return data, combined
+
 
 
 async def _generate_phase_split(
@@ -727,6 +928,25 @@ async def _publish(deps: AgentDeps, emit: Emit, name: str, args: dict[str, Any],
     return stub
 
 
+async def _record_run(deps: AgentDeps, state: AgentState, artefact_id: str, type_: str) -> None:
+    """Store what the artefact was generated from (agent, model, prompt, context) beside this version of it. Best-effort."""
+    try:
+        runs = state.agent_runs
+        if not runs:
+            return
+        spec = specialists.for_type(state.stage_template, type_)
+        field_name = next((f for f in (spec.fields if spec else ()) if f in runs), None)
+        run = runs.get(field_name) if field_name else None
+        if run is None:           # a type no specialist is named for (e.g. a file written by the code stage): the stage-wide record
+            run = next((r for r in runs.values() if r.get("agentId") == "stage"), None)
+        if run is None:
+            return
+        await deps.db.insert_artefact_run(artefact_id=artefact_id, project_id=state.project_id, phase=state.current_phase,
+                                          field=field_name, run=run)
+    except Exception:  # noqa: BLE001 - the record must never lose an artefact
+        log.warning("could not record the generation run for %s", type_, exc_info=True)
+
+
 async def _save_artifact(
     deps: AgentDeps, state: AgentState, emit: Emit, *,
     type_: str, title: str, content: str, summary: str,
@@ -811,6 +1031,7 @@ async def _save_artifact(
         ref=ArtifactRef(url=ref_url, key=(ref_key if stored_ok else None)),
     )
     await deps.rag.index_artifact(state.project_id, artefact_id, artifact)  # D-19
+    await _record_run(deps, state, artefact_id, type_)
     emit({"type": "artifact", "artifact": {"type": type_, "title": title, "url": url, "key": ref_key}})
     return artifact
 
@@ -842,13 +1063,21 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
         if canon_block:
             emit({"type": "node", "node": "agent",
                   "label": "Canon: applying the project's binding rules and decisions"})
+    canon_only = canon_block
+    memory_all = memory_redacted = ""
     if getattr(deps, "memory", None) is not None:
         try:
             memory_block, _used = await deps.memory.block_for(
                 state.project_id, state.requested_by, state.stage_template, state.user_input, record_use=True)
         except Exception:  # noqa: BLE001 - memory is helpful context, never a reason to fail a run
-            memory_block = ""
+            memory_block, _used = "", []
         if memory_block:
+            memory_all = memory_block
+            # What is stored with the artefact leaves out the person's own working-style memories.
+            shared = [m for m in _used if m.get("scope") != "user"]
+            memory_redacted = deps.memory.render(shared)
+            if len(shared) != len(_used):
+                memory_redacted += f"\n(+{len(_used) - len(shared)} personal working-style memor{'y' if len(_used) - len(shared) == 1 else 'ies'} applied, not shown)"
             canon_block = f"{canon_block}\n\n{memory_block}" if canon_block else memory_block
             emit({"type": "node", "node": "agent",
                   "label": f"Memory: applying {len(_used)} confirmed team memor{'y' if len(_used) == 1 else 'ies'}"})
@@ -917,7 +1146,20 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
     # D-98 v1: try per-artifact PARALLEL generation; fall back to one combined call on
     # any failure (also the mock-mode path, so local runs keep working). The flag is
     # resolved per-run onto the state (D-106): runtime admin toggle OR env default.
-    if getattr(state, "per_artifact", False) or getattr(deps.settings, "PER_ARTIFACT_GENERATION", False):
+    system_recorded = system.replace(memory_all, memory_redacted) if memory_all else system
+    if (getattr(state, "per_artifact", False) or getattr(deps.settings, "PER_ARTIFACT_GENERATION", False)
+            or getattr(state, "retrigger_fields", None)) and state.stage_template in specialists.BY_TEMPLATE:
+        # Specialist agents: each artefact family is written by its own agent from its own, smaller context.
+        try:
+            data, result = await _generate_with_specialists(
+                deps=deps, state=state, schema=PHASE_SCHEMAS[state.stage_template], base_tag=_tag, intent=_intent,
+                max_tokens=_max_tokens, model=_model, emit=emit, canon_block=canon_only, memory_all=memory_all,
+                memory_redacted=memory_redacted, stage_system=system, stage_user=user, stage_system_recorded=system_recorded,
+                amend=amend_comments)
+        except Exception as err:  # noqa: BLE001
+            log.warning("specialist agents failed (%s); falling back to per-artifact generation", err)
+            data = result = None
+    if data is None and (getattr(state, "per_artifact", False) or getattr(deps.settings, "PER_ARTIFACT_GENERATION", False)):
         try:
             data, result = await _generate_phase_split(
                 deps=deps, state=state, system=system, user=user,
@@ -940,11 +1182,18 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
         )
         # Save every artifact as a part too, so any stage — however it was generated —
         # supports selective regeneration later (the split path saves parts itself).
+        stage_run = {"agentId": "stage", "agentName": f"{phase.agent_persona} (whole stage)", "kind": "stage", "role": _role,
+                     "fields": list(type(data).model_fields), "provider": result.provider, "model": result.model,
+                     "system": system_recorded, "user": user,
+                     "context": [{"layer": "stage", "label": "Stage-wide prompt and context", "chars": len(system) + len(user)}],
+                     "tokens": {"prompt": result.usage.get("promptTokens", 0), "completion": result.usage.get("completionTokens", 0)},
+                     "at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()}
+        state.agent_runs.update({fn: stage_run for fn in type(data).model_fields})
         for fn, fi in type(data).model_fields.items():
             try:
                 await deps.db.upsert_generation_part(
                     project_id=state.project_id, phase=state.current_phase, field=fn, status="done",
-                    error=None, value_json=TypeAdapter(fi.annotation).dump_json(getattr(data, fn)).decode(),
+                    error=None, value_json=TypeAdapter(fi.annotation).dump_json(getattr(data, fn)).decode(), run=stage_run,
                 )
             except Exception:  # noqa: BLE001 — best-effort
                 log.warning("generation part upsert failed for %s", fn, exc_info=True)

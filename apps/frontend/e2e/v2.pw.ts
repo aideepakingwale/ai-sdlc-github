@@ -139,6 +139,15 @@ test.describe('stage view', () => {
     }
     await expect(page.getByTestId('v2-stagechat')).toHaveAttribute('data-mode', /review|escalated/, { timeout: 90_000 });
     await expect(page.getByTestId('v2-composer')).toBeVisible();
+
+    // each artefact says how it was made: the agent, its model, the context it was given
+    await page.getByTestId('v2-stagechat').getByRole('button').filter({ hasText: 'Open ↗' }).first().click();
+    const how = page.getByTestId('v2-artefact-run');
+    await expect(how).toBeVisible();
+    await how.getByRole('button').first().click();
+    await expect(how.getByLabel('Context this agent was given')).toContainText('instructions');
+    await how.getByText('Show the prompt').click();
+    await expect(page.getByTestId('v2-run-prompt')).toContainText('SYSTEM');
   });
 });
 

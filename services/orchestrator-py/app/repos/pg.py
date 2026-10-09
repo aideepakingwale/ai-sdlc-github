@@ -336,6 +336,20 @@ class Database:
         )
         return artefact_id
 
+    async def insert_artefact_run(self, *, artefact_id: str, project_id: str, phase: int, field: str | None, run: dict) -> None:
+        assert self.pool
+        await self.pool.execute(
+            "INSERT INTO artefact_runs (artefact_id, project_id, phase, field, agent_id, agent_name, run) VALUES ($1,$2,$3,$4,$5,$6,$7) "
+            "ON CONFLICT (artefact_id) DO NOTHING",
+            artefact_id, project_id, phase, field, str(run.get("agentId") or ""), str(run.get("agentName") or ""), run)
+
+    async def get_artefact_run(self, project_id: str, artefact_id: str) -> dict | None:
+        assert self.pool
+        row = await self.pool.fetchrow(
+            "SELECT r.*, a.type, a.title, a.version FROM artefact_runs r JOIN artefacts a ON a.id = r.artefact_id "
+            "WHERE r.project_id=$1 AND r.artefact_id=$2", project_id, artefact_id)
+        return dict(row) if row else None
+
     async def latest_artefact_version(
         self, project_id: str, phase: int, type_: str, title: str,
     ) -> asyncpg.Record | None:
@@ -1121,24 +1135,24 @@ class Database:
     # ---- per-artifact generation parts (D-107 step 2) -------------------------
     async def upsert_generation_part(
         self, *, project_id: str, phase: int, field: str, status: str,
-        error: str | None, value_json: str | None, partial_text: str | None = None,
+        error: str | None, value_json: str | None, partial_text: str | None = None, run: dict | None = None,
     ) -> None:
         assert self.pool
         await self.pool.execute(
             """
-            INSERT INTO generation_parts (project_id, phase, field, status, error, value_json, partial_text, updated_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7, now())
+            INSERT INTO generation_parts (project_id, phase, field, status, error, value_json, partial_text, run, updated_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())
             ON CONFLICT (project_id, phase, field) DO UPDATE
               SET status=EXCLUDED.status, error=EXCLUDED.error, value_json=EXCLUDED.value_json,
-                  partial_text=EXCLUDED.partial_text, updated_at=now()
+                  partial_text=EXCLUDED.partial_text, run=COALESCE(EXCLUDED.run, generation_parts.run), updated_at=now()
             """,
-            project_id, phase, field, status, (error or None), value_json, partial_text,
+            project_id, phase, field, status, (error or None), value_json, partial_text, run,
         )
 
     async def list_generation_parts(self, project_id: str, phase: int) -> list[dict]:
         assert self.pool
         rows = await self.pool.fetch(
-            "SELECT field, status, error, value_json, partial_text, updated_at FROM generation_parts "
+            "SELECT field, status, error, value_json, partial_text, run, updated_at FROM generation_parts "
             "WHERE project_id=$1 AND phase=$2 ORDER BY updated_at, field",
             project_id, phase,
         )

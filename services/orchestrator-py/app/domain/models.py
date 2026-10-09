@@ -121,6 +121,8 @@ class AgentState(BaseModel):
     stage_template: int = Field(default=1, ge=1, le=7)
     stage_name: str = ""
     stage_reviewer: str = "PO"
+    # What each output field was generated from (specialist agent, model, prompt, context), keyed by schema field.
+    agent_runs: dict[str, dict[str, Any]] = Field(default_factory=dict)
     requested_by: str = ""  # user id of the person running this stage (for their personal memory)
     user_input: str
     context_window: list[ContextArtifact] = Field(default_factory=list)

@@ -1680,6 +1680,44 @@ async def preview_canon(
             "chars": len(canon_block) + len(formwork_block)}
 
 
+# ------------------------------------------------------------------ Specialist agents and what each artefact was made from
+@router.get("/api/agents")
+async def list_specialist_agents(user: UserPublic = Depends(current_user)) -> dict:
+    """The specialist agents: what each writes, the context it reads and the model role it runs on."""
+    from ..agents import specialists
+    return {"agents": [
+        {"id": a.id, "name": a.name, "template": a.template, "kind": a.kind, "role": a.role, "fields": list(a.fields),
+         "artifacts": list(a.artifacts), "needs": list(a.needs), "after": list(a.after), "instructions": a.instructions}
+        for a in specialists.REGISTRY]}
+
+
+@router.get("/api/projects/{project_id}/artefacts/{artefact_id}/run")
+async def artefact_run(
+    project_id: str, artefact_id: str,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """How this artefact was made: the agent, model, prompt and context it was given. The prompt text is for reviewers of the
+    stage, the managing PM and admins; other members see which agent and model ran and the labels of the context used."""
+    await container.authz.assert_project_access(project_id, user)
+    rec = await container.db.get_artefact_run(project_id, artefact_id)
+    if not rec:
+        return {"run": None}
+    run = dict(rec["run"]) if isinstance(rec["run"], dict) else {}
+    phase = int(rec["phase"])
+    stage = await container.workflow.stage_by_seq(project_id, phase)
+    project = await container.db.get_project(project_id) or {}
+    manager = user.role == "SUPER_ADMIN" or (user.role == "PROJECT_MANAGER" and project.get("created_by") == user.id)
+    membership = None if manager else await container.authz.get_membership_role(project_id, user.id)
+    reviewers = set(stage.get("reviewerRoles") or [stage.get("reviewerRole")])
+    detail = manager or membership in reviewers
+    if not detail:
+        run = {k: v for k, v in run.items() if k not in ("system", "user")}
+        run["context"] = [{"layer": c.get("layer"), "label": c.get("label")} for c in run.get("context", [])]
+    can_regen = await container.chat.can_write_stage(project_id, phase, user)
+    return {"run": run, "detail": detail, "canRegenerate": can_regen, "phase": phase, "field": rec["field"],
+            "artefact": {"type": rec["type"], "title": rec["title"], "version": rec["version"]}}
+
+
 # ------------------------------------------------------------------ Connections (per-project Git / Jira / Confluence / KB)
 @router.get("/api/projects/{project_id}/connections")
 async def list_connections(
