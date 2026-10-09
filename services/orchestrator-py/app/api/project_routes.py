@@ -1637,6 +1637,32 @@ async def preview_canon(
             "chars": len(canon_block) + len(formwork_block)}
 
 
+# ------------------------------------------------------------------ Connections (per-project Git / Jira / Confluence / KB)
+@router.get("/api/projects/{project_id}/connections")
+async def list_connections(
+    project_id: str,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """The project's own connections. Credentials are never returned, only whether one is set."""
+    return await container.connections.view(project_id, user)
+
+
+@router.put("/api/projects/{project_id}/connections/{kind}")
+async def save_connection(
+    project_id: str, kind: str, body: dict,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    return {"connection": await container.connections.save(project_id, kind, user, body)}
+
+
+@router.post("/api/projects/{project_id}/connections/{kind}/test")
+async def test_connection(
+    project_id: str, kind: str, body: dict | None = None,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    return {"result": await container.connections.test(project_id, kind, user, body or {})}
+
+
 # ------------------------------------------------------------------ Memory
 @router.get("/api/projects/{project_id}/memory")
 async def list_memory(

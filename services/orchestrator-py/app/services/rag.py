@@ -131,6 +131,17 @@ class RagService:
             embedding=self.embedder.embed(body),
         )
 
+    async def _kb_settings(self, project_id: str | None) -> dict:
+        """The project's own knowledge-base switches (Connections screen); defaults when it never set any."""
+        get = getattr(self._db, "get_connection", None)
+        if not project_id or get is None:
+            return {}
+        try:
+            row = await get(project_id, "kb")
+        except Exception:  # noqa: BLE001 - a settings read must never break retrieval
+            return {}
+        return dict(row["settings"]) if row and isinstance(row.get("settings"), dict) else {}
+
     async def retrieve(self, query: str, project_id: str | None, top_k: int | None = None,
                        artifact_phases: set[int] | None = None) -> list[dict]:
         """Top-k snippets across the enterprise KB + this project's artifacts.
@@ -138,9 +149,13 @@ class RagService:
         `artifact_phases`: when given, project artifacts count only if they come from one of these stages
         (the stage's upstream). Without it a stage would retrieve its own earlier output and the output
         of stages that come after it as "knowledge"; standards and codebase files are never filtered."""
-        k = top_k or self._settings.RAG_TOP_K
+        kb = await self._kb_settings(project_id)
+        k = top_k or kb.get("topK") or self._settings.RAG_TOP_K
         scopes = ["global"] + ([project_id] if project_id else [])
         docs = await self._db.fetch_kb_docs(scopes)
+        off = {src for src, key in (("standard", "standards"), ("artifact", "artefacts"), ("codebase", "codebase")) if kb.get(key) is False}
+        if off:
+            docs = [d for d in docs if d["source"] not in off]
         if artifact_phases is not None:
             docs = [d for d in docs if d["source"] != "artifact" or _artifact_phase(d["title"]) in artifact_phases]
         query_vec = self.embedder.embed(query)

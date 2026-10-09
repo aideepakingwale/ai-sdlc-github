@@ -141,6 +141,11 @@ class Settings(BaseSettings):
 
     # RAG (D-19): top-k snippets retrieved into every phase-agent prompt.
     RAG_TOP_K: int = 4
+    # Per-project connections (Git, Jira, Confluence): credentials are encrypted at rest with this key (defaults to one derived
+    # from JWT_SECRET, so rotating that secret would orphan them - set a dedicated key in production). Self-hosted Jira/Confluence on
+    # a private network needs ALLOW_PRIVATE_HOSTS; by default the server will not call loopback / private / link-local addresses.
+    CONNECTIONS_KEY: str | None = None
+    CONNECTIONS_ALLOW_PRIVATE_HOSTS: bool = False
     RAG_EMBED_DIM: int = 256
 
     # Debug tracing (D-104): when enabled, every LLM span also stores the actual

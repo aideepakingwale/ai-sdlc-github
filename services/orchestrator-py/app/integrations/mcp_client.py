@@ -61,11 +61,16 @@ class McpToolClient:
         self._servers: list[McpServer] = [McpServer("tools", url)] + list(extra_servers or [])
         self._target_for: Any = None          # async (project_id) -> {"githubRepo":…, "confluenceSpaceKey":…, "jiraProjectKey":…}
         self._current_project: Any = None     # () -> project id of the run in progress, or None
+        self._credentials_for: Any = None     # async (project_id) -> the project's OWN credentials (empty = the platform's shared ones)
 
     def bind_targets(self, target_for: Any, current_project: Any = None) -> None:
         """Make every publishing tool call carry ITS PROJECT's integration target (repository, space, Jira project).
         Without this a call falls back to the platform default, which every project would then share."""
         self._target_for, self._current_project = target_for, current_project
+
+    def bind_credentials(self, credentials_for: Any) -> None:
+        """A project may have its own Git / Jira / Confluence credentials; they ride beside the target on publishing calls."""
+        self._credentials_for = credentials_for
 
     def _resolve(self, name: str) -> tuple[McpServer, str]:
         """Route a (possibly namespaced) tool name to its server + real tool name."""
@@ -117,7 +122,9 @@ class McpToolClient:
         if not pid:
             return args
         target = await self._target_for(pid)
-        return {**args, "target": target} if target else args
+        creds = await self._credentials_for(pid) if self._credentials_for else {}
+        extra = {**({"target": target} if target else {}), **({"credentials": creds} if creds else {})}
+        return {**args, **extra} if extra else args
 
     async def call(self, name: str, args: dict[str, Any], *, project_id: str | None = None) -> dict[str, Any]:
         srv, real_name = self._resolve(name)

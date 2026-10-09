@@ -951,6 +951,38 @@ class Database:
             "DELETE FROM project_canon WHERE id=$1 AND project_id=$2", entry_id, project_id)
         return res.endswith("1")
 
+    # ------------------------------------------------------------------ Project connections
+    async def list_connections(self, project_id: str) -> list:
+        assert self.pool
+        return await self.pool.fetch("SELECT * FROM project_connections WHERE project_id=$1", project_id)
+
+    async def get_connection(self, project_id: str, kind: str) -> dict | None:
+        assert self.pool
+        row = await self.pool.fetchrow("SELECT * FROM project_connections WHERE project_id=$1 AND kind=$2", project_id, kind)
+        return dict(row) if row else None
+
+    async def upsert_connection(self, project_id: str, kind: str, settings: dict, secret_enc: str | None, user: str) -> None:
+        assert self.pool
+        await self.pool.execute(
+            """
+            INSERT INTO project_connections (project_id, kind, settings, secret_enc, updated_by)
+            VALUES ($1,$2,$3,$4,$5)
+            ON CONFLICT (project_id, kind) DO UPDATE SET settings=$3, secret_enc=$4, updated_by=$5, updated_at=now(), last_test=NULL
+            """, project_id, kind, settings, secret_enc, user)
+
+    async def set_connection_test(self, project_id: str, kind: str, result: dict) -> None:
+        assert self.pool
+        await self.pool.execute("UPDATE project_connections SET last_test=$3 WHERE project_id=$1 AND kind=$2", project_id, kind, result)
+
+    async def delete_connection(self, project_id: str, kind: str) -> None:
+        assert self.pool
+        await self.pool.execute("DELETE FROM project_connections WHERE project_id=$1 AND kind=$2", project_id, kind)
+
+    async def count_kb_docs(self, scopes: list[str]) -> list:
+        assert self.pool
+        return await self.pool.fetch(
+            "SELECT scope, source, count(*) AS n FROM kb_documents WHERE scope = ANY($1) GROUP BY scope, source", scopes)
+
     # ------------------------------------------------------------------ Memory
     async def list_memory(self, project_id: str, user_id: str) -> list:
         """Everything visible to this person on this project: the project's, the organisation's, their own."""

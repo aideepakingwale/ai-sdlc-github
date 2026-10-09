@@ -29,6 +29,7 @@ from .services.authz import AuthzService
 from .services.build_monitor import BuildMonitor
 from .services.canon import CanonService
 from .services.memory import MemoryService
+from .services.connections import ConnectionService
 from .services.chat import ChatService
 from .services.codebase import CodebaseService
 from .services.content_store import build_content_store
@@ -109,9 +110,11 @@ async def lifespan(app: FastAPI):
 
     from .services.telemetry import _run_context as _rc
     mcp.bind_targets(_project_target, lambda: (_rc.get() or {}).get("projectId"))
+    mcp.bind_credentials(lambda pid: connections.credentials_for(pid))
     for s in mcp._servers[1:]:
         log.info("external MCP server enabled: %s -> %s", s.prefix, s.url)
     rag = RagService(db, settings)
+    connections = ConnectionService(db, authz, audit, settings, rag)
     await rag.ensure_standards()
     content = await build_content_store(settings)
     log.info("content-store tier: %s", content.mode)
@@ -169,6 +172,7 @@ async def lifespan(app: FastAPI):
     container.code_gen = code_gen
     container.canon, container.formworks = canon, formworks
     container.memory = memory
+    container.connections = connections
     gates.memory = memory
     # Durable background stage generation (D-97 L2): jobs survive disconnects, are
     # recorded across restarts, and stream reconnectable progress via Redis.
