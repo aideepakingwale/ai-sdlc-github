@@ -1,5 +1,11 @@
 # Technology stack
 
+> **Updated.** The stack is now described **by layer** (frontend, backend, database, cache, messaging, hosting, ...) in the project's
+> `projectconfig.json`, not as one string. See [project-config.md](project-config.md) for the design. The text below describes how the
+> one-line summary (`projects.tech_stack`, backend and database) is still produced and consumed.
+
+# Technology stack
+
 A project is created **without** a technology stack. Creating a project asks for a
 name, the pipeline and (optionally) the GitHub / Jira / Confluence targets - not a
 language, version or framework.

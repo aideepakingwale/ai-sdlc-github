@@ -447,6 +447,46 @@ test.describe('code assistant', () => {
   });
 });
 
+test.describe('project config and the stack by layer', () => {
+  test('a new project has an empty projectconfig.json; a person pins layers, and the file and the summary follow', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    // empty at creation, as a real file
+    const file = await page.request.get(`/api/projects/${id}/config/file`);
+    expect(((await file.json()) as { stack: { layers: unknown[] } }).stack.layers).toEqual([]);
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-nav-context').click();
+    await expect(page.getByTestId('v2-stack-tab')).toBeVisible();
+    await expect(page.getByTestId('v2-stack-summary')).toContainText('Nothing decided yet');
+    // pin hosting and the backend, leave the database open
+    await page.getByTestId('v2-stack-add-hosting').click();
+    await page.getByTestId('v2-stack-tech').fill('AWS');
+    await page.getByTestId('v2-stack-save').click();
+    await expect(page.getByTestId('v2-stack-entry-hosting')).toContainText('Pinned');
+    await page.getByTestId('v2-stack-add-backend').click();
+    await page.getByTestId('v2-stack-tech').fill('Python');
+    await page.getByPlaceholder('3.12').fill('3.12');
+    await page.getByPlaceholder('FastAPI, Pydantic').fill('FastAPI');
+    await page.getByTestId('v2-stack-save').click();
+    await expect(page.getByTestId('v2-stack-summary')).toContainText('Python 3.12 + FastAPI');
+    await page.getByTestId('v2-stack-add-database').click();
+    await page.getByTestId('v2-stack-open').check();
+    await page.getByTestId('v2-stack-save').click();
+    await expect(page.getByTestId('v2-stack-entry-database')).toContainText('Left open for the Technical Architect');
+    // the platform's one-line stack, the file and the Files tab all follow
+    const cfg = (await (await page.request.get(`/api/projects/${id}/config`)).json()) as { summary: string };
+    expect(cfg.summary).toBe('Python 3.12 + FastAPI');
+    await page.getByTestId('v2-stack').click();
+    await expect(page.getByTestId('v2-stack-popover')).toContainText('Python 3.12 + FastAPI');
+    await page.keyboard.press('Escape');
+    await page.getByTestId('v2-open-project-panel').click();
+    await page.getByTestId('v2-ptab-files').click();
+    await page.getByTestId('v2-files-tab').getByRole('button', { name: /project/ }).first().click();
+    await expect(page.getByTestId('v2-files-tab')).toContainText('projectconfig.json');
+  });
+});
+
 test.describe('context graph', () => {
   test('"What this stage knows" is a layered hierarchy with the earlier stages chained, not a hub', async ({ page }) => {
     await login(page, '/?ui=v2');

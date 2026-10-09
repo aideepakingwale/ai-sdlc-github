@@ -4,8 +4,8 @@ import { useState } from 'react';
 import { api } from '../api/client';
 import { Pill } from './bits';
 
-interface TreeFile { name: string; ext: string; artefactId?: string; codebaseFileId?: string; sizeBytes?: number }
-interface Tree { root: string; storageMode: string; folders: Array<{ name: string; kind: 'phase' | 'codebase'; phase: number | null; files: TreeFile[] }> }
+interface TreeFile { name: string; ext: string; artefactId?: string; codebaseFileId?: string; configFile?: boolean; sizeBytes?: number }
+interface Tree { root: string; storageMode: string; folders: Array<{ name: string; kind: 'phase' | 'codebase' | 'config'; phase: number | null; files: TreeFile[] }> }
 
 const ICON: Record<string, string> = { '.md': '📝', '.mmd': '📐', '.json': '🧾', '.yaml': '⚙️', '.yml': '⚙️', '.ts': '💻', '.js': '💻', '.py': '💻', '.java': '💻', '.sql': '🗄️', '.dbml': '🗄️', '.puml': '📐', '.dsl': '📐', '.txt': '📄' };
 const size = (n?: number) => (n == null ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`);
@@ -18,6 +18,10 @@ export default function ProjectFiles({ projectId, onOpenArtifact }: { projectId:
   const tree = useQuery({ queryKey: ['files', projectId], queryFn: () => api.get<Tree>(`/api/projects/${projectId}/files`), refetchInterval: 7_000 });
   if (!tree.data) return <div className="animate-pulse text-sm text-slate-400">Loading files…</div>;
   const q = filter.trim().toLowerCase();
+  async function openConfig() {
+    const res = await fetch(`/api/projects/${projectId}/config/file`, { credentials: 'include' });
+    setCodeFile({ path: 'projectconfig.json', content: await res.text() });
+  }
   async function openCode(id: string) {
     const r = await api.get<{ file: { path: string; content: string } }>(`/api/projects/${projectId}/codebase/${id}`);
     setCodeFile(r.file);
@@ -41,7 +45,7 @@ export default function ProjectFiles({ projectId, onOpenArtifact }: { projectId:
                 <ul className="ml-6 border-l border-slate-200 pl-2">
                   {files.map((x) => (
                     <li key={x.name}>
-                      <button type="button" onClick={() => (x.artefactId ? onOpenArtifact(x.artefactId) : x.codebaseFileId ? void openCode(x.codebaseFileId) : undefined)} className="flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-sm hover:bg-slate-100">
+                      <button type="button" onClick={() => (x.artefactId ? onOpenArtifact(x.artefactId) : x.codebaseFileId ? void openCode(x.codebaseFileId) : x.configFile ? void openConfig() : undefined)} className="flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-sm hover:bg-slate-100">
                         <span aria-hidden="true">{ICON[x.ext] ?? '📄'}</span><MiddleText text={x.name} className="flex-1 font-mono text-[13px] text-slate-800" />
                         {x.sizeBytes != null && <Pill>{size(x.sizeBytes)}</Pill>}
                       </button>

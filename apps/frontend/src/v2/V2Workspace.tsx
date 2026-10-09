@@ -7,7 +7,7 @@ import ModelRoutesControl from '../components/ModelRoutesControl';
 import NewProjectModal from '../components/NewProjectModal';
 import ObservabilityPanel from '../components/ObservabilityPanel';
 import WorkflowDesigner from '../components/WorkflowDesigner';
-import ProjectContextPanel from '../components/ProjectContextPanel';
+import ProjectContextPage from './ProjectContextPage';
 import ProjectExplorer from '../components/ProjectExplorer';
 import QualityMetricsPanel from '../components/QualityMetricsPanel';
 import ConnectionsPage from './ConnectionsPage';
@@ -99,7 +99,7 @@ export default function V2Workspace() {
       <div className="flex min-w-0 flex-1 flex-col">
         <GlobalBar
           user={user} detail={detail.data} projectId={activeProjectId} projectName={detail.data?.project.name ?? null}
-          crumb={crumb} onGoToStage={goStage} onLogout={() => void logout()} onDelete={() => void deleteProject()} deleting={deleting}
+          crumb={crumb} onGoToStage={goStage} onOpenContext={() => setModal('context')} onLogout={() => void logout()} onDelete={() => void deleteProject()} deleting={deleting}
         />
         {detail.isError && activeProjectId && (
           <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
@@ -116,9 +116,7 @@ export default function V2Workspace() {
               : modal === 'designer' ? <WorkflowDesigner page projectId={activeProjectId!} onClose={() => { setModalRaw(null); setView('pipeline'); }} />
               : modal === 'connections' ? <ConnectionsPage projectId={activeProjectId!} projectName={detail.data?.project.name} />
               : modal === 'quality' ? <QualityMetricsPanel page projectId={activeProjectId!} onClose={() => setModal(null)} />
-              : <ProjectContextPanel page projectId={activeProjectId!} techStack={detail.data?.project.techStack} techStackDecided={detail.data?.project.techStackDecided}
-                  techStackSource={detail.data?.project.techStackSource}
-                  canSetStack={(detail.data?.me?.canManageTeam ?? false) || detail.data?.me?.membershipRole === 'TA'} onClose={() => setModal(null)} />
+              : <ProjectContextPage projectId={activeProjectId!} onClose={() => setModal(null)} />
             ) : !activeProjectId ? (
               <PortfolioView onOpen={setActiveProject} onNewProject={() => setNewProject(true)} canManage={canManage} />
             ) : view === 'pipeline' ? (

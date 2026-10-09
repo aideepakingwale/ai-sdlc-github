@@ -1594,6 +1594,11 @@ async def project_files(
                 for c in codebase
             ],
         })
+    if getattr(container, "project_config", None) is not None:
+        cfg = await container.project_config.get(project_id)
+        import json as _json
+        tree.insert(0, {"name": "project", "kind": "config", "phase": None, "files": [
+            {"name": "projectconfig.json", "ext": ".json", "configFile": True, "sizeBytes": len(_json.dumps(cfg, indent=2)), "uploadedAt": cfg.get("updatedAt")}]})
     return {"root": f"content-store/{project_id}", "storageMode": container.content.mode, "folders": tree}
 
 

@@ -3,7 +3,6 @@ import type { ProjectDetail, User } from '../api/types';
 import { ROLE_LABELS } from '../api/types';
 import HelpPanel from '../components/HelpPanel';
 import NotificationBell from '../components/NotificationBell';
-import TechStackBar from '../components/TechStackBar';
 import { Icon } from '../components/ui/Icon';
 import { initials } from './bits';
 import { switchUiVersion } from './uiVersion';
@@ -32,7 +31,7 @@ function Popover({ label, button, children, align = 'right', testid }: { label: 
 }
 
 export default function GlobalBar({
-  user, detail, projectId, projectName, crumb, onGoToStage, onLogout, onDelete, deleting,
+  user, detail, projectId, projectName, crumb, onGoToStage, onLogout, onDelete, deleting, onOpenContext,
 }: {
   user: User;
   detail: ProjectDetail | undefined;
@@ -40,6 +39,8 @@ export default function GlobalBar({
   projectName: string | null;
   crumb?: string;
   onGoToStage: (seq: number) => void;
+  /** Opens Project Context (the stack, rules and templates). */
+  onOpenContext?: () => void;
   onLogout: () => void;
   onDelete: () => void;
   deleting: boolean;
@@ -55,7 +56,6 @@ export default function GlobalBar({
   const [theme, setTheme] = useState<ThemeChoice>(getThemeChoice);
   const stack = detail?.project.techStack;
   const decided = Boolean(detail?.project.techStackDecided);
-  const canSetStack = (detail?.me?.canManageTeam ?? false) || detail?.me?.membershipRole === 'TA';
 
   return (
     <header className="flex items-center gap-2 border-b border-slate-200 bg-white px-4 py-2 max-[899px]:px-3" data-testid="v2-globalbar">
@@ -66,8 +66,11 @@ export default function GlobalBar({
       <div className="ml-auto flex items-center gap-2">
         {projectId && (
           <Popover label="Technology stack" testid="v2-stack" button={<><Icon name="server" size={13} /><span className="max-[899px]:hidden">Stack: {decided && stack ? stack : 'not decided yet'}</span><Icon name="chevron-down" size={12} /></>}>
-            <div className="w-80 text-xs text-slate-500">
-              <TechStackBar projectId={projectId} techStack={stack} decided={decided} source={detail?.project.techStackSource} canSet={canSetStack} />
+            <div className="w-80 text-xs text-slate-500" data-testid="v2-stack-popover">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Technology stack</div>
+              <div className="text-sm text-slate-800">{decided && stack ? stack : 'Not decided yet'}</div>
+              <div className="mt-1">{decided ? 'Set in projectconfig.json: by layer, with where each value came from.' : 'Filled in as your stages produce documents, or set it yourself.'}</div>
+              {onOpenContext && <button type="button" onClick={onOpenContext} data-testid="v2-stack-open-settings" className="mt-2 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700">Open stack settings</button>}
             </div>
           </Popover>
         )}

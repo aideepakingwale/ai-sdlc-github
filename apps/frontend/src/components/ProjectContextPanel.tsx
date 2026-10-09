@@ -51,7 +51,7 @@ const PRIORITY_CHIP: Record<string, string> = {
 };
 
 export default function ProjectContextPanel({
-  projectId, techStack, techStackDecided = !!techStack, techStackSource, canSetStack = false, onClose, page = false,
+  projectId, techStack, techStackDecided = !!techStack, techStackSource, canSetStack = false, onClose, page = false, embedded = false,
 }: {
   projectId: string;
   techStack?: string;
@@ -61,6 +61,8 @@ export default function ProjectContextPanel({
   onClose: () => void;
   /** Render as a page inside the workspace instead of a modal. */
   page?: boolean;
+  /** Inside the v2 Project Context page: no header and no stack bar (the page has its own). */
+  embedded?: boolean;
 }) {
   const qc = useQueryClient();
   const [tab, setTab] = useState<'canon' | 'formwork' | 'preview'>('canon');
@@ -147,12 +149,12 @@ export default function ProjectContextPanel({
   }
 
   return (
-    <div className={page ? 'h-full overflow-y-auto bg-slate-50 p-6' : 'fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4'} onClick={page ? undefined : onClose}>
+    <div className={embedded ? '' : page ? 'h-full overflow-y-auto bg-slate-50 p-6' : 'fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4'} onClick={page || embedded ? undefined : onClose}>
       <div
-        className={page ? 'mx-auto flex w-full max-w-5xl flex-col' : 'flex max-h-[94vh] w-full max-w-4xl flex-col rounded-2xl bg-slate-50 shadow-2xl'}
+        className={embedded ? 'flex w-full flex-col' : page ? 'mx-auto flex w-full max-w-5xl flex-col' : 'flex max-h-[94vh] w-full max-w-4xl flex-col rounded-2xl bg-slate-50 shadow-2xl'}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className={page ? 'flex items-center justify-between px-1 pb-3' : 'flex items-center justify-between border-b border-slate-200 bg-white px-5 py-3'}>
+        {!embedded && <div className={page ? 'flex items-center justify-between px-1 pb-3' : 'flex items-center justify-between border-b border-slate-200 bg-white px-5 py-3'}>
           <div>
             {page ? <h1 className="font-display text-xl font-bold text-navy">Project Context</h1> : <div className="text-sm font-bold text-slate-800">📖 Project Context</div>}
             <div className="text-xs text-slate-500">
@@ -161,15 +163,15 @@ export default function ProjectContextPanel({
             </div>
           </div>
           {!page && <button onClick={onClose} className="rounded px-2 py-1 text-slate-400 hover:bg-slate-100">✕</button>}
-        </div>
+        </div>}
 
-        <TechStackBar
+        {!embedded && <TechStackBar
           projectId={projectId}
           techStack={techStack}
           decided={techStackDecided}
           source={techStackSource}
           canSet={canSetStack}
-        />
+        />}
 
         <div className="flex gap-1 border-b border-slate-200 bg-white px-5 py-2">
           {([['canon', `📖 Canon (${canon.data?.entries.length ?? 0})`],
