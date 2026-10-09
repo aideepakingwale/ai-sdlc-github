@@ -10,6 +10,7 @@ import WorkflowDesigner from '../components/WorkflowDesigner';
 import ProjectContextPanel from '../components/ProjectContextPanel';
 import ProjectExplorer from '../components/ProjectExplorer';
 import QualityMetricsPanel from '../components/QualityMetricsPanel';
+import ConnectionsPage from './ConnectionsPage';
 import StageChat from './stage/StageChat';
 import { useApp } from '../store';
 import GlobalBar from './GlobalBar';
@@ -71,7 +72,7 @@ export default function V2Workspace() {
     } catch (err) { window.alert(err instanceof Error ? err.message : 'Delete failed'); } finally { setDeleting(false); }
   }
 
-  const PAGE_NAMES: Record<string, string> = { explorer: 'Project Explorer', context: 'Project Context', quality: 'Quality', governance: 'Governance', observability: 'Observability', models: 'Model routes', designer: 'Workflow designer' };
+  const PAGE_NAMES: Record<string, string> = { explorer: 'Project Explorer', context: 'Project Context', quality: 'Quality', governance: 'Governance', observability: 'Observability', models: 'Model routes', designer: 'Workflow designer', connections: 'Connections' };
   const crumb = modal && PAGE_NAMES[modal]
     ? `${activeProjectId ? `${detail.data?.project.name ?? ''} › ` : ''}${PAGE_NAMES[modal]}`
     : activeProjectId
@@ -113,6 +114,7 @@ export default function V2Workspace() {
               : modal === 'observability' ? <ObservabilityPanel page onClose={() => setModal(null)} />
               : modal === 'models' ? <div className="h-full overflow-y-auto bg-slate-50 p-6"><div className="mx-auto max-w-4xl"><h1 className="mb-1 font-display text-xl font-bold text-navy">Model routes</h1><p className="mb-4 text-sm text-slate-500">Which models serve which kind of work. The first in each chain is preferred, the rest are fallbacks. Changes apply at once.</p><ModelRoutesControl /></div></div>
               : modal === 'designer' ? <WorkflowDesigner page projectId={activeProjectId!} onClose={() => { setModalRaw(null); setView('pipeline'); }} />
+              : modal === 'connections' ? <ConnectionsPage projectId={activeProjectId!} projectName={detail.data?.project.name} />
               : modal === 'quality' ? <QualityMetricsPanel page projectId={activeProjectId!} onClose={() => setModal(null)} />
               : <ProjectContextPanel page projectId={activeProjectId!} techStack={detail.data?.project.techStack} techStackDecided={detail.data?.project.techStackDecided}
                   techStackSource={detail.data?.project.techStackSource}

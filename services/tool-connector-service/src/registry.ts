@@ -6,7 +6,7 @@ import { atlassianImpl } from './impl/atlassian.js';
 import { githubImpl } from './impl/github.js';
 import { lintOpenapi } from './impl/openapi-lint.js';
 import { personaImpl } from './impl/personas.js';
-import { parseTarget, withTarget } from './target.js';
+import { parseCredentials, parseTarget, withTarget } from './target.js';
 import { sdlcToolchainImpl } from './impl/sdlc-toolchain.js';
 
 export interface ToolRuntime {
@@ -120,8 +120,9 @@ export function createToolRuntime(env: ToolsEnv, redis: Redis, log: Logger): Too
       if (!handler) throw new SdlcError('TOOL_ERROR', `Tool ${name} has no handler`);
 
       // The project's integration target travels beside the tool input (it is not part of any tool's schema).
-      const { target: rawTarget, ...toolArgs } = (args ?? {}) as Record<string, unknown>;
-      const target = parseTarget(rawTarget, env.GITHUB_REPO);
+      const { target: rawTarget, credentials: rawCreds, ...toolArgs } = (args ?? {}) as Record<string, unknown>;
+      const creds = parseCredentials(rawCreds);
+      const target = parseTarget(rawTarget, env.GITHUB_REPO, Boolean(creds.github));
       const input = def.input.safeParse(toolArgs);
       if (!input.success) {
         throw new SdlcError('VALIDATION_FAILED', `Invalid input for ${name}: ${input.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
@@ -138,7 +139,7 @@ export function createToolRuntime(env: ToolsEnv, redis: Redis, log: Logger): Too
       const started = Date.now();
       let raw: unknown;
       try {
-        raw = await withTarget(target, () => handler(input.data as never));
+        raw = await withTarget(target, () => handler(input.data as never), creds);
       } catch (err) {
         const wrapped = toSdlcError(err, `Tool ${name} failed`);
         log.error({ tool: name, err: wrapped.message }, 'tool execution failed');

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Redis } from 'ioredis';
 import { SdlcError, type ToolsEnv } from '@sdlc/shared';
-import { targetOf } from '../target.js';
+import { credsOf, targetOf } from '../target.js';
 
 interface FileInput {
   path: string;
@@ -24,16 +24,18 @@ const MOCK_TTL = 604_800; // 7d
  * This deterministically exercises the Build Recovery Loop offline.
  */
 export function githubImpl(deps: GithubDeps) {
-  const { env, redis, live } = deps;
+  const { env, redis } = deps;
+  /** Live when the platform is connected, or when this project brought its own token. */
+  const isLive = (): boolean => deps.live || Boolean(credsOf().github);
   /** The repository of the project the current call belongs to (platform default when none). */
   const repoOf = (): string => targetOf().githubRepo ?? env.GITHUB_REPO ?? '';
 
   const gh = async (path: string, init?: RequestInit): Promise<Response> => {
-    const res = await fetch(`https://api.github.com${path}`, {
+    const res = await fetch(`${credsOf().github?.apiUrl ?? 'https://api.github.com'}${path}`, {
       ...init,
       headers: {
         accept: 'application/vnd.github+json',
-        authorization: `Bearer ${env.GITHUB_TOKEN}`,
+        authorization: `Bearer ${credsOf().github?.token ?? env.GITHUB_TOKEN}`,
         'x-github-api-version': '2022-11-28',
         ...(init?.headers ?? {}),
       },
@@ -117,7 +119,7 @@ export function githubImpl(deps: GithubDeps) {
 
   return {
     async createBranch(input: { branch: string; from: string }) {
-      if (live) {
+      if (isLive()) {
         const repo = repoOf();
         const base = await gh(`/repos/${repo}/git/ref/heads/${input.from}`);
         if (base.status === 404) throw new SdlcError('TOOL_ERROR', `Base branch ${input.from} not found`);
@@ -135,7 +137,7 @@ export function githubImpl(deps: GithubDeps) {
 
     /** Plain docs/config commits — no CI simulation needed for these paths. */
     async commitFiles(input: { branch: string; files: FileInput[]; message: string }) {
-      if (live) return liveCommitFiles(input.branch, input.files, input.message);
+      if (isLive()) return liveCommitFiles(input.branch, input.files, input.message);
       const { commitSha } = await mockCommit(input.branch, input.files, input.message);
       return {
         commitSha,
@@ -146,7 +148,7 @@ export function githubImpl(deps: GithubDeps) {
 
     /** Code commits trigger the (real or simulated) CI pipeline and return runId. */
     async commitCode(input: { branch: string; files: FileInput[]; message: string }) {
-      if (live) {
+      if (isLive()) {
         const result = await liveCommitFiles(input.branch, input.files, input.message);
         await new Promise((r) => setTimeout(r, 3_000)); // give Actions a beat to register the run
         return { ...result, runId: await liveLatestRunId(input.branch) };
@@ -162,7 +164,7 @@ export function githubImpl(deps: GithubDeps) {
     },
 
     async pollRunStatus(input: { runId: string }) {
-      if (live) {
+      if (isLive()) {
         const res = await gh(`/repos/${repoOf()}/actions/runs/${input.runId}`);
         const run = (await res.json()) as { status: string; conclusion: string | null };
         let failedJobIds: string[] = [];
@@ -191,7 +193,7 @@ export function githubImpl(deps: GithubDeps) {
     },
 
     async fetchBuildLogs(input: { runId: string }) {
-      if (live) {
+      if (isLive()) {
         // Job-level annotations give the actionable failure text without the logs zip.
         const jobsRes = await gh(`/repos/${repoOf()}/actions/runs/${input.runId}/jobs`);
         const jobs = (await jobsRes.json()) as {
@@ -212,7 +214,7 @@ export function githubImpl(deps: GithubDeps) {
 
     async createPullRequest(input: { branch: string; title: string; body: string; checklist: string[] }) {
       const bodyWithChecklist = `${input.body}\n\n## Review checklist\n${input.checklist.map((c) => `- [ ] ${c}`).join('\n')}`;
-      if (live) {
+      if (isLive()) {
         const res = await gh(`/repos/${repoOf()}/pulls`, {
           method: 'POST',
           body: JSON.stringify({ title: input.title, head: input.branch, base: 'main', body: bodyWithChecklist }),

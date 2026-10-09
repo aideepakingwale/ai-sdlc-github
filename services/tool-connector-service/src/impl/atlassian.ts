@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Redis } from 'ioredis';
 import { SdlcError } from '@sdlc/shared';
 import type { ToolsEnv } from '@sdlc/shared';
-import { targetOf } from '../target.js';
+import { credsOf, targetOf } from '../target.js';
 
 export interface AtlassianDeps {
   env: ToolsEnv;
@@ -15,17 +15,22 @@ async function nextSeq(redis: Redis, kind: string): Promise<number> {
   return redis.incr(`mock:seq:${kind}`);
 }
 
-function auth(env: ToolsEnv): string {
-  return `Basic ${Buffer.from(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`).toString('base64')}`;
+/** The Jira / Confluence connection this call uses: the project's own when it has one, else the platform's. */
+function conn(env: ToolsEnv, kind: 'jira' | 'confluence'): { baseUrl: string | undefined; authorization: string } {
+  const own = credsOf()[kind];
+  const base = kind === 'jira' ? env.JIRA_BASE_URL : env.CONFLUENCE_BASE_URL;
+  const [email, token] = own ? [own.email, own.apiToken] : [env.JIRA_EMAIL, env.JIRA_API_TOKEN];
+  return { baseUrl: own?.baseUrl ?? base, authorization: `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}` };
 }
 
 async function jiraCreateIssue(
   env: ToolsEnv,
   fields: Record<string, unknown>,
 ): Promise<{ id: string; key: string }> {
-  const res = await fetch(`${env.JIRA_BASE_URL}/rest/api/3/issue`, {
+  const c = conn(env, 'jira');
+  const res = await fetch(`${c.baseUrl}/rest/api/3/issue`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: auth(env) },
+    headers: { 'content-type': 'application/json', authorization: c.authorization },
     body: JSON.stringify({ fields }),
     signal: AbortSignal.timeout(30_000),
   });
@@ -52,7 +57,10 @@ function projectKeyOf(supplied: string | undefined, fallback: string): string {
 }
 
 export function atlassianImpl(deps: AtlassianDeps) {
-  const { env, redis, live } = deps;
+  const { env, redis } = deps;
+  const jiraLive = (): boolean => deps.live || Boolean(credsOf().jira);
+  const confluenceLive = (): boolean => deps.live || Boolean(credsOf().confluence);
+  const jiraBase = (): string | undefined => conn(env, 'jira').baseUrl;
   /** The Jira project of the project the current call belongs to (platform default when none). */
   const keyOf = (): string => targetOf().jiraProjectKey ?? env.JIRA_PROJECT_KEY;
   /** A project's configured Jira project is AUTHORITATIVE: a key the model picked never overrides it. */
@@ -62,7 +70,7 @@ export function atlassianImpl(deps: AtlassianDeps) {
   return {
     async createEpic(input: { title: string; description: string; priority: string; projectKey?: string }) {
       const projectKey = pickKey(input.projectKey);
-      if (live) {
+      if (jiraLive()) {
         const issue = await jiraCreateIssue(env, {
           project: { key: projectKey },
           issuetype: { name: 'Epic' },
@@ -70,7 +78,7 @@ export function atlassianImpl(deps: AtlassianDeps) {
           description: adf(input.description),
           priority: { name: input.priority },
         });
-        return { epicId: issue.id, epicKey: issue.key, url: `${env.JIRA_BASE_URL}/browse/${issue.key}` };
+        return { epicId: issue.id, epicKey: issue.key, url: `${jiraBase()}/browse/${issue.key}` };
       }
       const n = await nextSeq(redis, 'issue');
       const key = `${projectKey}-${n}`;
@@ -81,7 +89,7 @@ export function atlassianImpl(deps: AtlassianDeps) {
       // Prefer the epic's own prefix so a story sits under its epic's project.
       const epicPrefix = input.epicKey.split('-')[0];
       const projectKey = pickKey(input.projectKey ?? epicPrefix);
-      if (live) {
+      if (jiraLive()) {
         const issue = await jiraCreateIssue(env, {
           project: { key: projectKey },
           issuetype: { name: 'Story' },
@@ -89,7 +97,7 @@ export function atlassianImpl(deps: AtlassianDeps) {
           description: adf(`${input.storyText}\n\nAcceptance Criteria:\n${input.gherkinCriteria.join('\n\n')}`),
           parent: { key: input.epicKey },
         });
-        return { storyId: issue.id, storyKey: issue.key, url: `${env.JIRA_BASE_URL}/browse/${issue.key}` };
+        return { storyId: issue.id, storyKey: issue.key, url: `${jiraBase()}/browse/${issue.key}` };
       }
       const n = await nextSeq(redis, 'issue');
       const key = `${projectKey}-${n}`;
@@ -99,7 +107,7 @@ export function atlassianImpl(deps: AtlassianDeps) {
     async createXrayTest(input: { storyKey: string; title: string; steps: Array<{ action: string; expectedResult: string }> }) {
       // Keep the test in the same project as the story it verifies.
       const projectKey = pickKey(input.storyKey.split('-')[0]);
-      if (live) {
+      if (jiraLive()) {
         const issue = await jiraCreateIssue(env, {
           project: { key: projectKey },
           issuetype: { name: 'Test' },
@@ -108,7 +116,7 @@ export function atlassianImpl(deps: AtlassianDeps) {
             input.steps.map((s, i) => `Step ${i + 1}: ${s.action}\nExpected: ${s.expectedResult}`).join('\n\n'),
           ),
         });
-        return { xrayTestKey: issue.key, url: `${env.JIRA_BASE_URL}/browse/${issue.key}` };
+        return { xrayTestKey: issue.key, url: `${jiraBase()}/browse/${issue.key}` };
       }
       const n = await nextSeq(redis, 'issue');
       const key = `${projectKey}-${n}`;
@@ -116,10 +124,11 @@ export function atlassianImpl(deps: AtlassianDeps) {
     },
 
     async publishPage(input: { title: string; body: string; kind: 'prd' | 'hld' | 'lld' }) {
-      if (live) {
-        const res = await fetch(`${env.CONFLUENCE_BASE_URL}/wiki/rest/api/content`, {
+      if (confluenceLive()) {
+        const cc = conn(env, 'confluence');
+        const res = await fetch(`${cc.baseUrl}/wiki/rest/api/content`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: auth(env) },
+          headers: { 'content-type': 'application/json', authorization: cc.authorization },
           body: JSON.stringify({
             type: 'page',
             title: input.title,
@@ -134,7 +143,7 @@ export function atlassianImpl(deps: AtlassianDeps) {
         const page = (await res.json()) as { id: string; _links?: { base?: string; webui?: string } };
         return {
           pageId: page.id,
-          url: `${page._links?.base ?? env.CONFLUENCE_BASE_URL}${page._links?.webui ?? ''}`,
+          url: `${page._links?.base ?? cc.baseUrl}${page._links?.webui ?? ''}`,
         };
       }
       const n = await nextSeq(redis, 'page');

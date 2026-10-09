@@ -7,7 +7,7 @@ import { StageDot } from './bits';
 import { useV2, type ProjectTab } from './store';
 
 export type V2View = 'dashboard' | 'pipeline' | 'stage';
-export type V2Modal = 'explorer' | 'context' | 'quality' | 'governance' | 'observability' | 'models' | 'designer';
+export type V2Modal = 'explorer' | 'context' | 'quality' | 'governance' | 'observability' | 'models' | 'designer' | 'connections';
 
 export const PROJECT_TOOLS: Array<{ tab: ProjectTab; label: string; hint: string; icon: IconName }> = [
   { tab: 'team', label: 'Team', hint: 'Who is on this project and which stage each person covers', icon: 'users' },
@@ -145,6 +145,10 @@ export default function Sidebar({
           <Item onClick={() => onModal('quality')} testid="v2-nav-quality">
             <Icon name="chart" size={16} className="text-slate-500" />
             <span><span className="block text-sm font-medium text-navy">Quality</span><span className="block text-xs text-slate-500">Scores and rework</span></span>
+          </Item>
+          <Item onClick={() => onModal('connections')} testid="v2-nav-connections">
+            <Icon name="cloud" size={16} className="text-slate-500" />
+            <span><span className="block text-sm font-medium text-navy">Connections</span><span className="block text-xs text-slate-500">Git, Jira, Confluence, knowledge base</span></span>
           </Item>
           {canManage && (
             <Item onClick={() => onModal('designer')} testid="v2-nav-designer">

@@ -270,4 +270,13 @@ describe('per-project integration target', () => {
     expect(() => parseTarget({ githubRepo: 'evil/orders' }, 'acme/platform')).toThrow(/organisation/);
     expect(parseTarget(undefined)).toEqual({});
   });
+
+  it("a project's own GitHub token lifts the same-organisation limit, and malformed credentials are dropped", async () => {
+    const { parseTarget, parseCredentials } = await import('./target.js');
+    expect(parseTarget({ githubRepo: 'other/orders' }, 'acme/platform', true)).toEqual({ githubRepo: 'other/orders' });
+    expect(parseCredentials({ github: { token: 't', apiUrl: 'https://ghe.example.com/api/v3/' }, jira: { baseUrl: 'https://a.atlassian.net', email: 'a@b.io', apiToken: 'x' } }))
+      .toEqual({ github: { token: 't', apiUrl: 'https://ghe.example.com/api/v3' }, jira: { baseUrl: 'https://a.atlassian.net', email: 'a@b.io', apiToken: 'x' } });
+    expect(parseCredentials({ jira: { baseUrl: 'not a url', email: 'a@b.io', apiToken: 'x' }, github: { token: '' } })).toEqual({});
+    expect(parseCredentials('nope')).toEqual({});
+  });
 });

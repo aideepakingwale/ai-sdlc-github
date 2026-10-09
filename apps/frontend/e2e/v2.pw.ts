@@ -202,6 +202,45 @@ test.describe('memory', () => {
   });
 });
 
+test.describe('connections', () => {
+  test('each project has its own Git, Jira, Confluence and knowledge-base settings, with a test for each', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-nav-connections').click();
+    await expect(page.getByTestId('v2-connections')).toBeVisible();
+    for (const k of ['github', 'jira', 'confluence', 'kb']) await expect(page.getByTestId(`v2-conn-${k}`)).toBeVisible();
+    await expect(page.getByTestId('v2-conn-status-github')).toContainText('Not set up');
+
+    // a repository without a token of its own keeps using the shared connection, and the test says so
+    await page.getByTestId('v2-conn-github-repo').fill('acme/payments');
+    await page.getByTestId('v2-conn-save-github').click();
+    await expect(page.getByTestId('v2-conn-status-github')).toContainText('Using the shared connection');
+    await page.getByTestId('v2-conn-test-github').click();
+    await expect(page.getByTestId('v2-conn-result-github')).toContainText('Own access token');
+
+    // a token is saved but never shown again
+    await page.getByTestId('v2-conn-github-secret').fill('ghp_not_a_real_token');
+    await page.getByTestId('v2-conn-save-github').click();
+    await expect(page.getByTestId('v2-conn-github-secret')).toHaveAttribute('placeholder', /saved/);
+    expect(await page.content()).not.toContain('ghp_not_a_real_token');
+    const api = await page.request.get(`/api/projects/${id}/connections`);
+    expect(JSON.stringify(await api.json())).not.toContain('ghp_not_a_real_token');
+
+    // the repository shows up as the project's publishing target
+    const detail = await page.request.get(`/api/projects/${id}`);
+    expect(JSON.stringify(await detail.json())).toContain('acme/payments');
+
+    // the knowledge base can be tested and narrowed
+    await page.getByTestId('v2-conn-kb-codebase').uncheck();
+    await page.getByTestId('v2-conn-save-kb').click();
+    await page.getByTestId('v2-conn-test-kb').click();
+    await expect(page.getByTestId('v2-conn-result-kb')).toContainText('Organisation standards');
+    await expect(page.getByTestId('v2-conn-result-kb')).toContainText('switched off');
+  });
+});
+
 test.describe('pipeline and configuration pages', () => {
   test('the pipeline page lists every stage and opens one', async ({ page }) => {
     await login(page, '/?ui=v2');
