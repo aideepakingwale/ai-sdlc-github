@@ -128,6 +128,19 @@ async function loadHljs() {
   return hljsPromise;
 }
 
+/** Selecting code and copying puts only its text on the clipboard: no highlight markup, no line numbers, no padding on blank lines. */
+function copyPlainText(e: React.ClipboardEvent) {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+  const frag = sel.getRangeAt(0).cloneContents();
+  frag.querySelectorAll('[data-ln]').forEach((n) => n.remove());
+  const rows = Array.from(frag.querySelectorAll('tr'));
+  const text = rows.length ? rows.map((r) => (r.textContent === ' ' ? '' : r.textContent ?? '')).join('\n') : frag.textContent ?? '';
+  if (!text) return;
+  e.clipboardData.setData('text/plain', text);
+  e.preventDefault();
+}
+
 export default function CodeView({
   source,
   lang,
@@ -213,14 +226,14 @@ export default function CodeView({
         </div>
       )}
 
-      <div className={`hljs max-h-[65vh] overflow-auto leading-relaxed ${tone === 'light' ? '!bg-transparent py-2 text-[13px]' : '!bg-slate-900 text-xs'}`}>
+      <div onCopy={copyPlainText} className={`hljs max-h-[65vh] overflow-auto leading-relaxed ${tone === 'light' ? '!bg-transparent py-2 text-[13px]' : '!bg-slate-900 text-xs'}`}>
         <table className="w-full border-collapse">
           <tbody>
             {rendered.map((html, i) => {
               const bad = badLines.has(i + 1);
               return (
                 <tr key={i} className={bad ? 'bg-red-500/15' : undefined}>
-                  <td className={`w-10 select-none border-r px-2 text-right align-top font-mono ${tone === 'light' ? 'text-xs' : 'text-[10px]'} ${tone === 'light' ? 'border-transparent text-slate-400' : 'border-slate-800 text-slate-600'}`}>
+                  <td data-ln="" className={`w-10 select-none border-r px-2 text-right align-top font-mono ${tone === 'light' ? 'text-xs' : 'text-[10px]'} ${tone === 'light' ? 'border-transparent text-slate-400' : 'border-slate-800 text-slate-600'}`}>
                     {i + 1}
                   </td>
                   <td className={`whitespace-pre px-3 font-mono ${tone === 'light' ? 'text-slate-700' : 'text-slate-100'}`}>

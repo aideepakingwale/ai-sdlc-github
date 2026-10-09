@@ -133,6 +133,22 @@
 .dark [class*="bg-bared-200/"] { background-color: rgb(206 33 15 / 0.18); }
 .dark [class*="bg-amber-50/"] { background-color: rgb(245 158 11 / 0.12); }
 
-/* The workspace's light code panel: soft grey with quiet, mostly monochrome. In dark mode the viewer keeps its dark theme. */
-:root:not(.dark) .code-light span[class*="hljs-"] { color: inherit; }
-:root:not(.dark) .code-light .hljs-comment, :root:not(.dark) .code-light .hljs-quote { color: #8a94a6; font-style: italic; }
+/* The workspace's light code panel: soft grey with a GitHub-light syntax palette. In dark mode the viewer keeps its dark theme. */
+:root:not(.dark) .code-light .hljs-comment, :root:not(.dark) .code-light .hljs-quote { color: #6e7781; font-style: italic; }
+:root:not(.dark) .code-light .hljs-keyword, :root:not(.dark) .code-light .hljs-selector-tag, :root:not(.dark) .code-light .hljs-doctag,
+:root:not(.dark) .code-light .hljs-template-tag, :root:not(.dark) .code-light .hljs-template-variable, :root:not(.dark) .code-light .hljs-type { color: #cf222e; }
+:root:not(.dark) .code-light .hljs-string, :root:not(.dark) .code-light .hljs-regexp, :root:not(.dark) .code-light .hljs-meta .hljs-string { color: #0a3069; }
+:root:not(.dark) .code-light .hljs-number, :root:not(.dark) .code-light .hljs-literal, :root:not(.dark) .code-light .hljs-attr,
+:root:not(.dark) .code-light .hljs-attribute, :root:not(.dark) .code-light .hljs-variable.constant_, :root:not(.dark) .code-light .hljs-selector-attr,
+:root:not(.dark) .code-light .hljs-selector-class, :root:not(.dark) .code-light .hljs-selector-id, :root:not(.dark) .code-light .hljs-operator { color: #0550ae; }
+:root:not(.dark) .code-light .hljs-title, :root:not(.dark) .code-light .hljs-title.function_, :root:not(.dark) .code-light .hljs-title.class_,
+:root:not(.dark) .code-light .hljs-section { color: #8250df; }
+:root:not(.dark) .code-light .hljs-built_in, :root:not(.dark) .code-light .hljs-symbol, :root:not(.dark) .code-light .hljs-bullet,
+:root:not(.dark) .code-light .hljs-link, :root:not(.dark) .code-light .hljs-params { color: #953800; }
+:root:not(.dark) .code-light .hljs-meta, :root:not(.dark) .code-light .hljs-meta .hljs-keyword { color: #0550ae; }
+:root:not(.dark) .code-light .hljs-name, :root:not(.dark) .code-light .hljs-tag { color: #116329; }
+:root:not(.dark) .code-light .hljs-subst, :root:not(.dark) .code-light .hljs-variable { color: #24292f; }
+:root:not(.dark) .code-light .hljs-addition { color: #116329; background: #dafbe1; }
+:root:not(.dark) .code-light .hljs-deletion { color: #82071e; background: #ffebe9; }
+:root:not(.dark) .code-light .hljs-emphasis { font-style: italic; }
+:root:not(.dark) .code-light .hljs-strong { font-weight: 600; }
