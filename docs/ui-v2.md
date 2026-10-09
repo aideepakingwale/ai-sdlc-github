@@ -35,7 +35,7 @@ Only an explicit choice is remembered; the default is not stored. The choice is 
 ```
 
 - **Sidebar** (`v2/Sidebar.tsx`): project switcher with a **New project** button right under it (managers and admins), All projects, Project Explorer (PM/admin), Pipeline, the stages
-  with their status, Configure (Project Context, Quality, Workflow designer) and the six project tools. The collapse
+  with their status, Configure (Project Context, Quality, Connections, Workflow designer) and the six project tools. The collapse
   button in the global bar hides it (`sdlc:v2:side-collapsed`).
 - **Global bar** (`v2/GlobalBar.tsx`): breadcrumb, technology-stack popover, Project panel toggle, Help, notifications,
   account menu (switch UI, delete project, sign out).
@@ -85,7 +85,7 @@ review, amending, outdated; most urgent first); Project context graph and Workfl
 
 **Dashboard.** The existing `Dashboard` when no project is selected.
 
-**Configuration pages.** Project Context, Quality, Governance, Observability, Project Explorer and the Workflow
+**Configuration pages.** Project Context, Quality, Connections (per-project Git, Jira, Confluence and knowledge base, see [connections.md](connections.md)), Governance, Observability, Project Explorer and the Workflow
 designer render in the centre (the components' `page` prop turns the modal chrome off). Navigating anywhere else
 closes them. Saving or closing the designer returns to the pipeline page; a newly created project opens the designer
 page straight away.

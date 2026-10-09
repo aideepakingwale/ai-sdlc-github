@@ -86,6 +86,23 @@ Click any circle for what it uses and what uses it; **Open this stage** jumps to
 zoom and pan as in the stage view. `GET /api/projects/{id}/context/graph` serves it (project read
 permission; at most the 150 newest artifacts, flagged when truncated).
 
+## Connections
+
+Where a project's context comes from, and where its output goes, is set per project under **Configure → Connections**
+(full guide: [connections.md](connections.md)).
+
+| Connection | Effect on context |
+|---|---|
+| Git repository | Where generated code and documents are committed. Not read into prompts. |
+| Jira / Confluence | Where epics, stories and pages are published. Not read into prompts. |
+| Knowledge base | **Shapes retrieval.** The project can switch off organisation standards, approved artefacts or codebase files and set how many snippets a search returns. |
+
+The knowledge-base switches change the **Retrieved knowledge** layer of every stage (preview and actual), so a source
+switched off simply does not appear in the stage's context. Use **Test connection** on the knowledge-base section to see
+how much of each source is indexed and whether a sample search finds anything.
+
+Team memory (see [memory.md](memory.md)) is its own layer, **Team memory**, drawn beside the canon.
+
 ## Retrieval is upstream-only
 
 Checking the graph against a real, generated project showed that "Retrieved knowledge" included the stage's
