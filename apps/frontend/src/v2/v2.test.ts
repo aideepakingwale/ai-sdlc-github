@@ -89,3 +89,12 @@ describe('portfolio table', () => {
     expect(portfolioTotals([p({ approved: 2, awaitingReview: true }), p({ approved: 1, escalated: true })])).toEqual({ projects: 2, awaiting: 1, escalated: 1, approved: 3 });
   });
 });
+
+import { autoWidth } from './SplitPair';
+describe('split pair width', () => {
+  it('is a share of the container, never below the default, and capped', () => {
+    expect(autoWidth(600, 300, 160, 900)).toBe(300);
+    expect(autoWidth(1500, 300, 160, 900)).toBe(570);
+    expect(autoWidth(4000, 300, 160, 900)).toBe(900);
+  });
+});

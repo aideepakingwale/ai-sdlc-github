@@ -382,6 +382,9 @@ test.describe('codebase', () => {
     await expect(page.getByTestId('v2-codebase-title')).toHaveText('app.zip');
     await expect(page.getByTestId('v2-codebase-sub')).toContainText('3 files indexed · uploaded');
     await expect(page.getByTestId('v2-codebase-copy')).toBeVisible();
+    // a long path is shortened in the middle and the whole path is on hover
+    const pathEl = page.getByTestId('v2-codebase-tab').locator('[data-full="src/main/App.java"]');
+    await expect(pathEl).toHaveAttribute('title', 'src/main/App.java');
     await expect(page.getByTestId('v2-codebase-tab')).toContainText('class App');
     const left = page.getByTestId('v2-split-left');
     await expect(left).toBeVisible();
@@ -391,6 +394,12 @@ test.describe('codebase', () => {
     const w1 = (await left.boundingBox())!.width;
     expect(w1).toBeGreaterThan(w0 + 40);
     await page.getByTestId('v2-split-inner').dblclick();
+    // a wider pane gives the tree more room, so names show in full
+    const narrow = (await left.boundingBox())!.width;
+    await page.getByTestId('v2-pane-full').click();
+    await expect.poll(async () => (await left.boundingBox())!.width).toBeGreaterThan(narrow);
+    await expect(page.getByTestId('v2-code-tree').locator('[data-full="Util.java"]')).toHaveText('Util.java');
+    await page.getByTestId('v2-pane-full').click();
     expect((await left.boundingBox())!.width).toBeCloseTo(300, -1);
     page.once('dialog', (d) => void d.accept());
     await page.getByTestId('v2-codebase-remove').click();

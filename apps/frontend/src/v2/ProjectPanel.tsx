@@ -14,6 +14,7 @@ import { allDirs, filterTree } from '../lib/codeTree';
 import { ancestorsOf, auditCategory, auditCsv, buildPathTree, firstFilePath, formatWhen, languageMix, AUDIT_CATEGORIES, type AuditCategory } from './projectPanelLib';
 
 const MIX_COLORS = ['bg-brand-500', 'bg-navy', 'bg-bared-500', 'bg-slate-400', 'bg-brand-300'];
+import MiddleText from './MiddleText';
 import { Pill, StageDot, stageTone } from './bits';
 import SplitPair from './SplitPair';
 import { PROJECT_TOOLS } from './Sidebar';
@@ -134,7 +135,7 @@ function TreeNodes({ node, open, toggle, selected, onSelect, searching, lines }:
         <li key={c.path}>
           <button type="button" onClick={() => onSelect(c.path)} aria-current={selected === c.path} data-file={c.path}
             className={`flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 pl-6 text-left text-[15px] hover:bg-slate-100 ${selected === c.path ? 'bg-brand-100 text-brand-700' : ''}`}>
-            <span aria-hidden="true" className="inline-block h-2.5 w-2.5 shrink-0 rounded-[2px] border border-slate-500" /><span className="min-w-0 flex-1 truncate">{c.name}</span>
+            <span aria-hidden="true" className="inline-block h-2.5 w-2.5 shrink-0 rounded-[2px] border border-slate-500" /><MiddleText text={c.name} title={c.path} className="flex-1" />
             {(lines?.get(c.path) ?? 0) > 0 && <span className="shrink-0 rounded-full bg-slate-100 px-1.5 text-[10px] text-slate-500" title="Lines">{lines!.get(c.path)}</span>}
           </button>
         </li>
@@ -252,7 +253,7 @@ function ExistingCodebase({ projectId, canWrite, canManage, onChanged }: { proje
         <div className="mt-3">
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search file names…" aria-label="Search the codebase"
             className="mb-2 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-sm focus:border-brand-500 focus:outline-none" />
-          <SplitPair storageKey="sdlc:v2:codebase-split" def={300} min={160} max={560} label="Resize the file tree"
+          <SplitPair storageKey="sdlc:v2:codebase-split" def={300} min={160} max={900} label="Resize the file tree"
             left={(
             <div className="h-[30rem] overflow-auto rounded-xl border border-slate-300 bg-white p-2" data-testid="v2-code-tree">
               {shown ? <TreeNodes node={shown} open={open} toggle={toggle} selected={selected} onSelect={setSelected} searching={Boolean(query.trim())} lines={lines} /> : <div className="p-2 text-xs text-slate-500">No file matches.</div>}
@@ -264,7 +265,7 @@ function ExistingCodebase({ projectId, canWrite, canManage, onChanged }: { proje
               {sel && (
                 <>
                   <div className="mb-2 flex items-center gap-2">
-                    <span className="min-w-0 flex-1 truncate font-mono text-xs text-slate-500" title={sel.path}>{sel.path}</span>
+                    <MiddleText text={sel.path} className="flex-1 font-mono text-xs text-slate-500" />
                     <button type="button" onClick={() => void navigator.clipboard?.writeText(content.data?.file.content ?? '')} className="rounded-lg border border-slate-300 px-3 py-1 text-sm text-slate-800 hover:border-brand-400" data-testid="v2-codebase-copy">Copy</button>
                   </div>
                   <a href={`/api/projects/${projectId}/codebase/${sel.id}/download`} download={sel.path.split('/').pop()} className="mb-3 inline-block rounded-lg border border-slate-300 px-3 py-1 text-sm text-slate-800 hover:border-brand-400">Download</a>
