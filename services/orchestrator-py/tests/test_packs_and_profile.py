@@ -2,6 +2,7 @@
 offered when a project reaches solution architecture and technical design."""
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -72,11 +73,60 @@ def test_the_library_is_broad_and_internally_consistent():
     assert {p["id"] for p in packs if p["baseline"]} >= {"security-baseline", "api-standards", "testing-quality", "code-style-naming"}
 
 
+AVIATION = Path(__file__).resolve().parent.parent / "packs" / "organisation" / "aviation"      # organisation packs, imported by an administrator
+AVIATION_VOCAB = {"industries": {"aviation"}, "regulations": {"easa-part-is", "do-178c", "aviation-sms", "eu-261"}}
+
+
 def test_every_regulation_and_industry_in_the_vocabulary_has_a_pack():
     packs = rp.builtin_packs()
     tagged = {k: {t for p in packs for t in p["tags"][k]} for k in ("industries", "regulations")}
-    assert {i["id"] for i in prof.VOCAB["industry"]} <= tagged["industries"]
-    assert {r["id"] for r in prof.VOCAB["regulation"]} <= tagged["regulations"]
+    assert {i["id"] for i in prof.VOCAB["industry"]} - AVIATION_VOCAB["industries"] <= tagged["industries"]
+    assert {r["id"] for r in prof.VOCAB["regulation"]} - AVIATION_VOCAB["regulations"] <= tagged["regulations"]
+
+
+def _aviation_packs() -> list[dict]:
+    import yaml
+
+    raw = [yaml.safe_load(f.read_text(encoding="utf-8")) for f in sorted(AVIATION.glob("*.yaml"))]
+    known = {p["id"] for p in rp.builtin_packs()} | {d["id"] for d in raw}
+    return [rp.normalise_pack(d, known_ids=known) for d in raw]
+
+
+def test_the_aviation_organisation_packs_are_valid_and_cover_their_vocabulary():
+    packs = _aviation_packs()
+    assert {f.stem for f in AVIATION.glob("*.yaml")} == {p["id"] for p in packs} and len(packs) == 12
+    tagged = {k: {t for p in packs for t in p["tags"][k]} for k in ("industries", "regulations")}
+    assert AVIATION_VOCAB["industries"] <= tagged["industries"] and AVIATION_VOCAB["regulations"] <= tagged["regulations"]
+    cat = {p["id"]: p for p in rp.builtin_packs()} | {p["id"]: p for p in packs}
+    for p in packs:
+        assert len(rp.resolve_entries(cat, p["id"])) >= 5, p["id"]
+
+
+async def test_aviation_packs_are_recommended_for_an_airline_profile_and_applied_from_the_organisation_library():
+    db, canon, _ = setup()
+    admin = PackAdmin(db, FakeAudit(), canon.catalog)
+    for p in sorted(_aviation_packs(), key=lambda x: x["kind"] == "bundle"):      # a set can only include packs that already exist
+        await admin.save(ADMIN, {k: p[k] for k in ("id", "name", "description", "kind", "baseline", "tags", "includes", "entries")})
+    cat = await canon.catalog.all()
+    assert cat["do-178c-airborne-software"]["source"] == "org"
+    values = {"industry": ["aviation"], "regulation": ["gdpr", "pci-dss", "eu-261"], "domain": ["payments", "public-web", "customer-pii"], "region": ["eu"], "sensitivity": []}
+    rec = rp.recommend(cat, values, set())
+    assert rec["bundles"][0]["id"] == "bundle-airline-digital-commerce" and rec["bundles"][0]["score"] >= 3
+    out = await canon.apply_pack("p1", PM, "bundle-airline-digital-commerce")
+    assert out["added"] > 40
+    origins = {r["origin"].split("@")[0] for r in db.canon}
+    assert {"pack:industry-aviation-airline", "pack:airline-commerce-ndc", "pack:gdpr"} <= origins
+    ops = rp.recommend(cat, {"industry": ["aviation"], "regulation": ["easa-part-is", "aviation-sms"], "domain": ["flight-operations", "aircraft-maintenance"], "region": [], "sensitivity": []}, set())
+    assert ops["bundles"][0]["id"] == "bundle-airline-operations"
+    soft = rp.recommend(cat, {"industry": ["aviation"], "regulation": ["do-178c"], "domain": ["iot-devices"], "region": [], "sensitivity": []}, set())
+    assert soft["bundles"][0]["id"] == "bundle-airborne-software"
+
+
+def test_documents_about_an_airline_identify_aviation_values():
+    text = ("The airline needs a new crew scheduling tool for operations control. Flight operations at the airport depend on it. "
+            "The software must follow EASA Part-IS and, for the aircraft interface, DO-178C. Denied boarding and EC 261/2004 claims are in scope.")
+    found = {(f["kind"], f["value"]) for f in sa.detect_profile_from_text(text)}
+    assert {("industry", "aviation"), ("regulation", "easa-part-is"), ("regulation", "do-178c"), ("regulation", "eu-261"), ("domain", "flight-operations")} <= found
 
 
 def test_bundles_expand_in_order_without_repeating_a_rule():

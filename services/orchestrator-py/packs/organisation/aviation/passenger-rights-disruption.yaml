@@ -1,0 +1,14 @@
+id: passenger-rights-disruption
+name: "Passenger rights and disruption handling"
+description: "Delay, cancellation, denied boarding, assistance and compensation, including passengers with reduced mobility."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [aviation], regulations: [eu-261], domains: [public-web, flight-operations]}
+entries:
+  - {category: rule, priority: must, stage: 1, title: "State which passenger-rights rules apply", body: "Requirements for delay, cancellation, denied boarding, re-routing, care and compensation say which regimes apply (for example Regulation (EC) 261/2004, its UK equivalent and local rules) and who owns their interpretation."}
+  - {category: rule, priority: must, stage: 3, title: "Rights calculations are deterministic and explainable", body: "Eligibility, distance bands, delay length and extraordinary-circumstance decisions are computed by versioned rules. Inputs and outcome are stored so a claim or a regulator query can be answered."}
+  - {category: rule, priority: must, stage: 3, title: "Notify affected passengers, once", body: "Passengers affected by a disruption are told through their chosen channel with their options and rights. Sending is idempotent, so nobody gets duplicates, and a record shows what was sent and when."}
+  - {category: rule, priority: must, stage: 3, title: "Assistance needs survive re-accommodation", body: "Special-assistance needs travel with the booking through disruption and re-accommodation, and re-booking never drops them. Passenger interfaces meet the accessibility rules."}
+  - {category: rule, priority: should, stage: 4, title: "Test the disruption surge", body: "Customer-facing re-booking and information services are load-tested for the surge a major disruption produces, with queueing and graceful degradation."}
+  - {category: rule, priority: should, stage: 3, title: "Compensation and refunds are safe to retry", body: "Payments and vouchers issued as compensation can be retried safely and cannot be issued twice for the same claim."}

@@ -56,12 +56,19 @@ export default function OrgPacks() {
           className={`rounded-full px-3 py-1 text-xs font-medium ${kind === f.id ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{f.label}</button>)}
         <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search packs…" aria-label="Search packs" className="ml-auto min-w-[12rem] rounded-lg border border-slate-300 px-2 py-1 text-sm focus:border-brand-500 focus:outline-none" />
         {canEdit && <button type="button" className={primary} onClick={() => setEditor({ text: NEW_PACK, title: 'New pack' })} data-testid="v2-org-pack-new">New pack</button>}
+        {canEdit && (
+          <label className={`${btn} cursor-pointer`}>
+            Import file
+            <input type="file" accept=".yaml,.yml,.json,text/yaml,application/json" className="sr-only" data-testid="v2-org-pack-file" aria-label="Import a pack file"
+              onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void f.text().then((text) => setEditor({ text, title: `Import ${f.name}` })); }} />
+          </label>
+        )}
       </div>
       {note && <div className="mb-2 text-xs text-slate-600" role="status" data-testid="v2-org-pack-note">{note}</div>}
       {editor && (
         <div className="mb-3 rounded-xl border border-brand-300 bg-white p-3" data-testid="v2-org-pack-editor">
           <div className="mb-1 text-sm font-semibold text-slate-800">{editor.title}</div>
-          <p className="mb-1.5 text-xs text-slate-500">A pack is YAML. <code>kind</code> is practice, regulation, industry or bundle; a bundle lists <code>includes</code> (pack ids) instead of rules. Tags (<code>tags: industries / regulations / domains</code>) decide when it is recommended.</p>
+          <p className="mb-1.5 text-xs text-slate-500">A pack is YAML (a set must be saved after the packs it includes). <code>kind</code> is practice, regulation, industry or bundle; a bundle lists <code>includes</code> (pack ids) instead of rules. Tags (<code>tags: industries / regulations / domains</code>) decide when it is recommended.</p>
           <textarea value={editor.text} onChange={(e) => setEditor({ ...editor, text: e.target.value })} rows={14} spellCheck={false} aria-label="Pack file" data-testid="v2-org-pack-text"
             className="w-full rounded-lg border border-slate-300 p-2 font-mono text-xs focus:border-brand-500 focus:outline-none" />
           <div className="mt-2 flex gap-2">

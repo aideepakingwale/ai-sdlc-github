@@ -29,7 +29,7 @@ VOCAB: dict[str, list[dict[str, str]]] = {
         {"id": "telecom", "label": "Telecommunications"}, {"id": "energy-utilities", "label": "Energy and utilities"},
         {"id": "manufacturing", "label": "Manufacturing"}, {"id": "automotive", "label": "Automotive"},
         {"id": "logistics-transport", "label": "Logistics and transport"}, {"id": "media-entertainment", "label": "Media and entertainment"},
-        {"id": "saas-technology", "label": "Software and SaaS"},
+        {"id": "saas-technology", "label": "Software and SaaS"}, {"id": "aviation", "label": "Aviation and airlines"},
     ],
     "regulation": [
         {"id": "gdpr", "label": "GDPR"}, {"id": "uk-gdpr", "label": "UK GDPR"}, {"id": "ccpa-cpra", "label": "CCPA / CPRA"},
@@ -39,6 +39,8 @@ VOCAB: dict[str, list[dict[str, str]]] = {
         {"id": "fedramp", "label": "FedRAMP / NIST 800-53"}, {"id": "ferpa-coppa", "label": "FERPA / COPPA"},
         {"id": "iec-62443", "label": "IEC 62443"}, {"id": "unece-r155", "label": "UNECE R155 / ISO 21434"},
         {"id": "eu-ai-act", "label": "EU AI Act"}, {"id": "wcag", "label": "Accessibility (WCAG / Section 508)"},
+        {"id": "easa-part-is", "label": "EASA Part-IS / DO-326A (aviation cybersecurity)"}, {"id": "do-178c", "label": "DO-178C (airborne software)"},
+        {"id": "aviation-sms", "label": "Aviation safety management (ICAO Annex 19 / EASA)"}, {"id": "eu-261", "label": "Passenger rights (EC 261/2004)"},
     ],
     "domain": [
         {"id": "payments", "label": "Takes or moves payments"}, {"id": "customer-pii", "label": "Holds customer personal data"},
@@ -47,7 +49,8 @@ VOCAB: dict[str, list[dict[str, str]]] = {
         {"id": "iot-devices", "label": "Connected devices"}, {"id": "ot-industrial", "label": "Industrial or operational technology"},
         {"id": "multi-tenant-saas", "label": "Multi-tenant SaaS"}, {"id": "data-platform", "label": "Data or analytics platform"},
         {"id": "event-driven", "label": "Event-driven or messaging"}, {"id": "regulatory-reporting", "label": "Regulatory or financial reporting"},
-        {"id": "internal-tools", "label": "Internal tool"},
+        {"id": "internal-tools", "label": "Internal tool"}, {"id": "flight-operations", "label": "Flight, crew or airline operations"},
+        {"id": "aircraft-maintenance", "label": "Aircraft maintenance and airworthiness records"},
     ],
     "sensitivity": [
         {"id": "public", "label": "Public"}, {"id": "internal", "label": "Internal"}, {"id": "confidential", "label": "Confidential"},

@@ -133,18 +133,21 @@ _INDUSTRY_WORDS = {
     "banking": r"\b(bank|banking|lender|lending|mortgage|loan|retail banking|core banking)\b", "insurance": r"\b(insur\w*|policyholder|underwrit\w*|claims? handling)\b",
     "capital-markets": r"\b(trading|broker|capital markets?|order book|securities)\b", "payments-fintech": r"\b(fintech|payment (provider|service|processor)|wallet|acquirer)\b",
     "healthcare": r"\b(patient|clinical|hospital|clinician|ehr|electronic health)\b", "life-sciences": r"\b(pharma\w*|biotech|clinical trial|gxp|laborator\w+)\b",
-    "retail-ecommerce": r"\b(e-?commerce|retail\w*|shopper|checkout|online store|basket)\b", "travel-hospitality": r"\b(hotel|airline|booking engine|travel|hospitality)\b",
+    "retail-ecommerce": r"\b(e-?commerce|retail\w*|shopper|checkout|online store|basket)\b", "travel-hospitality": r"\b(hotel|booking engine|travel|hospitality)\b",
     "public-sector": r"\b(citizen|government|public sector|ministry|council|municipal\w*)\b", "education": r"\b(student|school|universit\w+|learner|teacher|edtech)\b",
     "telecom": r"\b(telecom\w*|subscriber|mobile network|5g|carrier|msisdn)\b", "energy-utilities": r"\b(utility|utilities|power grid|smart meter|energy supplier|scada)\b",
     "manufacturing": r"\b(manufactur\w+|factory|production line|mes|bill of materials)\b", "automotive": r"\b(vehicle|automotive|oem|connected car)\b",
     "logistics-transport": r"\b(logistics|shipment|freight|carrier tracking|fleet|warehouse)\b", "media-entertainment": r"\b(streaming|broadcast\w*|publisher|content rights|media company)\b",
     "saas-technology": r"\b(saas|multi-?tenant|software as a service)\b",
+    "aviation": r"\b(airlines?|aircraft|airports?|flight (operations?|crew|plans?|schedules?)|pilots?|cabin crew|air traffic|easa|icao|iata)\b",
 }
 _REGULATION_WORDS = {
     "gdpr": r"\bgdpr\b|general data protection", "uk-gdpr": r"\buk gdpr\b|data protection act 2018", "ccpa-cpra": r"\bccpa\b|\bcpra\b", "pci-dss": r"\bpci[- ]?dss\b|\bpci\b",
     "hipaa": r"\bhipaa\b", "sox": r"\bsox\b|sarbanes", "soc2": r"\bsoc ?2\b", "iso-27001": r"\biso[ /]?(iec )?27001\b", "dora": r"\bdora\b|digital operational resilience",
     "nis2": r"\bnis ?2\b", "psd2": r"\bpsd ?2\b|open banking", "gxp-part11": r"\bgxp\b|21 cfr|part 11", "fedramp": r"\bfedramp\b|nist 800-53", "ferpa-coppa": r"\bferpa\b|\bcoppa\b",
     "iec-62443": r"\b62443\b", "unece-r155": r"\br155\b|iso/sae 21434", "eu-ai-act": r"\bai act\b", "wcag": r"\bwcag\b|section 508|accessib\w+",
+    "easa-part-is": r"\bpart-is\b|\bdo-?326a?\b|\bed-?202a?\b", "do-178c": r"\bdo-?178c?\b|\bed-?12c?\b",
+    "aviation-sms": r"safety management system|\bannex 19\b", "eu-261": r"\b261/2004\b|\b(ec|eu) ?261\b|denied boarding",
 }
 _DOMAIN_WORDS = {
     "payments": r"\b(payments?|card payments?|credit card|checkout)\b", "customer-pii": r"\b(personal data|customer data|pii|personally identifiable)\b",
@@ -152,6 +155,8 @@ _DOMAIN_WORDS = {
     "mobile-app": r"\b(mobile app|ios|android)\b", "ai-ml": r"\b(machine learning|ml model|llm|generative ai|ai feature)\b", "iot-devices": r"\b(iot|connected devices?|telemetry from devices)\b",
     "ot-industrial": r"\b(scada|plc|operational technology|industrial control)\b", "multi-tenant-saas": r"\b(multi-?tenant|tenants?)\b",
     "event-driven": r"\b(event-driven|message queue|kafka|event bus)\b", "regulatory-reporting": r"\bregulatory (reports?|reporting)\b",
+    "flight-operations": r"\b(crew (scheduling|rostering|pairing)|rostering|operations control|ops control|flight operations|disruption management)\b",
+    "aircraft-maintenance": r"\b(continuing airworthiness|part-?145|camo|maintenance records?|airworthiness|mro)\b",
 }
 _REGION_WORDS = {"eu": r"\b(european union|eu member|\beu\b|eea)\b", "uk": r"\b(united kingdom|\buk\b)\b", "us": r"\b(united states|u\.s\.|\bus\b|usa)\b",
                  "canada": r"\bcanad\w+\b", "apac": r"\b(apac|asia[- ]pacific|singapore|australia)\b", "middle-east": r"\b(middle east|gcc|uae|saudi)\b"}

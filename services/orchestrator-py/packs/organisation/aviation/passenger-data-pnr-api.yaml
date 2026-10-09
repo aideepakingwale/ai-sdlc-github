@@ -1,0 +1,14 @@
+id: passenger-data-pnr-api
+name: "Passenger data (PNR and API)"
+description: "Handling of passenger name records, advance passenger information, documents, special-service requests and loyalty data."
+kind: practice
+version: 1
+baseline: false
+tags: {industries: [aviation], regulations: [gdpr], domains: [customer-pii]}
+entries:
+  - {category: rule, priority: must, stage: 2, title: "Classify passenger data", body: "Treat PNR data, advance passenger information, passport and visa details, payment details, special-service requests and loyalty profiles as personal data. Mark the special categories (a service request can reveal health or religion) and give them stronger protection."}
+  - {category: rule, priority: must, stage: 3, title: "Each flow takes only the fields it needs", body: "Every interface, report and screen lists the fields it needs. Do not copy complete records into downstream systems, analytics or test environments."}
+  - {category: rule, priority: must, stage: 3, title: "Design retention and purging in", body: "State how long each class of passenger data is kept in each system, including archives and backups, and implement automatic purging with an audit record."}
+  - {category: rule, priority: must, stage: 3, title: "Control transfers to authorities and partners", body: "Data sent to border, security and customs authorities, to codeshare and interline partners and to processors goes only through approved, logged channels, in the formats and to the destinations the law and the contracts allow. Show them in the data-flow diagram."}
+  - {category: rule, priority: must, stage: 4, title: "No passenger data in logs or non-production", body: "Mask or tokenise names, document numbers, contact details and payment data in logs and tickets, and use synthetic data in test and demonstration environments."}
+  - {category: rule, priority: should, stage: 3, title: "Support data subject rights across stores", body: "Access, correction and erasure requests can be served across booking, loyalty, customer-service and analytics stores. The design says how."}

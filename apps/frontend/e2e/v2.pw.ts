@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import { crc32 } from 'node:zlib';
 
@@ -601,6 +603,24 @@ test.describe('profile, advice and organisation packs', () => {
     await expect(page.getByTestId('v2-org-pack-note')).toContainText('id');
     await page.request.delete(`/api/org/packs/${id}`);
   });
+
+  test('an organisation pack file is imported from disk', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const id = `e2e-airborne-${Date.now()}`;
+    const source = readFileSync(join(process.cwd(), '../../services/orchestrator-py/packs/organisation/aviation/do-178c-airborne-software.yaml'), 'utf8');
+    await page.getByTestId('v2-nav-governance').click();
+    await page.getByTestId('v2-gov-org').click();
+    await page.getByTestId('v2-org-packs').click();
+    await page.getByTestId('v2-org-pack-file').setInputFiles({ name: 'pack.yaml', mimeType: 'text/yaml', buffer: Buffer.from(source.replace(/^id: .*/m, `id: ${id}`)) });
+    await expect(page.getByTestId('v2-org-pack-text')).toHaveValue(new RegExp(`id: ${id}`));
+    await page.getByTestId('v2-org-pack-save').click();
+    await expect(page.getByTestId(`v2-org-pack-${id}`)).toContainText('Your organisation');
+    // the aviation vocabulary the pack is tagged with is part of the profile choices
+    const profile = (await (await page.request.get('/api/org/profile')).json()) as { vocab: { industry: Array<{ id: string }> } };
+    expect(profile.vocab.industry.map((i) => i.id)).toContain('aviation');
+    await page.request.delete(`/api/org/packs/${id}`);
+  });
+
 });
 
 test.describe('organisation rules and presets', () => {

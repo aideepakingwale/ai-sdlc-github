@@ -1,0 +1,16 @@
+id: do-178c-airborne-software
+name: "Airborne software (DO-178C / ED-12C)"
+description: "Software life cycle objectives for software that is part of an aircraft or its equipment. Applies only to airborne software; confirm the exact objectives and levels with your certification authority."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [aviation], regulations: [do-178c], domains: [iot-devices]}
+entries:
+  - {category: rule, priority: must, stage: 1, title: "Establish the software level and certification basis first", body: "Record the Design Assurance Level (A to E) assigned to each software item by the system safety assessment, the applicable certification basis and the point of contact with the certification authority. Do not infer the level in the design; everything below depends on it."}
+  - {category: rule, priority: must, stage: 1, title: "Plan before building", body: "Produce the plan for software aspects of certification, and the development, verification, configuration management and quality assurance plans, with the standards for requirements, design and code, before development starts."}
+  - {category: rule, priority: must, stage: 3, title: "Requirements trace in both directions", body: "System requirements, high-level requirements, low-level requirements, code and tests are traced in both directions. Derived requirements are identified and fed back to the system safety assessment."}
+  - {category: rule, priority: must, stage: 3, title: "No unintended function", body: "Every requirement and every piece of code has a reason. Dead code, deactivated code and unreferenced requirements are identified and justified or removed."}
+  - {category: rule, priority: must, stage: 4, title: "Verify against requirements and against structure", body: "Tests are requirements-based and include robustness cases. Structural coverage is measured against the objectives for the software level (statement, decision, and modified condition/decision coverage at the highest level), and every gap is analysed, not ignored."}
+  - {category: rule, priority: must, stage: 4, title: "Independence where the level requires it", body: "Where the objectives for the level require independence between the author and the verifier, record who verified each item and show they did not write it."}
+  - {category: rule, priority: must, stage: 5, title: "Control the configuration", body: "All life cycle data, tools and builds are under configuration control with baselines, change control and problem reporting. A build can be reproduced exactly from its baseline."}
+  - {category: rule, priority: must, stage: 5, title: "Qualify tools that can insert or hide errors", body: "Assess development and verification tools against the tool qualification criteria (DO-330) and qualify those that need it. Record tool versions in the configuration index."}

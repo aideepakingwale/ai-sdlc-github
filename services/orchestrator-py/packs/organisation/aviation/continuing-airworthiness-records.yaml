@@ -1,0 +1,14 @@
+id: continuing-airworthiness-records
+name: "Maintenance and airworthiness records"
+description: "Record integrity, certifying-staff sign-off, part traceability and directive tracking for maintenance and continuing airworthiness systems."
+kind: practice
+version: 1
+baseline: false
+tags: {industries: [aviation], regulations: [], domains: [aircraft-maintenance]}
+entries:
+  - {category: rule, priority: must, stage: 3, title: "Records are complete, durable and attributable", body: "Maintenance and airworthiness records (task cards, release certificates, component history, directive status) are append-only with attribution, kept for the required period, and retrievable in readable form for all of it."}
+  - {category: rule, priority: must, stage: 3, title: "Sign-off is bound to an authorised person", body: "Sign-offs by certifying staff are bound to an identified, authorised person, with their authorisation scope checked at the time of signing. They cannot be applied on someone else's behalf."}
+  - {category: rule, priority: must, stage: 3, title: "Parts and aircraft stay traceable", body: "Every installed component links to its identity, history and approval. The design preserves that traceability when parts are swapped, repaired or moved between aircraft."}
+  - {category: rule, priority: must, stage: 3, title: "Directives and limits are enforced", body: "Mandatory directives, life limits and inspection intervals are data with due dates and counters. Overdue items block release to service where the rules require it."}
+  - {category: rule, priority: must, stage: 6, title: "Migrations are reconciled and signed off", body: "When maintenance data is migrated, reconcile counts, history and open items between the old and new systems, and obtain sign-off from the responsible maintenance manager before the source is retired."}
+  - {category: rule, priority: should, stage: 2, title: "Name the data standards in use", body: "State the data standards used (for example the ATA chapter structure and manufacturers' data formats) and how updates to manufacturers' data are controlled."}

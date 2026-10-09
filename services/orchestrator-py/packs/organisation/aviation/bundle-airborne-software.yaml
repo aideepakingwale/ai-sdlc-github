@@ -1,0 +1,17 @@
+id: bundle-airborne-software
+name: "Airborne and aircraft-related software"
+description: "Software that is part of an aircraft or its equipment: DO-178C life cycle, airworthiness security and safety management."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries: [aviation]
+  regulations: [do-178c, easa-part-is, aviation-sms]
+  domains: [iot-devices]
+includes:
+- do-178c-airborne-software
+- aviation-cybersecurity
+- aviation-safety-management
+- security-baseline
+- testing-quality
+- architecture-documentation

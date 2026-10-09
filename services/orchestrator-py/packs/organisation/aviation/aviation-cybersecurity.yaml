@@ -1,0 +1,15 @@
+id: aviation-cybersecurity
+name: "Aviation cybersecurity (EASA Part-IS, DO-326A / ED-202A)"
+description: "Information security risks that can affect aviation safety, and the airworthiness security process for aircraft-related functions."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [aviation], regulations: [easa-part-is], domains: [flight-operations, iot-devices]}
+entries:
+  - {category: rule, priority: must, stage: 2, title: "Assess information security risks to safety", body: "Assess the risks to assets, services and data that could affect aviation safety, including the interfaces between corporate IT, operational systems and aircraft-related systems. Record how each risk is treated, as the information security risk assessment of Part-IS expects."}
+  - {category: rule, priority: must, stage: 2, title: "Draw and defend the trust boundaries", body: "Show the boundaries between corporate IT, operations systems and anything that touches aircraft data loading, ground support or maintenance equipment, and justify every connection that crosses them."}
+  - {category: rule, priority: must, stage: 3, title: "Follow an airworthiness security process for aircraft-related functions", body: "For anything that is part of, loads data to, or communicates with an aircraft system, follow a security process with a defined security scope, a risk assessment, security requirements and verification that they are met (DO-326A / ED-202A, with the methods of DO-356A / ED-203A)."}
+  - {category: rule, priority: must, stage: 3, title: "Detect, respond and report", body: "Design logging and alerting so security events with possible safety or operational effect are detected and can be reported to the authority and partners as required. Name who reports what, to whom."}
+  - {category: rule, priority: must, stage: 2, title: "Set security requirements for suppliers and contractors", body: "Designs and contracts for suppliers, handling agents and maintenance providers state security requirements and access limits, and how their access is monitored and withdrawn."}
+  - {category: rule, priority: should, stage: 5, title: "Sign and verify what is loaded onto operational equipment", body: "Software and database loads to operational equipment are signed, verified before use, and logged with who approved them."}
+  - {category: rule, priority: should, stage: 4, title: "Test the safety-relevant controls", body: "Include penetration, fault-injection or abuse-case tests for the interfaces identified as safety-relevant, and repeat them when those interfaces change."}

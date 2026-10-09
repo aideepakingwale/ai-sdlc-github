@@ -70,6 +70,17 @@ Stack, **Profile**, Rules, Templates, **What agents see**.
   administrator (Governance -> Organisation -> Rule packs) adds packs, customises a sample for everyone, hides what does not apply, imports and
   exports YAML, and restores a sample. Saving bumps the version; rules added from a pack record `pack:{id}@{version}`. Adding is idempotent (a
   rule whose title is already there is skipped).
+* **Aviation packs (organisation packs)**: `services/orchestrator-py/packs/organisation/aviation/` holds 12 packs an administrator imports into the
+  organisation library: *Airline and aviation systems*, *Airborne software (DO-178C / ED-12C)*, *Aviation cybersecurity (EASA Part-IS, DO-326A /
+  ED-202A)*, *Safety management (ICAO Annex 19 / EASA)*, *Passenger data (PNR and API)*, *Passenger rights and disruption*, *Flight and crew
+  operations*, *Maintenance and airworthiness records*, *Airline commerce, offers and orders*, and three ready-made sets: *Airline digital and
+  commerce*, *Airline operations and maintenance*, *Airborne and aircraft-related software*. They are not built in: import them with
+  `python scripts/import_org_packs.py packs/organisation/aviation` (`--check` validates only; in Docker run it in the orchestrator container), or
+  per file with Governance -> Organisation -> Rule packs -> Import file (save a set after the packs it includes). They are engineering
+  guidance, not a certification or compliance opinion; the airline's certification authority and compliance team decide what applies. The profile
+  vocabulary gained the industry *Aviation and airlines*, the regulations *EASA Part-IS*, *DO-178C*, *Aviation safety management* and *EU passenger rights
+  (261/2004)*, and the domains *Flight, crew or airline operations* and *Aircraft maintenance and airworthiness records*; documents that mention them
+  are identified for confirmation like any other profile value.
 * **Profile** (`profile.py`): industry, regulations, domains, data sensitivity and regions. Three sources, one result: the organisation's default
   (inherited), the project's own values (they win; a value can be left out for one project) and values the platform identifies from the
   documents after stages 1 to 3, which are *proposed for confirmation* (they already shape advice and are marked "Found in your documents").

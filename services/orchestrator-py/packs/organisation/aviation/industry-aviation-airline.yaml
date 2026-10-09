@@ -1,0 +1,16 @@
+id: industry-aviation-airline
+name: "Airline and aviation systems"
+description: "Operational criticality, degraded operation, time and identifiers, and dependency on partners for systems that support an airline."
+kind: industry
+version: 1
+baseline: false
+tags: {industries: [aviation], regulations: [], domains: [flight-operations, customer-pii, event-driven]}
+entries:
+  - {category: rule, priority: must, stage: 2, title: "Name the operational criticality of every system", body: "Classify each system by its effect on flight operations and safety (for example safety-critical, operations-critical, revenue-critical, supporting) and set availability, recovery time and change-control rules from that class. Say the class in the high-level design."}
+  - {category: rule, priority: must, stage: 2, title: "Design for degraded and offline operation", body: "Operational systems (departure control, crew, operations control, airport and ramp tools) state how they behave when a dependency, a network or a station is unavailable. Each has a documented manual fallback and a tested recovery path, including how data entered offline is reconciled."}
+  - {category: rule, priority: must, stage: 3, title: "Time is UTC inside, local at the edge", body: "Store and exchange schedule and event times in UTC, keep the station's local zone separately, and convert only for display. State how flights that cross midnight or a daylight-saving change, and day-of-operation rollovers, are handled. Never compute durations from local times."}
+  - {category: rule, priority: must, stage: 3, title: "Use industry identifiers and message standards deliberately", body: "Identify airports, airlines, aircraft types and flights with the standard IATA and ICAO codes. Name the edition of each message or API standard an interface follows, and keep partner-specific mappings in configuration rather than code."}
+  - {category: rule, priority: should, stage: 2, title: "Map every external dependency", body: "The high-level design lists each external dependency (distribution and booking channels, airport and handling systems, regulators, payment providers, weather and navigation data) with its owner, service level and fallback."}
+  - {category: rule, priority: should, stage: 3, title: "Operational decisions are explainable", body: "Logic that moves passengers, crew or aircraft (re-accommodation, pairing, recovery options) records the inputs and rules used, so an operations controller or an investigator can reconstruct why a decision was suggested."}
+  - {category: rule, priority: should, stage: 3, title: "One system of record per business object", body: "State the system of record for each booking, ticket, flight, crew roster and aircraft status, and how any copy is reconciled. Avoid two writable copies of the same fact."}
+  - {category: rule, priority: should, stage: 6, title: "Respect operational freezes and peak periods", body: "Define change freezes around peak seasons, major events and schedule changes. A release inside a freeze needs an explicit risk acceptance from operations and a rollback that has been tested."}

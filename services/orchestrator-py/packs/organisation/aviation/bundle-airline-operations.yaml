@@ -1,0 +1,20 @@
+id: bundle-airline-operations
+name: "Airline operations and maintenance"
+description: "Operations control, crew, disruption and maintenance systems, with safety management and aviation cybersecurity."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries: [aviation]
+  regulations: [easa-part-is, aviation-sms, nis2, eu-261]
+  domains: [flight-operations, aircraft-maintenance, event-driven]
+includes:
+- bundle-engineering-essentials
+- industry-aviation-airline
+- flight-and-crew-operations
+- continuing-airworthiness-records
+- aviation-safety-management
+- aviation-cybersecurity
+- passenger-rights-disruption
+- nis2
+- resilience-dr

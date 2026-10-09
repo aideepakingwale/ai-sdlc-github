@@ -1,0 +1,15 @@
+id: airline-commerce-ndc
+name: "Airline commerce, offers and orders"
+description: "Pricing, offers and orders, inventory and payment correctness for airline retail and distribution."
+kind: practice
+version: 1
+baseline: false
+tags: {industries: [aviation], regulations: [pci-dss], domains: [payments, public-web]}
+entries:
+  - {category: rule, priority: must, stage: 3, title: "Offers and orders are consistent", body: "Where the platform uses offers and orders (for example in the style of IATA NDC and ONE Order), the price, conditions and validity of an offer are fixed when the order is made. Later changes create a new version, not an edit."}
+  - {category: rule, priority: must, stage: 4, title: "Test fare, tax and fee logic against known cases", body: "Pricing, taxes, fees and fare rules have a suite of known itineraries, currencies and edge cases, run on every change and every rules update."}
+  - {category: rule, priority: must, stage: 3, title: "Booking and payment are idempotent", body: "Retries, timeouts and duplicate submissions cannot create duplicate bookings, tickets or charges. Define the idempotency key and the reconciliation job."}
+  - {category: rule, priority: must, stage: 3, title: "Inventory stays consistent under concurrency", body: "Seat and fare inventory handles simultaneous bookings, holds and expiries without overselling beyond policy, with a defined reconciliation against the inventory system of record."}
+  - {category: rule, priority: must, stage: 3, title: "Keep card data out of scope", body: "Use tokenisation or a hosted payment page so card numbers never reach application logs or databases, and follow the payment card standard's rules."}
+  - {category: rule, priority: should, stage: 3, title: "Ancillaries and bundles are explicit", body: "Each ancillary (bags, seats, meals, insurance) states its tax treatment, refund rules and what happens on a schedule change."}
+  - {category: rule, priority: should, stage: 3, title: "Isolate distribution partners", body: "Authenticate and rate-limit each channel and partner separately, so one partner's load cannot degrade the others."}

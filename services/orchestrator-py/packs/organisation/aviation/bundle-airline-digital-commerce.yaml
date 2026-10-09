@@ -1,0 +1,23 @@
+id: bundle-airline-digital-commerce
+name: "Airline digital and commerce"
+description: "Booking, retail, loyalty and customer apps for an airline, with card payments, passenger data, accessibility and peak resilience."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries: [aviation]
+  regulations: [gdpr, pci-dss, wcag, nis2]
+  domains: [payments, public-web, customer-pii]
+includes:
+- bundle-engineering-essentials
+- industry-aviation-airline
+- airline-commerce-ndc
+- passenger-data-pnr-api
+- passenger-rights-disruption
+- gdpr
+- pci-dss-4
+- accessibility-wcag
+- nis2
+- aviation-cybersecurity
+- performance-capacity
+- resilience-dr

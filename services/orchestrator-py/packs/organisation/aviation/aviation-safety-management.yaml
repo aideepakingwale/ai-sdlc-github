@@ -1,0 +1,14 @@
+id: aviation-safety-management
+name: "Safety management (ICAO Annex 19 / EASA)"
+description: "Safety assessment of change, hazard tracking and safety performance for systems that support flight operations, maintenance and ground handling."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [aviation], regulations: [aviation-sms], domains: [flight-operations]}
+entries:
+  - {category: rule, priority: must, stage: 1, title: "Assess the safety effect of every change", body: "Each change to a system that supports flight operations, maintenance or ground handling records a short safety assessment: what could go wrong, how severe, how likely, the mitigation, and who accepted the residual risk."}
+  - {category: rule, priority: must, stage: 2, title: "Track hazards to closure", body: "Hazards found during requirements, design and testing go into a hazard log with an owner, mitigations and a status. A design is not approved with an open high-severity hazard unless the accountable safety role has accepted it in writing."}
+  - {category: rule, priority: must, stage: 5, title: "Define safety performance indicators", body: "Define indicators and alerts for the system, for example failed operational transactions, manual workarounds and overdue safety actions, so that degradation is visible before it matters."}
+  - {category: rule, priority: should, stage: 1, title: "Make safety reporting easy and fair", body: "Systems that capture occurrence or safety reports protect the reporter as policy requires, are not used punitively, and let a report be raised in a few steps."}
+  - {category: rule, priority: should, stage: 6, title: "Release approval includes a safety sign-off", body: "Release notes list the safety-relevant changes, the assessment reference and the rollback plan. An operations safety representative signs off before deployment."}
+  - {category: rule, priority: should, stage: 6, title: "Learn from occurrences", body: "Reviews of production incidents feed back into the rules, the tests and the hazard log."}

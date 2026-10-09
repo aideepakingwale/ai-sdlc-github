@@ -1,0 +1,14 @@
+id: flight-and-crew-operations
+name: "Flight and crew operations systems"
+description: "Rostering, operations control and flight data systems: rules as data, auditability and safe release into operations."
+kind: practice
+version: 1
+baseline: false
+tags: {industries: [aviation], regulations: [], domains: [flight-operations]}
+entries:
+  - {category: rule, priority: must, stage: 3, title: "Duty and rest rules are data, not code", body: "Flight time limitations, rest, duty and qualification rules for crew are versioned, effective-dated configuration with a test for each rule, so a regulatory change is a controlled data change."}
+  - {category: rule, priority: must, stage: 3, title: "Roster and flight changes are auditable", body: "Every change to a roster, pairing or flight record stores who, when, why and the previous value, and cannot be silently overwritten."}
+  - {category: rule, priority: must, stage: 2, title: "Operations control keeps working", body: "Operations control and crew tools define the maximum acceptable downtime, the manual procedure and the recovery steps, and these are rehearsed before go-live."}
+  - {category: rule, priority: must, stage: 6, title: "Release to operations with a rollback ready", body: "Releases to operational systems have a tested rollback and a go or no-go decision with an operations representative, and are not deployed during a freeze unless explicitly approved."}
+  - {category: rule, priority: should, stage: 3, title: "Real-time data has a defined freshness", body: "State how stale position, status, weather and notice data may be before a screen warns the user, and show the age of the data."}
+  - {category: rule, priority: should, stage: 4, title: "Test with realistic schedules and irregular operations", body: "Functional and performance tests use realistic schedule volumes, irregular operations (diversions, aircraft swaps, late crew) and time-zone edge cases."}
