@@ -133,11 +133,17 @@ export default function CodeView({
   lang,
   filename,
   showDiagnostics = true,
+  tone = 'dark',
+  bare = false,
 }: {
   source: string;
   lang: string;
   filename?: string;
   showDiagnostics?: boolean;
+  /** 'light' is the paler panel the workspace uses in light mode (the viewer keeps its dark look in dark mode). */
+  tone?: 'dark' | 'light';
+  /** Leave out the viewer's own header: the caller shows the path and the Copy / Download buttons. */
+  bare?: boolean;
 }) {
   const [lines, setLines] = useState<string[] | null>(null);
   const [copied, setCopied] = useState(false);
@@ -172,8 +178,8 @@ export default function CodeView({
   const isHighlighted = lines !== null;
 
   return (
-    <div className="overflow-hidden rounded-lg border border-slate-700 bg-slate-900">
-      <div className="flex items-center gap-2 border-b border-slate-700 px-3 py-1.5">
+    <div className={`overflow-hidden rounded-lg border ${tone === 'light' ? 'code-light border-slate-200 bg-slate-100' : 'border-slate-700 bg-slate-900'}`}>
+      {!bare && <div className="flex items-center gap-2 border-b border-slate-700 px-3 py-1.5">
         {filename && <span className="truncate font-mono text-[11px] text-slate-300">{filename}</span>}
         <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
           {lang}
@@ -195,7 +201,7 @@ export default function CodeView({
         >
           {copied ? '✓ copied' : 'copy'}
         </button>
-      </div>
+      </div>}
 
       {diagnostics.length > 0 && (
         <div className="space-y-0.5 border-b border-red-500/30 bg-red-500/10 px-3 py-1.5">
@@ -207,17 +213,17 @@ export default function CodeView({
         </div>
       )}
 
-      <div className="hljs max-h-[65vh] overflow-auto !bg-slate-900 text-xs leading-relaxed">
+      <div className={`hljs max-h-[65vh] overflow-auto text-xs leading-relaxed ${tone === 'light' ? '!bg-transparent' : '!bg-slate-900'}`}>
         <table className="w-full border-collapse">
           <tbody>
             {rendered.map((html, i) => {
               const bad = badLines.has(i + 1);
               return (
                 <tr key={i} className={bad ? 'bg-red-500/15' : undefined}>
-                  <td className="w-10 select-none border-r border-slate-800 px-2 text-right align-top font-mono text-[10px] text-slate-600">
+                  <td className={`w-10 select-none border-r px-2 text-right align-top font-mono text-[10px] ${tone === 'light' ? 'border-slate-200 text-slate-400' : 'border-slate-800 text-slate-600'}`}>
                     {i + 1}
                   </td>
-                  <td className="whitespace-pre px-3 font-mono text-slate-100">
+                  <td className={`whitespace-pre px-3 font-mono ${tone === 'light' ? 'text-slate-700' : 'text-slate-100'}`}>
                     {bad && <span className="mr-1 select-none text-red-400">✗</span>}
                     {isHighlighted ? (
                       <span dangerouslySetInnerHTML={{ __html: html || ' ' }} />

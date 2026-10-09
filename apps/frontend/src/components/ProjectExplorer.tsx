@@ -25,19 +25,19 @@ export default function ProjectExplorer({ onOpen, onClose, page = false }: Props
   return (
     <div className={page ? 'h-full overflow-y-auto bg-slate-50 p-6' : 'fixed inset-0 z-40 flex items-start justify-center bg-black/40 p-6'} onClick={page ? undefined : onClose}>
       <div
-        className={page ? 'mx-auto flex w-full max-w-5xl flex-col rounded-2xl border border-slate-200 bg-slate-50' : 'flex max-h-[88vh] w-full max-w-5xl flex-col rounded-2xl bg-slate-50 shadow-2xl'}
+        className={page ? 'mx-auto flex w-full max-w-5xl flex-col' : 'flex max-h-[88vh] w-full max-w-5xl flex-col rounded-2xl bg-slate-50 shadow-2xl'}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-3">
+        <div className={page ? 'flex items-center justify-between px-1 pb-3' : 'flex items-center justify-between border-b border-slate-200 bg-white px-5 py-3'}>
           <div>
-            <div className="text-sm font-bold text-slate-800">Project Explorer</div>
+            {page ? <h1 className="font-display text-xl font-bold text-navy">Project Explorer</h1> : <div className="text-sm font-bold text-slate-800">Project Explorer</div>}
             <div className="text-xs text-slate-500">
               All projects you manage — stage state, assignees and progress
             </div>
           </div>
-          <button onClick={onClose} className="rounded px-2 py-1 text-slate-400 hover:bg-slate-100">
+          {!page && <button onClick={onClose} className="rounded px-2 py-1 text-slate-400 hover:bg-slate-100">
             ✕
-          </button>
+          </button>}
         </div>
         <div className="grid grid-cols-1 gap-3 overflow-y-auto p-4 md:grid-cols-2">
           {(projects.data?.projects ?? []).map((p) => (

@@ -74,3 +74,18 @@ describe('languageMix', () => {
   });
   it('is empty without files', () => expect(languageMix([])).toEqual([]));
 });
+
+import { portfolioStatus, portfolioTotals, type PortfolioProject } from './PortfolioView';
+describe('portfolio table', () => {
+  const p = (o: Partial<PortfolioProject>) => ({ stages: [{ phase: 1, name: 'a', color: 'slate', status: 'NOT_STARTED' }], approved: 0, awaitingReview: false, escalated: false, ...o }) as PortfolioProject;
+  it('names the state of a project, most urgent first', () => {
+    expect(portfolioStatus(p({ escalated: true, awaitingReview: true }))).toBe('Escalated');
+    expect(portfolioStatus(p({ awaitingReview: true }))).toBe('Awaiting review');
+    expect(portfolioStatus(p({ approved: 1 }))).toBe('Completed');
+    expect(portfolioStatus(p({ stages: [{ phase: 1, name: 'a', color: 'blue', status: 'IN_PROGRESS' }] }))).toBe('In progress');
+    expect(portfolioStatus(p({}))).toBe('Not started');
+  });
+  it('adds up the tiles', () => {
+    expect(portfolioTotals([p({ approved: 2, awaitingReview: true }), p({ approved: 1, escalated: true })])).toEqual({ projects: 2, awaiting: 1, escalated: 1, approved: 3 });
+  });
+});

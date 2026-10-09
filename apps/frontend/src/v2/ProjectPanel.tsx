@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
 import type { ProjectFlow } from '../api/flow';
 import type { Artefact, AuditEvent } from '../api/types';
@@ -12,7 +12,7 @@ import ProjectMemory from './ProjectMemory';
 import { Icon } from '../components/ui/Icon';
 import type { CodeNode, CodeView as CodeViewData } from '../lib/codeTree';
 import { filterTree, iconFor } from '../lib/codeTree';
-import { auditCategory, auditCsv, buildPathTree, languageMix, AUDIT_CATEGORIES, type AuditCategory } from './projectPanelLib';
+import { ancestorsOf, auditCategory, auditCsv, buildPathTree, firstFilePath, formatWhen, languageMix, AUDIT_CATEGORIES, type AuditCategory } from './projectPanelLib';
 
 const MIX_COLORS = ['bg-brand-500', 'bg-navy', 'bg-bared-500', 'bg-slate-400', 'bg-brand-300'];
 import { Pill, StageDot, stageTone } from './bits';
@@ -112,8 +112,8 @@ function ArtefactsTab({ projectId, flow, selectedStage }: { projectId: string; f
 }
 
 /* ---------------------------------------------------------------- codebase */
-function TreeNodes({ node, open, toggle, selected, onSelect, searching }: {
-  node: CodeNode; open: Set<string>; toggle: (p: string) => void; selected: string | null; onSelect: (p: string) => void; searching: boolean;
+function TreeNodes({ node, open, toggle, selected, onSelect, searching, lines }: {
+  node: CodeNode; open: Set<string>; toggle: (p: string) => void; selected: string | null; onSelect: (p: string) => void; searching: boolean; lines?: Map<string, number>;
 }) {
   return (
     <ul className="text-sm">
@@ -121,16 +121,17 @@ function TreeNodes({ node, open, toggle, selected, onSelect, searching }: {
         <li key={c.path}>
           <button type="button" onClick={() => toggle(c.path)} className="flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-left hover:bg-slate-100">
             <Icon name={searching || open.has(c.path) ? 'chevron-down' : 'chevron-right'} size={12} className="text-slate-400" />
-            <Icon name="folder" size={13} className="text-brand-500" />
+            <Icon name="folder" size={13} className="text-amber-500" />
             <span className="truncate">{c.name}</span>
           </button>
-          {(searching || open.has(c.path)) && <div className="ml-4 border-l border-slate-200 pl-1"><TreeNodes node={c} open={open} toggle={toggle} selected={selected} onSelect={onSelect} searching={searching} /></div>}
+          {(searching || open.has(c.path)) && <div className="ml-4 border-l border-slate-200 pl-1"><TreeNodes node={c} open={open} toggle={toggle} selected={selected} onSelect={onSelect} searching={searching} lines={lines} /></div>}
         </li>
       ) : (
         <li key={c.path}>
           <button type="button" onClick={() => onSelect(c.path)} aria-current={selected === c.path} data-file={c.path}
-            className={`flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 pl-6 text-left hover:bg-slate-100 ${selected === c.path ? 'bg-brand-50 text-brand-700' : ''}`}>
-            <span aria-hidden="true">{iconFor(c.path)}</span><span className="truncate">{c.name}</span>
+            className={`flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 pl-6 text-left hover:bg-slate-100 ${selected === c.path ? 'bg-brand-100 text-brand-700' : ''}`}>
+            <span aria-hidden="true">{iconFor(c.path)}</span><span className="min-w-0 flex-1 truncate">{c.name}</span>
+            {(lines?.get(c.path) ?? 0) > 0 && <span className="shrink-0 rounded-full bg-slate-100 px-1.5 text-[10px] text-slate-500" title="Lines">{lines!.get(c.path)}</span>}
           </button>
         </li>
       ))}
@@ -173,12 +174,22 @@ function ExistingCodebase({ projectId, canWrite, canManage, onChanged }: { proje
   const [open, setOpen] = useState<Set<string>>(new Set());
   const list = useQuery({
     queryKey: ['codebase', projectId],
-    queryFn: () => api.get<{ files: Array<{ id: string; path: string }> }>(`/api/projects/${projectId}/codebase`),
+    queryFn: () => api.get<{ files: Array<{ id: string; path: string; lines?: number }>; archive: { name: string; uploadedBy: string; uploadedAt: string } | null }>(`/api/projects/${projectId}/codebase`),
   });
-  const files = list.data?.files ?? [];
+  const files = useMemo(() => list.data?.files ?? [], [list.data]);
+  const archive = list.data?.archive ?? null;
+  const lines = useMemo(() => new Map(files.map((f) => [f.path, f.lines ?? 0])), [files]);
   const tree = useMemo(() => buildPathTree(files.map((f) => f.path)), [files]);
   const shown = useMemo(() => (query.trim() ? filterTree(tree, query) : tree), [tree, query]);
   const sel = files.find((f) => f.path === selected);
+  // Open on something: unfold the way to the first file and show it, as the design does.
+  useEffect(() => {
+    if (files.length === 0 || (selected && files.some((f) => f.path === selected))) return;
+    const first = firstFilePath(tree);
+    if (!first) return;
+    setSelected(first);
+    setOpen((cur) => new Set([...cur, ...ancestorsOf(first)]));
+  }, [files, tree, selected]);
   const content = useQuery({
     queryKey: ['codebase-file', projectId, sel?.id],
     queryFn: () => api.get<{ file: { id: string; path: string; content: string } }>(`/api/projects/${projectId}/codebase/${sel!.id}`),
@@ -207,9 +218,12 @@ function ExistingCodebase({ projectId, canWrite, canManage, onChanged }: { proje
       <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <div className="text-sm font-semibold text-navy">{files.length ? `${files.length.toLocaleString()} files indexed` : 'No codebase uploaded'}</div>
-            <div className="text-xs text-slate-500">Upload a .zip so the agents design and change code with your existing code in view (brownfield mode).</div>
+            <div className="text-sm font-semibold text-navy" data-testid="v2-codebase-title">{files.length ? (archive?.name || `${files.length.toLocaleString()} files indexed`) : 'No codebase uploaded'}</div>
+            <div className="text-xs text-slate-500" data-testid="v2-codebase-sub">{files.length
+              ? `${files.length.toLocaleString()} files indexed${archive ? ` · uploaded ${formatWhen(archive.uploadedAt)}${archive.uploadedBy ? ` by ${archive.uploadedBy}` : ''}` : ''}`
+              : 'Upload a .zip so the agents design and change code with your existing code in view (brownfield mode).'}</div>
           </div>
+          <span className="ml-auto flex items-center gap-2">
           <button type="button" onClick={() => input.current?.click()} disabled={!canWrite || upload.isPending} data-testid="v2-codebase-upload"
             className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50">
             {upload.isPending ? 'Indexing…' : files.length ? 'Replace .zip' : 'Upload .zip'}
@@ -218,6 +232,7 @@ function ExistingCodebase({ projectId, canWrite, canManage, onChanged }: { proje
             <button type="button" onClick={() => { if (window.confirm('Remove the uploaded codebase? The agents will no longer ground on it.')) remove.mutate(); }} disabled={remove.isPending} data-testid="v2-codebase-remove"
               className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:border-bared-500 hover:text-bared-600">{remove.isPending ? 'Removing…' : 'Remove'}</button>
           )}
+          </span>
           <input ref={input} type="file" accept=".zip" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) upload.mutate(f); e.target.value = ''; }} />
         </div>
         {mix.length > 0 && (
@@ -235,7 +250,7 @@ function ExistingCodebase({ projectId, canWrite, canManage, onChanged }: { proje
           <SplitPair storageKey="sdlc:v2:codebase-split" def={260} min={160} max={560} label="Resize the file tree"
             left={(
             <div className="max-h-[28rem] overflow-auto rounded-lg border border-slate-200 bg-white p-1.5">
-              {shown ? <TreeNodes node={shown} open={open} toggle={toggle} selected={selected} onSelect={setSelected} searching={Boolean(query.trim())} /> : <div className="p-2 text-xs text-slate-500">No file matches.</div>}
+              {shown ? <TreeNodes node={shown} open={open} toggle={toggle} selected={selected} onSelect={setSelected} searching={Boolean(query.trim())} lines={lines} /> : <div className="p-2 text-xs text-slate-500">No file matches.</div>}
             </div>
             )}
             right={(
@@ -245,10 +260,11 @@ function ExistingCodebase({ projectId, canWrite, canManage, onChanged }: { proje
                 <>
                   <div className="mb-1.5 flex items-center gap-2">
                     <span className="min-w-0 flex-1 truncate font-mono text-xs text-slate-600">{sel.path}</span>
+                    <button type="button" onClick={() => void navigator.clipboard?.writeText(content.data?.file.content ?? '')} className="rounded-lg border border-slate-300 px-2 py-0.5 text-xs font-semibold text-slate-600 hover:border-brand-400" data-testid="v2-codebase-copy">Copy</button>
                     <a href={`/api/projects/${projectId}/codebase/${sel.id}/download`} download={sel.path.split('/').pop()} className="rounded-lg border border-slate-300 px-2 py-0.5 text-xs font-semibold text-slate-600 hover:border-brand-400">Download</a>
                   </div>
                   {content.isLoading ? <div className="animate-pulse text-sm text-slate-400">Loading…</div> : (
-                    <CodeView source={content.data?.file.content ?? ''} lang={langForExt(sel.path.includes('.') ? sel.path.slice(sel.path.lastIndexOf('.')) : '')} />
+                    <CodeView tone="light" bare source={content.data?.file.content ?? ''} lang={langForExt(sel.path.includes('.') ? sel.path.slice(sel.path.lastIndexOf('.')) : '')} />
                   )}
                 </>
               )}
@@ -302,7 +318,7 @@ function AuditTab({ projectId, flow }: { projectId: string; flow: ProjectFlow | 
                 <span className="font-semibold text-slate-800">{e.event}</span>
                 <span className="text-slate-400">{new Date(e.timestamp).toLocaleTimeString()} {open ? '▾' : '▸'}</span>
               </button>
-              <div className="mt-0.5 text-slate-500">
+              <div className="mt-0.5 font-mono text-[11px] text-slate-500">
                 {e.agentRole}{e.phase ? ` · P${e.phase}` : ''}{e.provider ? ` · ${e.provider}/${e.model}` : ''}{e.promptTokens != null ? ` · ${e.promptTokens}→${e.completionTokens} tok` : ''}
               </div>
               {e.humanReviewer && <div className="mt-0.5 text-emerald-700">👤 {e.humanReviewer}</div>}

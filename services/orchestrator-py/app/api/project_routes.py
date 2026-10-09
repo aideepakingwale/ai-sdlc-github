@@ -102,6 +102,43 @@ async def list_projects(
     return {"projects": [_project_row(p) for p in rows]}
 
 
+@router.get("/api/projects/portfolio")
+async def portfolio(
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container)
+) -> dict:
+    """Every project the caller can see with its stage states, for the dashboard table (newest first, at most 200)."""
+    import asyncio
+
+    if user.role == "SUPER_ADMIN":
+        rows = await container.db.list_projects_all()
+    elif user.role == "PROJECT_MANAGER":
+        rows = await container.db.list_projects_by_creator(user.id)
+    else:
+        rows = await container.db.list_projects_by_member(user.id)
+    from ..services.flow import STATE_COLOR
+    sem = asyncio.Semaphore(8)
+
+    async def one(proj) -> dict:  # noqa: ANN001
+        async with sem:
+            try:
+                wf = await container.workflow.view(proj["id"])
+                states = {st["SK"]: st for st in await container.dynamo.list_phase_states(proj["id"])}
+            except Exception:  # noqa: BLE001 - one broken project must not blank the dashboard
+                return {**_project_row(proj), "stages": [], "approved": 0, "awaitingReview": False, "escalated": False, "lastActivity": None}
+        stages = []
+        latest = ""
+        for st in wf["stages"]:
+            state = states.get(f"PHASE#{st['seq']}")
+            status = state["status"] if state else "NOT_STARTED"
+            stages.append({"phase": st["seq"], "name": st["name"], "color": STATE_COLOR.get(status, "slate"), "status": status})
+            latest = max(latest, str((state or {}).get("updatedAt") or ""))
+        return {**_project_row(proj), "stages": stages, "approved": sum(1 for x in stages if x["status"] == "APPROVED"),
+                "awaitingReview": any(x["status"] == "PENDING_REVIEW" for x in stages),
+                "escalated": any(x["status"] == "ESCALATED" for x in stages), "lastActivity": latest or None}
+
+    return {"projects": list(await asyncio.gather(*(one(r) for r in list(rows)[:200])))}
+
+
 @router.post("/api/projects", status_code=201)
 async def create_project(
     body: CreateProjectRequest,
@@ -1461,6 +1498,10 @@ async def upload_codebase(
         raise SdlcError("VALIDATION_FAILED", "multipart field 'file' (a .zip archive) is required")
     payload = await upload.read()
     result = await container.codebase.ingest_zip(project_id, user.id, payload)
+    try:
+        await container.db.set_codebase_archive(project_id, upload.filename or "codebase.zip", user.email)
+    except Exception:  # noqa: BLE001 - the label is cosmetic; never fail an upload over it
+        pass
     container.audit.record(
         project_id=project_id, agent_role="Orchestrator", event="codebase.uploaded",
         human_reviewer=user.email,
@@ -1493,11 +1534,13 @@ async def list_codebase(
 ) -> dict:
     await container.authz.assert_project_access(project_id, user)
     rows = await container.db.list_codebase_files(project_id)
+    archive = await container.db.get_codebase_archive(project_id) if rows else None
     return {"files": [
-        {"id": r["id"], "path": r["path"], "sizeBytes": r["size_bytes"],
+        {"id": r["id"], "path": r["path"], "sizeBytes": r["size_bytes"], "lines": int(r["line_count"] or 0),
          "uploadedAt": r["uploaded_at"].isoformat()}
         for r in rows
-    ]}
+    ], "archive": ({"name": archive["archive_name"], "uploadedBy": archive["uploaded_by"],
+                    "uploadedAt": archive["uploaded_at"].isoformat()} if archive else None)}
 
 
 # ------------------------------------------------------------------ file explorer (D-28)

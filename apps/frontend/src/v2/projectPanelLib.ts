@@ -73,3 +73,27 @@ export function languageMix(paths: string[], keep = 4): Array<{ name: string; pc
     return { name: r.name, pct };
   });
 }
+
+/** Path of the first file in tree order (folders first), or null when there is none. */
+export function firstFilePath(node: CodeNode): string | null {
+  for (const c of node.children ?? []) {
+    if (c.type === 'file') return c.path;
+    const inner = firstFilePath(c);
+    if (inner) return inner;
+  }
+  return null;
+}
+
+/** Every folder on the way to a path: 'a/b/c.java' gives ['a', 'a/b']. */
+export function ancestorsOf(path: string): string[] {
+  const parts = path.split('/').filter(Boolean);
+  return parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join('/'));
+}
+
+/** '4 Oct' for this year, '4 Oct 2025' otherwise. */
+export function formatWhen(iso: string, now: Date = new Date()): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const base = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  return d.getFullYear() === now.getFullYear() ? base : `${base} ${d.getFullYear()}`;
+}

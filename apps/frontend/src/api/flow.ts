@@ -16,6 +16,8 @@ export interface FlowStage {
   status: string;
   color: StageColor;
   artifactCount: number;
+  /** Security review: whether this stage gets one, and the overall risk of its latest open report. */
+  security?: { applies: boolean; risk: string | null };
   reviewedBy: string | null;
   updatedAt: string | null;
   assignee: { displayName: string; email: string; role: string } | null;

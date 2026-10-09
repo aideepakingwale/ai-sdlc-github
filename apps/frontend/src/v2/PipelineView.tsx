@@ -32,6 +32,8 @@ function ContextBar({ phase, overview }: { phase: number; overview: ContextOverv
   );
 }
 
+const riskTone = (risk: string | null): 'red' | 'amber' | 'green' | 'brand' => (risk === 'HIGH' || risk === 'CRITICAL' ? 'red' : risk === 'MEDIUM' ? 'amber' : risk === 'LOW' ? 'green' : 'brand');
+
 function StageCard({ s, overview, current, onOpen }: { s: FlowStage; overview: ContextOverview | undefined; current: boolean; onOpen: () => void }) {
   return (
     <button type="button" onClick={onOpen} data-testid={`v2-pipe-stage-${s.phase}`}
@@ -45,6 +47,7 @@ function StageCard({ s, overview, current, onOpen }: { s: FlowStage; overview: C
         <Pill tone={stageTone(s.color)}>{COLOR_CLASSES[s.color].label}</Pill>
         <Pill>{s.artifactCount} artefact{s.artifactCount === 1 ? '' : 's'}</Pill>
         {s.stale && <Pill tone="amber">Outdated</Pill>}
+        {s.security?.applies && <span data-testid={`v2-pipe-security-${s.phase}`}><Pill tone={riskTone(s.security.risk)} title="Security review at this stage">{s.security.risk ? `Security ${s.security.risk}` : 'Security on'}</Pill></span>}
       </div>
       <ContextBar phase={s.phase} overview={overview} />
     </button>

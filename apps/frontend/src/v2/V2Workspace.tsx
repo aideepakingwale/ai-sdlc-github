@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
-import Dashboard from '../components/Dashboard';
+import PortfolioView from './PortfolioView';
 import GovernancePanel from '../components/GovernancePanel';
 import ModelRoutesControl from '../components/ModelRoutesControl';
 import NewProjectModal from '../components/NewProjectModal';
@@ -120,7 +120,7 @@ export default function V2Workspace() {
                   techStackSource={detail.data?.project.techStackSource}
                   canSetStack={(detail.data?.me?.canManageTeam ?? false) || detail.data?.me?.membershipRole === 'TA'} onClose={() => setModal(null)} />
             ) : !activeProjectId ? (
-              <Dashboard projects={projects.data?.projects ?? []} onOpen={setActiveProject} onNewProject={() => setNewProject(true)} canManage={canManage} loading={projects.isLoading} />
+              <PortfolioView onOpen={setActiveProject} onNewProject={() => setNewProject(true)} canManage={canManage} />
             ) : view === 'pipeline' ? (
               flow.data ? <PipelineView projectId={activeProjectId} projectName={detail.data?.project.name} currentPhase={activeStage} flow={flow.data} onOpenStage={goStage} onDesigner={() => setModal('designer')} canDesign={canManage} /> : <div className="mx-auto mt-24 max-w-md px-6 text-center text-slate-500">Loading the pipeline…</div>
             ) : flow.data ? (

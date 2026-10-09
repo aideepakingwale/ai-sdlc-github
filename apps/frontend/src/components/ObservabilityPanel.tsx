@@ -378,12 +378,12 @@ export default function ObservabilityPanel({ onClose, page = false }: { onClose:
   return (
     <div className={page ? 'h-full overflow-y-auto bg-slate-50 p-6' : 'fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4'} onClick={page ? undefined : onClose}>
       <div
-        className={page ? 'mx-auto flex w-full max-w-5xl flex-col rounded-2xl border border-slate-200 bg-slate-50' : 'flex max-h-[94vh] w-full max-w-5xl flex-col rounded-2xl bg-slate-50 shadow-2xl'}
+        className={page ? 'mx-auto flex w-full max-w-5xl flex-col' : 'flex max-h-[94vh] w-full max-w-5xl flex-col rounded-2xl bg-slate-50 shadow-2xl'}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-3">
+        <div className={page ? 'flex items-center justify-between px-1 pb-3' : 'flex items-center justify-between border-b border-slate-200 bg-white px-5 py-3'}>
           <div>
-            <div className="text-sm font-bold text-slate-800">📈 AI Observability</div>
+            {page ? <h1 className="font-display text-xl font-bold text-navy">Observability</h1> : <div className="text-sm font-bold text-slate-800">📈 AI Observability</div>}
             <div className="text-xs text-slate-500">
               Every LLM call and tool execution — live from the trace store · Prometheus at /metrics
               · optional LangSmith deep traces
@@ -399,7 +399,7 @@ export default function ObservabilityPanel({ onClose, page = false }: { onClose:
               <option value={7}>Last 7 days</option>
               <option value={30}>Last 30 days</option>
             </select>
-            <button onClick={onClose} className="rounded px-2 py-1 text-slate-400 hover:bg-slate-100">✕</button>
+            {!page && <button onClick={onClose} className="rounded px-2 py-1 text-slate-400 hover:bg-slate-100">✕</button>}
           </div>
         </div>
 

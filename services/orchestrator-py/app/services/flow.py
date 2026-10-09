@@ -14,6 +14,7 @@ reviewer re-approves to move forward.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Awaitable, Callable
 
 from ..agents.schemas import PHASE_SCHEMAS
@@ -103,6 +104,20 @@ class FlowService:
             viewer.role == "PROJECT_MANAGER" and project["created_by"] == viewer.id
         )
 
+        # Security review: which stages get one, and the overall risk of the latest open report.
+        from ..config import get_settings
+        from .security_gate import applies_to as security_applies
+        settings = get_settings()
+        risk: dict[int, str] = {}
+        try:
+            for fb in await self._db.list_feedback(project_id):      # newest first
+                if fb["source"] == "security" and fb["category"] == "security-rating" and fb["status"] == "open" and fb["phase"] not in risk:
+                    m = re.search(r"overall risk (\w+)", fb["comment"] or "")
+                    if m:
+                        risk[fb["phase"]] = m.group(1).upper()
+        except Exception:  # noqa: BLE001 - the chip is decoration; the flow must still load
+            log.warning("could not read security ratings for the flow", exc_info=True)
+
         stages = []
         for s in wf["stages"]:
             seq = s["seq"]
@@ -152,6 +167,7 @@ class FlowService:
                 "status": status,
                 "color": STATE_COLOR.get(status, "slate"),
                 "artifactCount": counts.get(seq, 0),
+                "security": {"applies": security_applies(settings, s["template"]), "risk": risk.get(seq)},
                 "reviewedBy": st.get("reviewedBy") if st else None,
                 "updatedAt": st.get("updatedAt") if st else None,
                 # Impact propagation: set when an upstream input was re-generated

@@ -241,6 +241,24 @@ test.describe('connections', () => {
   });
 });
 
+test.describe('portfolio and pipeline chips', () => {
+  test('All projects is a table with progress and Open, and the pipeline flags stages that get a security review', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { name } = await newProject(page);
+    await page.reload();
+    await page.getByText('All projects', { exact: true }).first().click();
+    await expect(page.getByTestId('v2-portfolio')).toBeVisible();
+    const row = page.getByTestId('v2-portfolio-row').filter({ hasText: name });
+    await expect(row).toContainText('Not started');
+    await expect(row).toContainText('0 of');
+    await row.getByRole('button', { name: 'Open' }).click();
+    await expect(page.getByTestId('v2-stage-1')).toBeVisible();
+    await page.getByText('Pipeline', { exact: true }).first().click();
+    await expect(page.getByTestId('v2-pipe-security-2')).toContainText('Security');
+    await expect(page.getByTestId('v2-pipe-security-1')).toHaveCount(0);
+  });
+});
+
 test.describe('pipeline and configuration pages', () => {
   test('the pipeline page lists every stage and opens one', async ({ page }) => {
     await login(page, '/?ui=v2');
@@ -331,6 +349,11 @@ test.describe('codebase', () => {
     await openProject(page, name);
     await page.getByTestId('v2-open-project-panel').click();
     await page.getByTestId('v2-ptab-codebase').click();
+    // it opens on something: the archive's name, who uploaded it, and the first file already shown with Copy / Download
+    await expect(page.getByTestId('v2-codebase-title')).toHaveText('app.zip');
+    await expect(page.getByTestId('v2-codebase-sub')).toContainText('3 files indexed · uploaded');
+    await expect(page.getByTestId('v2-codebase-copy')).toBeVisible();
+    await expect(page.getByTestId('v2-codebase-tab')).toContainText('class App');
     const left = page.getByTestId('v2-split-left');
     await expect(left).toBeVisible();
     const w0 = (await left.boundingBox())!.width;

@@ -1314,10 +1314,23 @@ class Database:
     async def list_codebase_files(self, project_id: str) -> list[asyncpg.Record]:
         assert self.pool
         return await self.pool.fetch(
-            "SELECT id, path, size_bytes, uploaded_at FROM codebase_files "
+            "SELECT id, path, size_bytes, uploaded_at, "
+            "(length(content) - length(replace(content, E'\\n', '')) + 1) AS line_count FROM codebase_files "
             "WHERE project_id=$1 ORDER BY path LIMIT 1000",
             project_id,
         )
+
+    async def set_codebase_archive(self, project_id: str, name: str, uploaded_by: str) -> None:
+        assert self.pool
+        await self.pool.execute(
+            "INSERT INTO project_codebase (project_id, archive_name, uploaded_by) VALUES ($1,$2,$3) "
+            "ON CONFLICT (project_id) DO UPDATE SET archive_name=$2, uploaded_by=$3, uploaded_at=now()",
+            project_id, name, uploaded_by)
+
+    async def get_codebase_archive(self, project_id: str) -> dict | None:
+        assert self.pool
+        row = await self.pool.fetchrow("SELECT archive_name, uploaded_by, uploaded_at FROM project_codebase WHERE project_id=$1", project_id)
+        return dict(row) if row else None
 
     async def get_codebase_file(self, project_id: str, file_id: str) -> asyncpg.Record | None:
         assert self.pool
@@ -1330,6 +1343,7 @@ class Database:
         async with self.pool.acquire() as conn:
             n = await conn.fetchval("SELECT count(*) FROM codebase_files WHERE project_id=$1", project_id)
             await conn.execute("DELETE FROM codebase_files WHERE project_id=$1", project_id)
+            await conn.execute("DELETE FROM project_codebase WHERE project_id=$1", project_id)
             await conn.execute("DELETE FROM kb_documents WHERE scope=$1 AND source='codebase'", project_id)
         return int(n or 0)
 

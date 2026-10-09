@@ -83,7 +83,11 @@ stages stacked inside a level, each card showing status, artefact count and a th
 project, earlier stages, your brief and attachments); "Needs your attention" below (escalated, failed, waiting for
 review, amending, outdated; most urgent first); Project context graph and Workflow designer (PM/admin) at the top.
 
-**Dashboard.** The existing `Dashboard` when no project is selected.
+**All projects.** `v2/PortfolioView.tsx`: four tiles (projects, awaiting review, escalated, stages approved) and a table with stage dots, progress, stack and last activity per project, served by `GET /api/projects/portfolio`. The classic UI keeps the card dashboard.
+
+**Pipeline cards** show a *Security on* chip on stages that get a security review, or *Security HIGH / MEDIUM / LOW* once a report is open (`flow.stages[].security`).
+
+**Codebase tab.** The uploaded archive's name, who uploaded it and when (`project_codebase`, migration `0041`), the language mix, a tree with line counts that opens on the first file, and a path header with Copy and Download over a light code panel (`CodeView tone="light"`).
 
 **Configuration pages.** Project Context, Quality, Connections (per-project Git, Jira, Confluence and knowledge base, see [connections.md](connections.md)), Governance, Observability, Project Explorer and the Workflow
 designer render in the centre (the components' `page` prop turns the modal chrome off). Navigating anywhere else

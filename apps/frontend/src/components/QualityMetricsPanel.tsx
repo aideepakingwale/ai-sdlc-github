@@ -98,13 +98,13 @@ export default function QualityMetricsPanel({ projectId, onClose, page = false }
 
   return (
     <div className={page ? 'h-full overflow-y-auto bg-slate-50 p-6' : 'fixed inset-0 z-50 flex items-start justify-center bg-navy/40 p-4 backdrop-blur-sm'} onClick={page ? undefined : onClose}>
-      <div className={page ? 'mx-auto flex w-full max-w-5xl flex-col rounded-2xl border border-slate-200 bg-slate-50' : 'flex max-h-[94vh] w-full max-w-4xl flex-col rounded-2xl bg-slate-50 shadow-2xl'} onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-3">
+      <div className={page ? 'mx-auto flex w-full max-w-5xl flex-col' : 'flex max-h-[94vh] w-full max-w-4xl flex-col rounded-2xl bg-slate-50 shadow-2xl'} onClick={(e) => e.stopPropagation()}>
+        <div className={page ? 'flex items-center justify-between px-1 pb-3' : 'flex items-center justify-between border-b border-slate-200 bg-white px-5 py-3'}>
           <div>
-            <div className="text-sm font-bold text-navy">📊 Quality Metrics</div>
+            {page ? <h1 className="font-display text-xl font-bold text-navy">Quality Metrics</h1> : <div className="text-sm font-bold text-slate-800">📊 Quality Metrics</div>}
             <div className="text-xs text-slate-500">Validator-score trend, first-pass vs. rework, and issues caught at the gate — from the audit trail.</div>
           </div>
-          <button onClick={onClose} className="rounded px-2 py-1 text-slate-400 hover:bg-slate-100">✕</button>
+          {!page && <button onClick={onClose} className="rounded px-2 py-1 text-slate-400 hover:bg-slate-100">✕</button>}
         </div>
 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
