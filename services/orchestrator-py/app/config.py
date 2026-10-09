@@ -193,6 +193,8 @@ class Settings(BaseSettings):
     # tunable: raise it for stages with many outputs/tools (D-112).
     PLAN_MAX_TOKENS: int = 8_000
     CLARIFY_ENABLED: bool = True
+    # After a stage generates, compare its documents with the must-rules (one light model call) and show the result on the rules and artefacts.
+    CANON_CHECK_ENABLED: bool = True
     CLARIFY_MAX_QUESTIONS: int = 6
     # Requirement analysis is the most crucial stage; allow a deeper holistic
     # elicitation sweep (incl. compliance/legal/data-privacy gaps) to ask more.

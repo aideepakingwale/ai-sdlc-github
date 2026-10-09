@@ -1,0 +1,12 @@
+id: aws-serverless-python
+name: AWS serverless, Python
+description: Lambda functions in Python behind API Gateway, with DynamoDB and SQS, defined with the AWS CDK.
+layers:
+  - {layer: hosting, technology: AWS}
+  - {layer: compute, technology: "Serverless (Lambda)"}
+  - {layer: backend, technology: Python, version: "3.12"}
+  - {layer: database, technology: DynamoDB}
+  - {layer: messaging, technology: SQS}
+  - {layer: iac, technology: AWS CDK}
+  - {layer: cicd, technology: GitHub Actions}
+  - {layer: observability, technology: CloudWatch}

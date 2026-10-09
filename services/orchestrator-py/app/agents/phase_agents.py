@@ -844,6 +844,7 @@ class AgentDeps:
     memory: Any = None     # MemoryService — confirmed team memory, its own prompt layer
     project_config: Any = None  # ProjectConfigService — projectconfig.json (the stack by layer)
     stack_advisor: Any = None   # StackAdvisor — identifies the stack from a stage's documents
+    rule_checker: Any = None    # RuleChecker — compares a stage's documents with the must-rules
 
 
 @dataclass

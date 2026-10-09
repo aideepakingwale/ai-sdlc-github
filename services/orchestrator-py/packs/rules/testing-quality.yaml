@@ -1,0 +1,9 @@
+id: testing-quality
+name: Testing and quality
+description: Test strategy, coverage and acceptance criteria expectations.
+entries:
+  - {category: rule, priority: must, stage: 1, title: Every requirement has testable acceptance criteria, body: "Write acceptance criteria as observable, testable statements (given, when, then). Avoid words like fast, easy or robust without a number."}
+  - {category: rule, priority: must, stage: 4, title: Trace every requirement to a test, body: "The traceability matrix links each requirement to at least one test and flags any requirement without one."}
+  - {category: rule, priority: should, stage: 4, title: Cover the unhappy paths, body: "For each feature include tests for invalid input, missing permissions, dependency failure and retries, not only the happy path."}
+  - {category: rule, priority: should, stage: 4, title: Non-functional tests have targets, body: "Performance and resilience tests state the target (for example p95 latency, error rate, failover time) taken from the requirements."}
+  - {category: constraint, priority: must, stage: 5, title: Tests run in the pipeline before deploy, body: "The pipeline runs unit and integration tests and stops on failure. Deployment to any environment needs a green run."}

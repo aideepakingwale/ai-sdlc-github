@@ -1,0 +1,9 @@
+id: data-protection
+name: Data protection (GDPR-style)
+description: Personal data handling, retention and subject rights.
+entries:
+  - {category: rule, priority: must, stage: null, title: Say which personal data is processed, body: "List every category of personal data the system stores or processes, why, where it is stored and how long it is kept."}
+  - {category: rule, priority: must, stage: 2, title: Data residency is stated and respected, body: "State the regions where personal data is stored and processed. Do not design flows that move it outside the permitted regions."}
+  - {category: rule, priority: must, stage: 3, title: Support access and erasure requests, body: "The design includes how a person's data is found, exported and deleted across every store, including backups and derived data, within the legal time limit."}
+  - {category: rule, priority: should, stage: 3, title: Minimise and pseudonymise, body: "Collect only what the feature needs. Prefer identifiers over names or emails in logs, events and analytics."}
+  - {category: constraint, priority: must, stage: 1, title: Capture lawful basis and consent needs, body: "Requirements that involve personal data record the lawful basis and where consent is needed."}

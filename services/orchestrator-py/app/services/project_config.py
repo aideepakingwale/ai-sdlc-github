@@ -346,6 +346,60 @@ class ProjectConfigService:
             cfg["stack"]["layers"] = [*keep, *entries]
             await self._write(project_id, cfg, actor=actor)
 
+    # ---- presets: the platform's starter presets and the organisation's own
+    async def presets(self) -> list[dict[str, Any]]:
+        from .rule_packs import stack_presets
+
+        built_in = [{"id": f"pack:{p['id']}", "name": p["name"], "description": p.get("description", ""), "layers": p["layers"], "builtIn": True} for p in stack_presets()]
+        org = [{**p, "builtIn": False} for p in await self._db.list_stack_presets()]
+        return [*org, *built_in]
+
+    async def _preset(self, preset_id: str) -> dict[str, Any]:
+        from .rule_packs import get_stack_preset
+
+        p = get_stack_preset(preset_id[5:]) if preset_id.startswith("pack:") else await self._db.get_stack_preset(preset_id)
+        if not p:
+            raise SdlcError("NOT_FOUND", "Preset not found")
+        return p
+
+    async def create_preset(self, user: UserPublic, name: str, description: str, layers: list[dict[str, Any]]) -> dict[str, Any]:
+        if user.role != "SUPER_ADMIN":
+            raise SdlcError("FORBIDDEN", "Only an administrator can add an organisation stack preset")
+        if len(name.strip()) < 3 or not layers:
+            raise SdlcError("VALIDATION_FAILED", "A preset needs a name and at least one layer")
+        clean = [{k: v for k, v in normalise_entry(x, status="pinned", source="preset").items() if k in ("layer", "technology", "version", "extras", "component", "notes")} for x in layers]
+        row = await self._db.insert_stack_preset(name=name.strip(), description=description.strip(), layers=clean, user_id=user.id)
+        self._audit.record(project_id=None, agent_role="Orchestrator", event="stack_preset.created", human_reviewer=user.email, detail={"name": name.strip(), "layers": len(clean)})
+        return {**row, "builtIn": False}
+
+    async def delete_preset(self, user: UserPublic, preset_id: str) -> None:
+        if user.role != "SUPER_ADMIN":
+            raise SdlcError("FORBIDDEN", "Only an administrator can remove an organisation stack preset")
+        if not await self._db.delete_stack_preset(preset_id):
+            raise SdlcError("NOT_FOUND", "Preset not found")
+        self._audit.record(project_id=None, agent_role="Orchestrator", event="stack_preset.deleted", human_reviewer=user.email, detail={"presetId": preset_id})
+
+    async def apply_preset(self, project_id: str, user: UserPublic, preset_id: str) -> dict[str, Any]:
+        """Pin a preset's layers on the project. A layer the preset names replaces the project's entry for it; other layers are left alone."""
+        await self.assert_can_edit(project_id, user)
+        preset = await self._preset(preset_id)
+        entries = [normalise_entry(x, status="pinned", source="preset", actor=user.email) for x in preset["layers"]]
+        async with self._lock(project_id):
+            cfg = await self.get(project_id)
+            layers = cfg["stack"]["layers"]
+            changes = []
+            for e in entries:
+                cur = next((x for x in layers if x["id"] == e["id"]), None)
+                if cur is not None:
+                    layers[layers.index(cur)] = e
+                else:
+                    layers.append(e)
+                changes.append({"layer": e["layer"], "from": render_entry(cur) if cur else "", "to": render_entry(e), "action": "preset"})
+            cfg["stack"]["conflicts"] = []
+            cfg = await self._write(project_id, cfg, actor=user.email)
+        self._audit_change(project_id, user.email, changes, via=f"preset {preset['name']}")
+        return cfg
+
     def _audit_change(self, project_id: str, actor: str, changes: list[dict[str, Any]], *, via: str, phase: int | None = None) -> None:
         if not changes:
             return

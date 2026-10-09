@@ -44,6 +44,8 @@ class Container:
     code_gen: Any = None  # two-step code generation: structure approval, explorer view, zip
     project_config: Any = None  # projectconfig.json: the stack by layer
     stack_advisor: Any = None   # identifies the stack from a stage's documents
+    rule_assist: Any = None     # drafts rules from a document; hints before a rule is saved
+    rule_checker: Any = None    # checks a stage's documents against the must-rules
     code_edit: Any = None  # prompt-based code assistant: agentic edits shown as a diff, applied by a person
     gen_jobs: Any = None  # durable background stage generation (D-97 L2)
     extras: dict[str, Any] = field(default_factory=dict)

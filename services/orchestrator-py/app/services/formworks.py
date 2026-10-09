@@ -96,6 +96,37 @@ def analyse_template(template: str, output_format: str) -> dict[str, Any]:
     }
 
 
+# Words that point a template at an artefact type (file name and the template's own headings and text).
+TYPE_HINTS: dict[str, tuple[str, ...]] = {
+    "PRD": ("product requirements", "prd", "requirements document", "business requirements"),
+    "EPIC": ("epic",), "USER_STORY": ("user story", "user stories", "as a ", "acceptance criteria"),
+    "HLD": ("high-level design", "high level design", "hld", "solution architecture", "c4"),
+    "LLD": ("low-level design", "low level design", "lld", "technical design", "detailed design"),
+    "ADR": ("architecture decision", "adr", "decision record", "consequences"),
+    "OPENAPI": ("openapi", "swagger", "paths:", "components:"),
+    "DBML": ("dbml", "table "), "TEST_STRATEGY": ("test strategy", "test plan", "test approach"),
+    "RTM": ("traceability", "rtm"), "PIPELINE_DESIGN": ("pipeline design", "ci/cd", "deployment pipeline"),
+    "PULL_REQUEST": ("pull request", "pr description"), "XRAY_TESTS": ("test case", "xray"),
+}
+
+
+def suggest_mapping(name: str, template: str) -> dict[str, Any]:
+    """What a dropped file probably is: the artefact type and output format, with the sections and placeholders found.
+    Deterministic; the person confirms or changes it."""
+    fmt = detect_format(name, template)
+    head = f"{name}\n{template[:3000]}".lower()
+    scores: dict[str, int] = {}
+    for t, words in TYPE_HINTS.items():
+        n = sum(head.count(w) for w in words)
+        if n:
+            scores[t] = n + (3 if any(w in name.lower() for w in words) else 0)
+    ranked = sorted(scores.items(), key=lambda kv: -kv[1])
+    analysis = analyse_template(template, fmt)
+    return {"artefactType": ranked[0][0] if ranked else None, "candidates": [t for t, _ in ranked[:4]], "outputFormat": fmt,
+            "name": re.sub(r"\.[A-Za-z0-9]+$", "", name).replace("_", " ").replace("-", " ").strip() or "Template",
+            "sections": analysis["sections"], "placeholders": analysis["placeholders"][:20], "lineCount": analysis["lineCount"]}
+
+
 class FormworkService:
     def __init__(self, db: Any, authz: Any, audit: Any, content: Any, canon: Any) -> None:
         self._db = db
@@ -111,7 +142,16 @@ class FormworkService:
         elif user.role != "SUPER_ADMIN":
             raise SdlcError("FORBIDDEN", "The platform-wide Formwork library is SUPER_ADMIN only")
         rows = await self._db.list_formworks(project_id)
-        return [self._row(r) for r in rows]
+        out = [self._row(r) for r in rows]
+        if project_id:
+            usage = await self._db.artefact_usage_by_type(project_id)
+            platform = {(r["artefactType"], r["outputFormat"]) for r in out if r["scope"] == "platform"}
+            for r in out:
+                r["usage"] = usage.get(r["artefactType"], {"count": 0, "phases": []})
+                r["overrides"] = r["scope"] == "project" and (r["artefactType"], r["outputFormat"]) in platform
+                versions = await self._db.list_formwork_versions(r["projectId"], r["artefactType"], r["outputFormat"])
+                r["versions"] = len(versions)
+        return out
 
     async def upload(self, project_id: str | None, user: UserPublic, payload: dict) -> dict:
         """Accepts a template body; analyses and files it under

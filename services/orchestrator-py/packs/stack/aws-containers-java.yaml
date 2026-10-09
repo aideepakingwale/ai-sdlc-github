@@ -1,0 +1,13 @@
+id: aws-containers-java
+name: AWS containers, Java
+description: Spring Boot services on ECS or EKS with PostgreSQL, Redis and Kafka, defined with Terraform.
+layers:
+  - {layer: hosting, technology: AWS}
+  - {layer: compute, technology: "Kubernetes (EKS)"}
+  - {layer: backend, technology: Java, version: "21 (LTS)", extras: [Spring Boot]}
+  - {layer: database, technology: PostgreSQL, version: "16"}
+  - {layer: cache, technology: Redis}
+  - {layer: messaging, technology: Kafka}
+  - {layer: iac, technology: Terraform}
+  - {layer: cicd, technology: GitHub Actions}
+  - {layer: observability, technology: OpenTelemetry}

@@ -98,7 +98,7 @@ test, or (d) should be reviewed or regenerated on its own.
 | [engineering-notes](generators/stage-6-implementation/engineering-notes.md) | list | light | designNotes, codingStandards, securityNotes | LLD, ADR |
 | [pull-request](generators/stage-6-implementation/pull-request.md) | list | light | branch, commitMessage, prTitle, prBody, checklist | USER_STORY, LLD |
 
-### Pipeline, review, repair, code and writer agents (19)
+### Pipeline, review, repair, code and writer agents (21)
 
 | Agent | Category | Model | Called from | Why independent |
 |---|---|---|---|---|
@@ -111,10 +111,12 @@ test, or (d) should be reviewed or regenerated on its own.
 | [context-compressor](pipeline/context-compressor.md) | utility | light | `app/services/context.py::build_context_block` | Condenses an approved upstream artefact that does not fit the token budget, keeping decisions, identifiers and numbers. |
 | [stage-planner](pipeline/stage-planner.md) | planner | plan | `app/services/chat.py::_compute_intelligent_plan` | Proposes the plan the reviewer sees before a stage runs: what will be produced, which tools and skills apply, and which steps to skip. |
 | [stack-advisor](pipeline/stack-advisor.md) | planner | light | `app/services/stack_advisor.py::StackAdvisor` | After stages 1, 2 and 3, lists by layer the technologies the stage's documents already settle, into `projectconfig.json`. |
+| [rule-drafter](pipeline/rule-drafter.md) | planner | generate | `app/services/rule_assist.py::RuleAssist` | Reads a standards document and proposes project rules for a person to accept, edit or drop. |
 | [trait-classifier](pipeline/trait-classifier.md) | planner | light | `app/services/chat.py::resolve_project_traits` | Decides which traits apply to the project (UI, API, database, messaging, compliance), so the plan and the artefacts skip what does not apply. |
 | [diagram-repair](repair/diagram-repair.md) | utility | generate | `app/api/project_routes.py::repair_diagram` | Fixes or redraws a diagram whose source does not render. |
 | [openapi-fixer](repair/openapi-fixer.md) | utility | generate | `app/agents/phase_agents.py::_run_phase3` | Repairs an OpenAPI contract that fails linting. |
 | [text-diagram-converter](repair/text-diagram-converter.md) | utility | generate | `app/services/text_diagrams.py::convert_text_diagrams` | Redraws ASCII-art drawings found inside documents as Mermaid diagrams. |
+| [rule-checker](review/rule-checker.md) | reviewer | light | `app/services/rule_checks.py::RuleChecker` | After a stage generates, compares its documents with the must-rules and records, per rule, whether they were followed. |
 | [fact-checker](review/fact-checker.md) | reviewer | light | `app/graph/pipeline.py::fact_check_node` | Checks the stage's summary response against the approved context, the attached documents and the non-functional requirements. |
 | [quality-validator](review/quality-validator.md) | reviewer | light | `app/agents/phase_agents.py::_validate_output` | Scores the generated output against the stage's quality bar and the brief, and names the artefacts that need rework. |
 | [security-reviewer](review/security-reviewer.md) | reviewer | reason | `app/services/security_gate.py::run_review` | Reviews the stage's artefacts for security weaknesses and rates the overall risk; critical findings can block approval. |

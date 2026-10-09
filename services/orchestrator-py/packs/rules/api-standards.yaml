@@ -1,0 +1,10 @@
+id: api-standards
+name: API standards
+description: Resource naming, errors, versioning and pagination for HTTP APIs.
+entries:
+  - {category: rule, priority: must, stage: 3, title: Contract first with OpenAPI, body: "Every HTTP API is described by an OpenAPI 3 document that passes linting before any code is written. The code follows the document, not the other way round."}
+  - {category: rule, priority: must, stage: 3, title: One error shape, body: "All errors use the same JSON shape with a stable machine-readable code, a human message and a correlation id. Do not return stack traces or internal details."}
+  - {category: rule, priority: should, stage: 3, title: Plural nouns and consistent resource names, body: "Resources are plural nouns in kebab-case (/purchase-orders). Actions that are not CRUD are modelled as sub-resources or explicit action endpoints and documented as such."}
+  - {category: rule, priority: should, stage: 3, title: Version in the path, body: "Breaking changes ship under a new version prefix (/v2). Additive changes keep the version. State the deprecation window for the old one."}
+  - {category: rule, priority: should, stage: 3, title: Paginate every list, body: "List endpoints are paginated, with a documented default and maximum page size, and return a stable sort order."}
+  - {category: rule, priority: should, stage: 3, title: Idempotent writes where retries are possible, body: "Operations that clients or queues may retry accept an idempotency key or are naturally idempotent. The design says which."}

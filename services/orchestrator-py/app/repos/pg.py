@@ -952,16 +952,112 @@ class Database:
         return await self.pool.fetch(sql, project_id)
 
     async def insert_canon(self, *, project_id: str, category: str, priority: str, stage: int | None,
-                           title: str, body: str, user_id: str) -> dict:
+                           title: str, body: str, user_id: str, origin: str | None = None) -> dict:
         assert self.pool
         row = await self.pool.fetchrow(
             """
-            INSERT INTO project_canon (id, project_id, category, priority, stage, title, body, created_by)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *
+            INSERT INTO project_canon (id, project_id, category, priority, stage, title, body, created_by, origin)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *
             """,
-            new_id(), project_id, category, priority, stage, title, body, user_id,
+            new_id(), project_id, category, priority, stage, title, body, user_id, origin,
         )
         return dict(row)
+
+    # ---- organisation rules, opt-outs, compliance checks, stack presets (migration 0045)
+    async def list_org_canon(self, *, active_only: bool = True) -> list:
+        assert self.pool
+        sql = "SELECT * FROM org_canon" + (" WHERE active" if active_only else "")
+        return await self.pool.fetch(sql + " ORDER BY CASE priority WHEN 'must' THEN 0 WHEN 'should' THEN 1 ELSE 2 END, created_at")
+
+    async def insert_org_canon(self, *, category: str, priority: str, stage: int | None, title: str, body: str, user_id: str) -> dict:
+        assert self.pool
+        row = await self.pool.fetchrow(
+            "INSERT INTO org_canon (id, category, priority, stage, title, body, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *",
+            new_id(), category, priority, stage, title, body, user_id)
+        return dict(row)
+
+    async def update_org_canon(self, entry_id: str, patch: dict) -> dict | None:
+        assert self.pool
+        allowed = {"title", "body", "category", "priority", "stage", "active"}
+        fields = {k: v for k, v in patch.items() if k in allowed}
+        if not fields:
+            row = await self.pool.fetchrow("SELECT * FROM org_canon WHERE id=$1", entry_id)
+            return dict(row) if row else None
+        sets = ", ".join(f"{k}=${i + 2}" for i, k in enumerate(fields))
+        row = await self.pool.fetchrow(f"UPDATE org_canon SET {sets}, updated_at=now() WHERE id=$1 RETURNING *", entry_id, *fields.values())
+        return dict(row) if row else None
+
+    async def delete_org_canon(self, entry_id: str) -> bool:
+        assert self.pool
+        return (await self.pool.execute("DELETE FROM org_canon WHERE id=$1", entry_id)).endswith("1")
+
+    async def list_org_optouts(self, project_id: str) -> list:
+        assert self.pool
+        return await self.pool.fetch("SELECT * FROM org_canon_optout WHERE project_id=$1", project_id)
+
+    async def set_org_optout(self, project_id: str, entry_id: str, reason: str, by: str) -> None:
+        assert self.pool
+        await self.pool.execute(
+            """INSERT INTO org_canon_optout (project_id, org_entry_id, reason, opted_out_by) VALUES ($1,$2,$3,$4)
+               ON CONFLICT (project_id, org_entry_id) DO UPDATE SET reason=$3, opted_out_by=$4, opted_out_at=now()""",
+            project_id, entry_id, reason, by)
+
+    async def clear_org_optout(self, project_id: str, entry_id: str) -> None:
+        assert self.pool
+        await self.pool.execute("DELETE FROM org_canon_optout WHERE project_id=$1 AND org_entry_id=$2", project_id, entry_id)
+
+    async def replace_canon_checks(self, project_id: str, phase: int, rows: list[dict]) -> None:
+        """The latest check of one stage replaces the previous one."""
+        assert self.pool
+        async with self.pool.acquire() as conn, conn.transaction():
+            await conn.execute("DELETE FROM canon_checks WHERE project_id=$1 AND phase=$2", project_id, phase)
+            for r in rows:
+                await conn.execute(
+                    """INSERT INTO canon_checks (id, project_id, phase, rule_id, rule_scope, rule_title, status, artefact_id, artefact_title, evidence)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)""",
+                    new_id(), project_id, phase, r["rule_id"], r.get("rule_scope", "project"), r["rule_title"], r["status"],
+                    r.get("artefact_id"), r.get("artefact_title"), r.get("evidence"))
+
+    async def list_canon_checks(self, project_id: str) -> list:
+        assert self.pool
+        return await self.pool.fetch("SELECT * FROM canon_checks WHERE project_id=$1 ORDER BY phase, checked_at", project_id)
+
+    async def list_stack_presets(self) -> list[dict]:
+        assert self.pool
+        rows = await self.pool.fetch("SELECT id, name, description, layers FROM org_stack_presets WHERE active ORDER BY name")
+        return [dict(r) for r in rows]
+
+    async def get_stack_preset(self, preset_id: str) -> dict | None:
+        assert self.pool
+        r = await self.pool.fetchrow("SELECT id, name, description, layers FROM org_stack_presets WHERE id=$1 AND active", preset_id)
+        return dict(r) if r else None
+
+    async def insert_stack_preset(self, *, name: str, description: str, layers: list[dict], user_id: str) -> dict:
+        assert self.pool
+        r = await self.pool.fetchrow("INSERT INTO org_stack_presets (id, name, description, layers, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING id, name, description, layers",
+                                     new_id(), name, description, layers, user_id)
+        return dict(r)
+
+    async def delete_stack_preset(self, preset_id: str) -> bool:
+        assert self.pool
+        return (await self.pool.execute("UPDATE org_stack_presets SET active=false WHERE id=$1", preset_id)).endswith("1")
+
+    async def artefact_usage_by_type(self, project_id: str) -> dict[str, dict]:
+        """{TYPE: {count, phases}} for the project's current artefacts: which templates are in use, and where."""
+        assert self.pool
+        rows = await self.pool.fetch(
+            "SELECT type, count(*) AS n, array_agg(DISTINCT phase) AS phases FROM artefacts WHERE project_id=$1 AND is_latest GROUP BY type", project_id)
+        return {r["type"]: {"count": int(r["n"]), "phases": sorted(r["phases"])} for r in rows}
+
+    async def list_formwork_versions(self, project_id: str | None, artefact_type: str, output_format: str) -> list:
+        assert self.pool
+        if project_id is None:
+            return await self.pool.fetch(
+                "SELECT id, name, active, created_by, created_at FROM formworks WHERE project_id IS NULL AND artefact_type=$1 AND output_format=$2 ORDER BY created_at DESC",
+                artefact_type, output_format)
+        return await self.pool.fetch(
+            "SELECT id, name, active, created_by, created_at FROM formworks WHERE project_id=$1 AND artefact_type=$2 AND output_format=$3 ORDER BY created_at DESC",
+            project_id, artefact_type, output_format)
 
     async def update_canon(self, entry_id: str, project_id: str, patch: dict) -> dict | None:
         assert self.pool

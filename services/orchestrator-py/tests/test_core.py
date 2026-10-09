@@ -1722,6 +1722,12 @@ async def test_canon_block_orders_by_priority_and_scopes_by_stage():
         async def list_canon(self, project_id, active_only=True):
             return rows
 
+        async def list_org_canon(self, active_only=True):
+            return []
+
+        async def list_org_optouts(self, project_id):
+            return []
+
     svc = CanonService(_Db(), object(), object())
     block = await svc.render_block("p1", 2)
     assert block.index("MUST") < block.index("SHOULD") < block.index("CONTEXT")
@@ -1733,6 +1739,12 @@ async def test_canon_block_orders_by_priority_and_scopes_by_stage():
 
     class _Empty:
         async def list_canon(self, project_id, active_only=True):
+            return []
+
+        async def list_org_canon(self, active_only=True):
+            return []
+
+        async def list_org_optouts(self, project_id):
             return []
 
     assert await CanonService(_Empty(), object(), object()).render_block("p1", 1) == ""

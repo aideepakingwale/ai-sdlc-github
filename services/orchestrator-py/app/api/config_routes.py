@@ -49,7 +49,7 @@ def _catalog() -> dict[str, Any]:
 async def get_config(project_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     await c.authz.assert_project_access(project_id, user)
     cfg = await c.project_config.get(project_id)
-    presets = await c.db.list_stack_presets() if hasattr(c.db, "list_stack_presets") else []
+    presets = await c.project_config.presets()
     return {"config": cfg, "canEdit": await c.project_config.can_edit(project_id, user), "catalog": _catalog(), "presets": presets,
             "summary": cfg["stack"]["summary"], "rendered": {e["id"]: render_entry(e) for e in cfg["stack"]["layers"]}}
 
@@ -82,3 +82,10 @@ async def config_file(project_id: str, user: UserPublic = Depends(current_user),
     import json
     cfg = await c.project_config.get(project_id)
     return PlainTextResponse(json.dumps(cfg, indent=2, ensure_ascii=False), media_type="application/json")
+
+
+@router.post("/api/projects/{project_id}/config/stack/preset/{preset_id}")
+async def apply_preset(project_id: str, preset_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    """Pin an organisation (or starter) preset's layers on this project."""
+    cfg = await c.project_config.apply_preset(project_id, user, preset_id)
+    return {"config": cfg, "summary": cfg["stack"]["summary"]}

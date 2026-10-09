@@ -250,6 +250,7 @@ class ChatService:
                 await self._persist_publish_plan(project["id"], seq, phase_result)
                 if final_state.gate_status == "PENDING_REVIEW":
                     await self._identify_stack(project["id"], seq, stage, phase_result, emit)
+                    await self._check_rules(project["id"], seq, stage)
                     await self._security_gate(project["id"], seq, stage, project, emit)
                     await self._dynamo.put_phase_state(
                         project_id=project["id"], phase=seq,
@@ -1774,6 +1775,13 @@ class ChatService:
         svc = getattr(self._deps, "project_config", None)
         return await svc.layers(project_id) if svc is not None else None
 
+    async def _check_rules(self, project_id: str, seq: int, stage: dict) -> None:
+        """After a stage generates: compare its documents with the must-rules (advice for the reviewer, never a gate)."""
+        checker = getattr(self._deps, "rule_checker", None)
+        template = int(stage.get("template") or 0)
+        if checker is not None and 1 <= template <= 6:
+            await checker.check_stage(project_id, seq, template)
+
     async def _identify_stack(self, project_id: str, seq: int, stage: dict, phase_result: Any, emit: Emit) -> None:
         """After stages 1, 2 and 3 generate: identify the stack their documents settle, into projectconfig.json, before the next stage runs."""
         advisor = getattr(self._deps, "stack_advisor", None)
@@ -2087,6 +2095,7 @@ class ChatService:
             await self._persist_publish_plan(project_id, phase, phase_result)
             if final_state.gate_status == "PENDING_REVIEW":
                 await self._identify_stack(project_id, phase, stage, phase_result, emit)
+                await self._check_rules(project_id, phase, stage)
                 await self._security_gate(project_id, phase, stage, project, emit)
                 await self._dynamo.put_phase_state(project_id=project_id, phase=phase, status="PENDING_REVIEW", reviewer_role=stage["reviewerRole"])
                 emit({"type": "gate", "phase": phase, "status": "PENDING_REVIEW", "reviewerRole": stage["reviewerRole"]})

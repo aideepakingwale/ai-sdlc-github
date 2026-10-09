@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 
 from .agents.phase_agents import AgentDeps
-from .api import auth_routes, chat_routes, config_routes, project_routes
+from .api import auth_routes, chat_routes, config_routes, project_routes, rules_routes
 from .api.deps import Container
 from .auth.keycloak import KeycloakAuth
 from .config import get_settings
@@ -128,10 +128,14 @@ async def lifespan(app: FastAPI):
     from .services.stack_advisor import StackAdvisor
     project_config = ProjectConfigService(db, content, authz, audit, canon)   # projectconfig.json
     stack_advisor = StackAdvisor(llm, project_config, db)
+    from .services.rule_assist import RuleAssist
+    from .services.rule_checks import RuleChecker
+    rule_assist = RuleAssist(llm, canon, project_config)
+    rule_checker = RuleChecker(db, content, llm, canon, settings)
     agent_deps = AgentDeps(
         llm=llm, mcp=mcp, db=db, audit=audit, rag=rag, content=content, monitor=monitor,
         settings=settings, telemetry=telemetry, canon=canon, formworks=formworks, memory=memory,
-        project_config=project_config, stack_advisor=stack_advisor,
+        project_config=project_config, stack_advisor=stack_advisor, rule_checker=rule_checker,
     )
     workflow = WorkflowService(db, dynamo, audit)
     stack_advisor.workflow = workflow
@@ -179,6 +183,7 @@ async def lifespan(app: FastAPI):
     container.canon, container.formworks = canon, formworks
     container.memory = memory
     container.project_config, container.stack_advisor = project_config, stack_advisor
+    container.rule_assist, container.rule_checker = rule_assist, rule_checker
     from .services.code_edit import CodeEditService
     container.code_edit = CodeEditService(db, content, rag, audit, authz, llm, chat, workflow, dynamo, canon=canon, memory=memory)
     container.connections = connections
@@ -286,3 +291,4 @@ app.include_router(auth_routes.router)
 app.include_router(chat_routes.router)
 app.include_router(project_routes.router)
 app.include_router(config_routes.router)
+app.include_router(rules_routes.router)

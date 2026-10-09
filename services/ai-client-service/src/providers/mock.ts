@@ -97,6 +97,10 @@ function render(kind: string, topic: string, seed: string, userText: string, all
       return codeEditStep(all, userText);
     case 'stack_advisor':
       return JSON.stringify({ layers: [], notes: '' });
+    case 'rule_draft':
+      return JSON.stringify({ rules: [] });
+    case 'rule_check':
+      return JSON.stringify({ results: [] });
     case 'plan':
       return JSON.stringify({
         steps: [

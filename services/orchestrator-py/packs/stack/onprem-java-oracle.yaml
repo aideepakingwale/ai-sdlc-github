@@ -1,0 +1,12 @@
+id: onprem-java-oracle
+name: On-premises, Java and Oracle
+description: Spring Boot on virtual machines in the company data centre with Oracle, IBM MQ and Jenkins.
+layers:
+  - {layer: hosting, technology: On-premises}
+  - {layer: compute, technology: Virtual machines}
+  - {layer: backend, technology: Java, version: "17 (LTS)", extras: [Spring Boot]}
+  - {layer: database, technology: Oracle}
+  - {layer: messaging, technology: IBM MQ}
+  - {layer: iac, technology: Ansible}
+  - {layer: cicd, technology: Jenkins}
+  - {layer: observability, technology: Splunk}
