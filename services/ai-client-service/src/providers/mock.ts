@@ -32,7 +32,7 @@ export function createMockProvider(): LlmProvider {
       const topic = extractTopic(userText, all);
       const seed = createHash('sha256').update(all).digest('hex').slice(0, 8);
 
-      const content = render(kind, topic, seed, userText);
+      const content = render(kind, topic, seed, userText, all);
       return {
         content,
         model: 'mock-sdlc-1',
@@ -91,8 +91,10 @@ function failingFile(text: string): string {
   );
 }
 
-function render(kind: string, topic: string, seed: string, userText: string): string {
+function render(kind: string, topic: string, seed: string, userText: string, all = ''): string {
   switch (kind) {
+    case 'code_edit':
+      return codeEditStep(all, userText);
     case 'plan':
       return JSON.stringify({
         steps: [
@@ -324,4 +326,38 @@ function render(kind: string, topic: string, seed: string, userText: string): st
     default:
       return `Understood. Proceeding with **${topic}**.\n\nThis is the mock LLM provider (no API keys configured) — outputs are deterministic but structurally identical to production. Ref ${seed}.`;
   }
+}
+
+/**
+ * Code assistant (code_edit). Deterministic three-turn run so the whole loop is exercisable offline:
+ * read the first selected file, add a one-line note above its first line, check it, then report.
+ * The turn is the number of tool-result blocks already in the conversation; the selection and request
+ * come from the first user message.
+ */
+function codeEditStep(all: string, lastUser: string): string {
+  const turns = (all.match(/^TOOL RESULTS$/gm) ?? []).length;
+  const request = (/## Request\n([^\n]+)/.exec(all)?.[1] ?? 'the requested change').slice(0, 120);
+  const sel = /## Selected for this request\n([\s\S]*?)\n\n/.exec(all)?.[1] ?? '';
+  const listing = /## Files in the workspace \(\d+\)\n([\s\S]*?)\n\n/.exec(all)?.[1] ?? '';
+  const files = listing.split('\n').map((l) => l.replace(/ \(changed\)$/, '').trim()).filter(Boolean);
+  let path = sel.split('\n').map((l) => l.replace(/^- /, '').trim()).find((l) => l && !l.startsWith('(')) ?? '';
+  if (!files.includes(path)) {
+    const dir = path.replace(/\/$/, '');
+    path = files.find((f) => !dir || f.startsWith(`${dir}/`)) ?? files[0] ?? '';
+  }
+  const out = (o: Record<string, unknown>) => JSON.stringify({ message: '', calls: [], done: false, summary: '', ...o });
+  if (turns === 0) return out({ message: `Reading ${path} to see how it is written.`, calls: [{ tool: 'read_file', path }] });
+  if (turns === 1) {
+    const m = /^(\d+)\t(.*)$/m.exec(lastUser.split('TOOL RESULTS')[1] ?? '');
+    const line = m?.[2] ?? '';
+    const ext = path.split('.').pop() ?? '';
+    const marks: Record<string, [string, string]> = { py: ['# ', ''], sh: ['# ', ''], yml: ['# ', ''], yaml: ['# ', ''], sql: ['-- ', ''], md: ['<!-- ', ' -->'], html: ['<!-- ', ' -->'] };
+    const [open, close] = marks[ext] ?? (['ts', 'js', 'java', 'tsx', 'jsx', 'go', 'css', 'kt', 'cs'].includes(ext) ? ['// ', ''] : ['', '']);
+    if (!m || !open || !line.trim()) return out({ done: true, summary: `I read ${path} but the offline mock cannot edit that kind of file.` });
+    return out({
+      message: `Adding a note for: ${request}`,
+      calls: [{ tool: 'edit_file', path, old_string: line, new_string: `${open}DevMind: ${request}${close}\n${line}` }, { tool: 'check_syntax', path }],
+    });
+  }
+  return out({ done: true, summary: `Added a note at the top of ${path} for "${request}". This is the offline mock assistant; a real model makes the actual change. Nothing was run or built.` });
 }

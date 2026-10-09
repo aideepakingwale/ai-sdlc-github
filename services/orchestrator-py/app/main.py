@@ -172,6 +172,8 @@ async def lifespan(app: FastAPI):
     container.code_gen = code_gen
     container.canon, container.formworks = canon, formworks
     container.memory = memory
+    from .services.code_edit import CodeEditService
+    container.code_edit = CodeEditService(db, content, rag, audit, authz, llm, chat, workflow, dynamo, canon=canon, memory=memory)
     container.connections = connections
     gates.memory = memory
     # Durable background stage generation (D-97 L2): jobs survive disconnects, are

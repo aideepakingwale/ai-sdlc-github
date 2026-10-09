@@ -965,6 +965,49 @@ class Database:
             "DELETE FROM project_canon WHERE id=$1 AND project_id=$2", entry_id, project_id)
         return res.endswith("1")
 
+    # ------------------------------------------------------------------ Code edit sessions
+    async def save_code_edit(self, s: dict) -> None:
+        assert self.pool
+        await self.pool.execute(
+            """
+            INSERT INTO code_edit_sessions (id, project_id, scope, phase, user_id, user_email, title, status, targets, messages, changes, applied, usage)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+            ON CONFLICT (id) DO UPDATE SET status=$8, targets=$9, messages=$10, changes=$11, applied=$12, usage=$13, updated_at=now()
+            """, s["id"], s["project_id"], s["scope"], s.get("phase"), s["user_id"], s["user_email"], s.get("title", ""), s["status"],
+            s["targets"], s["messages"], s["changes"], s["applied"], s["usage"])
+
+    async def get_code_edit(self, project_id: str, session_id: str) -> dict | None:
+        assert self.pool
+        row = await self.pool.fetchrow("SELECT * FROM code_edit_sessions WHERE project_id=$1 AND id=$2", project_id, session_id)
+        return dict(row) if row else None
+
+    async def list_code_edits(self, project_id: str, user_id: str, scope: str | None = None, limit: int = 20) -> list:
+        assert self.pool
+        return await self.pool.fetch(
+            "SELECT id, scope, title, status, targets, usage, created_at, updated_at, jsonb_array_length(messages) AS turns, "
+            "(SELECT count(*) FROM jsonb_object_keys(changes)) AS pending, (SELECT count(*) FROM jsonb_object_keys(applied)) AS applied_count "
+            "FROM code_edit_sessions WHERE project_id=$1 AND user_id=$2 AND ($3::text IS NULL OR scope=$3) ORDER BY updated_at DESC LIMIT $4",
+            project_id, user_id, scope, limit)
+
+    async def delete_codebase_file(self, project_id: str, path: str) -> None:
+        import hashlib
+        assert self.pool
+        await self.pool.execute("DELETE FROM codebase_files WHERE project_id=$1 AND path=$2", project_id, path)
+        await self.pool.execute("DELETE FROM kb_documents WHERE id=$1",
+                                f"code-{project_id}-{hashlib.sha256(path.encode()).hexdigest()[:16]}")
+
+    async def update_code_plan_structure(self, plan_id: str, structure: dict) -> None:
+        assert self.pool
+        await self.pool.execute("UPDATE code_plans SET structure=$2 WHERE id=$1", plan_id, structure)
+
+    async def supersede_artefact(self, artefact_id: str) -> None:
+        assert self.pool
+        await self.pool.execute("UPDATE artefacts SET is_latest=false, superseded_at=now() WHERE id=$1", artefact_id)
+
+    async def revive_artefact(self, artefact_id: str) -> None:
+        assert self.pool
+        await self.pool.execute("UPDATE artefacts SET is_latest=true, superseded_at=NULL WHERE id=$1", artefact_id)
+
     # ------------------------------------------------------------------ Project connections
     async def list_connections(self, project_id: str) -> list:
         assert self.pool

@@ -1590,6 +1590,76 @@ async def project_files(
     return {"root": f"content-store/{project_id}", "storageMode": container.content.mode, "folders": tree}
 
 
+# ------------------------------------------------------------------ code assistant (prompt-based edits)
+class CodeEditBody(BaseModel):
+    scope: str
+    prompt: str
+    targets: list[str] = []
+    sessionId: str | None = None
+
+
+class CodeEditApplyBody(BaseModel):
+    paths: list[str] | None = None
+
+
+@router.post("/api/projects/{project_id}/code-edit")
+async def code_edit_run(
+    project_id: str, body: CodeEditBody, request: Request,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> StreamingResponse:
+    """Run the code assistant on the files or folders a person selected. Streams its steps (reading, searching, editing) and the
+    proposed changes as a diff; nothing is written to the project until /apply."""
+    from ..services.chat import sse_stream
+
+    async def handler(emit):  # noqa: ANN001, ANN202
+        await container.code_edit.stream(
+            project_id=project_id, user=user, scope=body.scope, targets=body.targets, prompt=body.prompt,
+            session_id=body.sessionId, emit=emit, is_disconnected=request.is_disconnected)
+
+    return StreamingResponse(sse_stream(handler), media_type="text/event-stream",
+                             headers={"cache-control": "no-cache, no-transform", "x-accel-buffering": "no"})
+
+
+@router.get("/api/projects/{project_id}/code-edit")
+async def code_edit_list(
+    project_id: str, scope: str | None = None,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    return {"sessions": await container.code_edit.list(project_id, user, scope)}
+
+
+@router.get("/api/projects/{project_id}/code-edit/{session_id}")
+async def code_edit_get(
+    project_id: str, session_id: str,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    return await container.code_edit.get(project_id, session_id, user)
+
+
+@router.post("/api/projects/{project_id}/code-edit/{session_id}/apply")
+async def code_edit_apply(
+    project_id: str, session_id: str, body: CodeEditApplyBody,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    return await container.code_edit.apply(project_id, session_id, user, body.paths)
+
+
+@router.post("/api/projects/{project_id}/code-edit/{session_id}/revert")
+async def code_edit_revert(
+    project_id: str, session_id: str,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    return await container.code_edit.revert(project_id, session_id, user)
+
+
+@router.post("/api/projects/{project_id}/code-edit/{session_id}/discard")
+async def code_edit_discard(
+    project_id: str, session_id: str,
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    return await container.code_edit.discard(project_id, session_id, user)
+
+
 @router.get("/api/projects/{project_id}/codebase/{file_id}")
 async def codebase_file_content(
     project_id: str, file_id: str,
