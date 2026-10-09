@@ -278,10 +278,13 @@ test.describe('agents', () => {
     await expect(cat.getByRole('button', { name: 'Specialist (29)', exact: true })).toBeVisible();
     await cat.getByRole('button', { name: 'Proposed (3)', exact: true }).click();
     await expect(page.getByTestId('v2-agent-row')).toHaveCount(3);
-    await cat.getByRole('button', { name: 'Specialist (29)', exact: true }).click();
+    await cat.getByRole('button', { name: 'All (49)', exact: true }).click();
     await page.getByTestId('v2-agent-row').filter({ hasText: 'prd' }).first().click();
     await expect(cat).toContainText('agents/generators/stage-1-requirements/prd.md');
     await expect(cat).toContainText('Product Requirements Document');
+    await expect(page.getByTestId('v2-agent-tools').first()).toContainText('confluence_publish_prd');
+    await page.getByTestId('v2-agent-row').filter({ hasText: 'clarifier' }).first().click();
+    await expect(cat).toContainText('clarify.system');
   });
 });
 

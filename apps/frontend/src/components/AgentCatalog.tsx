@@ -4,7 +4,7 @@ import { api } from '../api/client';
 
 export interface AgentDef {
   id: string; name: string; version: number; category: string; runtime: 'specialist' | 'native' | 'proposed'; status: string;
-  description: string; role: string; prompts?: string[]; entrypoint?: string; stage?: number; kind?: string; fields?: string[];
+  description: string; role: string; uses?: string[]; owns?: Array<{ id: string; variables: string[] }>; tools?: Array<{ name: string; run: string; access: string }>; entrypoint?: string; stage?: number; kind?: string; fields?: string[];
   artifacts?: string[]; upstream?: string[]; after?: string[]; path: string; body: string; notes?: string;
 }
 export interface AgentInventory { agents: AgentDef[]; counts: Record<string, number> }
@@ -54,7 +54,9 @@ export default function AgentCatalog() {
                   {[...(a.upstream ?? []), ...(a.after ?? []).map((f) => `this stage: ${f}`)].join(', ') || 'the brief only'}.
                 </div>
               )}
-              {a.entrypoint && <div>Called from <code>{a.entrypoint}</code>{a.prompts?.length ? <> using {a.prompts.map((p) => <code key={p} className="mr-1">{p}</code>)}</> : null}</div>}
+              {a.entrypoint && <div>Called from <code>{a.entrypoint}</code></div>}
+              {!!a.owns?.length && <div>Its prompts: {a.owns.map((p) => <code key={p.id} className="mr-1" title={p.variables.length ? `fills ${p.variables.join(', ')}` : ''}>{p.id}</code>)}{a.uses?.length ? <> · shared: {a.uses.map((p) => <code key={p} className="mr-1">{p}</code>)}</> : null}</div>}
+              <div data-testid="v2-agent-tools">Tools: {a.tools?.length ? a.tools.map((t) => <span key={t.name} className="mr-1.5 inline-block rounded bg-white px-1.5 py-0.5 font-mono text-[10px] text-slate-700 ring-1 ring-slate-200" title={t.access === 'write' ? 'Changes an external system' : 'Read-only'}>{t.name}<span className={t.access === 'write' ? ' text-amber-700' : ' text-slate-400'}> · {t.access}</span></span>) : <span className="text-slate-400">none. It only writes text; no tool is run with its output.</span>}{!!a.tools?.length && <span className="ml-1 text-slate-400">run by the stage runner on this agent's output; writes to Jira, Confluence and the design and pipeline commits are held until the stage is approved</span>}</div>
               <pre className="overflow-x-auto whitespace-pre-wrap rounded bg-slate-900 p-3 text-[11px] leading-relaxed text-slate-100">{a.body}</pre>
               {a.notes && <pre className="overflow-x-auto whitespace-pre-wrap rounded bg-white p-3 text-[11px] text-slate-600">{a.notes}</pre>}
             </div>

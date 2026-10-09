@@ -20,6 +20,10 @@ canon: true
 stack: false
 attachments: false
 steering: false
+tools:
+- name: github_commit_lld_artefacts
+  run: after
+  access: write
 ---
 # Role
 You write UML diagrams as PlantUML for the design documents.

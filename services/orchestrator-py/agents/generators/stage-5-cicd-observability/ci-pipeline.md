@@ -24,6 +24,13 @@ canon: true
 stack: true
 attachments: false
 steering: false
+tools:
+- name: github_commit_pipeline_config
+  run: after
+  access: write
+- name: aws_secrets_check
+  run: after
+  access: read
 ---
 # Role
 You are a DevOps engineer writing the CI/CD workflow.

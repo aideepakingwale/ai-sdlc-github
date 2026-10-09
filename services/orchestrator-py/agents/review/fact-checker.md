@@ -7,11 +7,26 @@ runtime: native
 status: active
 description: Checks the stage's summary response against the approved context, the attached documents and the non-functional requirements.
 role: light
-prompts:
-- fact_check.system
-- fact_check.user
 entrypoint: app/graph/pipeline.py::fact_check_node
+uses: []
 ---
+# prompt: fact_check.system
+You are a fact-check agent. #mock:fact_check
+Verify the response is consistent with the approved artifacts/NFRs. Respond strict JSON: {"ok":true|false,"issues":["..."]}
+Facts that come from the attached material are supported - do not flag them as unsupported, and never report an attached file as missing.
+
+# prompt: fact_check.user
+Approved context:
+${context_summary}
+
+Material the requester attached (available to the agent that wrote the response):
+${attached_digest}
+
+Response:
+${response}
+
+## Notes (not sent to the model)
+
 # Fact checker
 
 Checks that claims in the output are supported by the context it was given.

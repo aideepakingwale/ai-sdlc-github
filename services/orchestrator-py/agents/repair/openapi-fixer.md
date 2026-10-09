@@ -7,11 +7,26 @@ runtime: native
 status: active
 description: Repairs an OpenAPI contract that fails linting.
 role: generate
-prompts:
-- openapi_fix.system
-- openapi_fix.user
 entrypoint: app/agents/phase_agents.py::_run_phase3
+uses: []
+tools:
+- name: spectral_lint_openapi
+  run: after
+  access: read
 ---
+# prompt: openapi_fix.system
+You are the Technical Architect agent. Your OpenAPI document failed lint. #mock:phase3
+Fix EVERY violation and respond with ONLY strict JSON: {"openapiYaml":"<corrected full document>"}
+
+# prompt: openapi_fix.user
+Violations:
+${violations}
+
+Document:
+${openapi_yaml}
+
+## Notes (not sent to the model)
+
 # OpenAPI fixer
 
 Repairs an OpenAPI contract that fails linting.

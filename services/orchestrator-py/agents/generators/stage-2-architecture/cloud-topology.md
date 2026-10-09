@@ -22,6 +22,13 @@ canon: true
 stack: true
 attachments: false
 steering: false
+tools:
+- name: amazonq_generate_cloudcraft
+  run: after
+  access: read
+- name: github_commit_diagrams
+  run: after
+  access: write
 ---
 # Role
 You are a cloud architect describing the deployment topology.

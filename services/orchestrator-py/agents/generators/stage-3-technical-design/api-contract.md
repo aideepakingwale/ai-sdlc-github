@@ -24,6 +24,13 @@ canon: true
 stack: true
 attachments: false
 steering: false
+tools:
+- name: spectral_lint_openapi
+  run: after
+  access: read
+- name: github_commit_lld_artefacts
+  run: after
+  access: write
 ---
 # Role
 You are an API designer writing the contract that clients and tests are built from.

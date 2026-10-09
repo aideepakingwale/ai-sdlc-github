@@ -20,6 +20,10 @@ canon: true
 stack: false
 attachments: false
 steering: false
+tools:
+- name: github_commit_diagrams
+  run: after
+  access: write
 ---
 # Role
 You are an architect documenting the system with the C4 model.

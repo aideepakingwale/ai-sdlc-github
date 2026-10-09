@@ -160,12 +160,14 @@ def test_every_definition_file_loads_and_matches_its_folder_and_schema():
     cat = ac.catalog()
     assert len({a["id"] for a in cat}) == len(cat)
     for a in cat:
-        assert a["description"] and a["body"], a["id"]
+        assert a["description"], a["id"]
         if a["runtime"] == "specialist":
+            assert a["body"], a["id"]
             assert a["path"].startswith(f"generators/stage-{a['stage']}-"), a["path"]
             assert "## Notes" not in a["body"] and a["notes"]                 # documentation is not sent to the model
         else:
             assert a["runtime"] in ("native", "proposed")
+            assert a["notes"], f"{a['id']} documents when it runs, what it reads and how it fails under 'Notes'"
     assert sum(a["runtime"] == "specialist" for a in cat) == len(sp.REGISTRY) == 29
     assert {a["id"] for a in cat if a["status"] == "proposed"} == {"memory-distiller", "impact-analyst", "review-summariser"}
 
@@ -185,19 +187,22 @@ def test_native_agents_point_at_real_prompts_and_real_code():
 
 def test_the_loader_rejects_a_bad_definition(tmp_path):
     from app.services import agent_catalog as ac
-    good = "---\nid: x\nname: X\nversion: 1\ncategory: generator\nruntime: native\nstatus: active\ndescription: d\nrole: light\n---\nbody"
+    good = "---\nid: x\nname: X\nversion: 1\ncategory: generator\nruntime: native\nstatus: active\ndescription: d\nrole: light\n---\n# prompt: x.system\nhello ${name}\n\n## Notes (not sent to the model)\n\ndocs"
     (tmp_path / "x.md").write_text(good)
     assert ac.load_agents(tmp_path)[0]["id"] == "x"
     for name, text, why in [
         ("y.md", good, "must equal the file name"),
         ("x.md", good.replace("role: light", "role: huge"), "role must be one of"),
         ("x.md", good.replace("runtime: native", "runtime: specialist"), "specialist agents need"),
-        ("x.md", good.replace("role: light", "role: light\nprompts: [no.such.prompt]"), "not in the prompt library"),
+        ("x.md", good.replace("role: light", "role: light\nuses: [no.such.prompt]"), "not in the prompt library"),
+        ("x.md", good.replace("role: light", "role: light\ntools:\n- name: nope_tool"), "unknown tool"),
+        ("x.md", good.replace("# prompt: x.system\nhello ${name}", "just text"), "go under '# prompt: <id>'"),
     ]:
         d = tmp_path / name.replace(".md", "") ; d.mkdir(exist_ok=True)
         (d / name).write_text(text)
         with pytest.raises(ac.AgentPackError, match=why):
             ac.load_agents(d)
+            ac._check_uses(ac.load_agents(d))
 
 
 def test_editing_an_agent_file_changes_what_the_model_is_sent(tmp_path, monkeypatch):
@@ -211,3 +216,58 @@ def test_editing_an_agent_file_changes_what_the_model_is_sent(tmp_path, monkeypa
     spec = ac.load_agents(tmp_path / "agents")
     prd = next(a for a in spec if a["id"] == "prd")
     assert "TUNED-BY-AN-EDITOR" in sp._from_definition(prd).instructions
+
+
+# ---------------------------------------------------------------- prompts and tools
+def test_native_agents_own_their_prompts_and_the_library_reads_them_from_the_agent_files():
+    import pathlib
+
+    from app.services import agent_catalog as ac
+    from app.services.prompt_library import PROMPTS, render
+    root = pathlib.Path(__file__).resolve().parents[1]
+    owned = {p["id"]: a for a in ac.catalog() for p in a["owns"]}
+    assert len(owned) >= 25
+    for pid, agent in owned.items():
+        assert PROMPTS[pid].file == f"agents/{agent['path']}"
+        assert not (root / "prompts" / f"{pid}.md").exists(), f"{pid} is defined twice (prompts/ and {agent['id']})"
+    for agent_id in ("clarifier", "stage-planner", "quality-validator", "fact-checker", "diagram-repair", "code-implementer"):
+        assert next(a for a in ac.catalog() if a["id"] == agent_id)["owns"], f"{agent_id} should own its prompts"
+    # the call sites that were inline strings now render from the agent files
+    assert "classify" in render("traits.system").lower() and "Task for this stage" in render("attachment_sections.user", task="t", outline="o")
+    assert "PART 2 of 3" in render("long_document.part.user", part=2, parts=3, field_name="f", outline="o", sections="s", title_rule="")
+
+
+def test_tools_an_agent_declares_are_real_and_match_what_the_stage_runners_call():
+    import pathlib
+    import re
+
+    from app.agents import phase_agents as pa
+    from app.services import agent_catalog as ac
+    src = pathlib.Path(pa.__file__).read_text()
+    ts = pathlib.Path(__file__).resolve().parents[3] / "packages/shared/src/tools.ts"
+    if ts.exists():
+        assert ac.KNOWN_TOOLS == set(re.findall(r"name: '([a-z0-9_]+)'", ts.read_text())), "KNOWN_TOOLS is out of step with the tool connector"
+    # what each stage's runner actually calls
+    called: dict[int, set[str]] = {}
+    for n, fn in ((1, "_run_phase1"), (2, "_run_phase2"), (3, "_run_phase3"), (4, "_run_phase4"), (5, "_run_phase5"), (6, "_run_phase6"), (6, "_phase6_verify")):
+        body = src[src.index(f"async def {fn}("):]
+        body = body[:body.index("\nasync def ", 10)] if "\nasync def " in body[10:] else body
+        called.setdefault(n, set()).update(re.findall(r'_(?:tool|publish)\(\s*deps,\s*emit,\s*"([a-z0-9_]+)"', body))
+    declared: dict[int, set[str]] = {}
+    for a in ac.catalog():
+        stage = a.get("stage") or (6 if a["id"] in ("code-implementer", "code-structure-planner") else None)
+        if stage and a["runtime"] in ("specialist", "native") and a["id"] != "openapi-fixer":
+            declared.setdefault(stage, set()).update(t["name"] for t in a["tools"])
+    for stage, names in called.items():
+        assert names <= declared.get(stage, set()), f"stage {stage} runner calls {sorted(names - declared.get(stage, set()))} that no agent of the stage declares"
+        assert declared.get(stage, set()) <= names, f"stage {stage} agents declare {sorted(declared[stage] - names)} that the runner never calls"
+
+
+def test_write_tools_are_marked_write():
+    from app.agents.phase_agents import EXTERNAL_WRITE_TOOLS
+    from app.services import agent_catalog as ac
+    immediate = {"github_create_branch", "github_commit_code"}          # committed to the delivery branch as the code is written
+    for a in ac.catalog():
+        for t in a["tools"]:
+            assert (t["access"] == "write") == (t["name"] in EXTERNAL_WRITE_TOOLS or t["name"] in immediate), f"{a['id']}: {t}"
+            assert t["run"] == "after"          # no agent calls tools through the model yet

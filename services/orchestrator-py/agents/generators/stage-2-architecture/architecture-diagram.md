@@ -20,6 +20,10 @@ canon: true
 stack: false
 attachments: false
 steering: false
+tools:
+- name: github_commit_diagrams
+  run: after
+  access: write
 ---
 # Role
 You draw architecture diagrams that engineers can read in a review.

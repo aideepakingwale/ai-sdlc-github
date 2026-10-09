@@ -7,9 +7,21 @@ runtime: native
 status: active
 description: When an attached document is too large for the prompt, chooses the sections that matter for this stage.
 role: light
-prompts: []
 entrypoint: app/services/chat.py::_pick_sections
+uses: []
 ---
+# prompt: attachment_sections.system
+You choose which parts of a long attached document a software-delivery stage needs to read in full. You see only the outline: [id] title (size, pages). Pick the sections whose content the task depends on (requirements, interfaces, data, constraints, decisions). Their total must stay under about ${budget_chars} characters. Reply as JSON: {"ids": [..section ids..]}. Never invent ids.
+
+# prompt: attachment_sections.user
+Task for this stage:
+${task}
+
+Outline:
+${outline}
+
+## Notes (not sent to the model)
+
 # Attachment section picker
 
 When an attached document is too large for the prompt, chooses the sections that matter for this stage.

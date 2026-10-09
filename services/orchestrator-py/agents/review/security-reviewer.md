@@ -7,9 +7,11 @@ runtime: native
 status: active
 description: Reviews the stage's artefacts for security weaknesses and rates the overall risk; critical findings can block approval.
 role: reason
-prompts: []
 entrypoint: app/services/security_gate.py::run_review
+uses: []
 ---
+## Notes (not sent to the model)
+
 # Security reviewer
 
 Reviews the stage's artefacts for security weaknesses and rates the overall risk; critical findings can block approval.

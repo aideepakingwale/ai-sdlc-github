@@ -317,10 +317,7 @@ async def _generate_markdown_in_parts(
     outline, res = await deps.llm.generate_json(
         intent=intent, tag=f"{base_tag}:{field_name}:outline", max_attempts=2,
         messages=[{"role": "system", "content": system, "cache": True},
-                  {"role": "user", "content": (
-                      f"{user}\n\n---\nThe `{field_name}` document is long, so it will be written in parts. First produce ONLY its "
-                      'outline as JSON {"sections": [{"title": "...", "covers": "one line: what it must contain"}]} - the '
-                      "document's real top-level sections in order (at most 20), following any governing format exactly.")}],
+                  {"role": "user", "content": f"{user}\n\n" + render_prompt("long_document.outline.user", field_name=field_name)}],
         schema=_DocOutline, max_tokens=4_000, model=model, role=role,
     )
     sections = outline.sections
@@ -337,12 +334,9 @@ async def _generate_markdown_in_parts(
             r = await deps.llm.generate(
                 intent=intent, tag=f"{base_tag}:{field_name}:part{idx + 1}", max_tokens=max_tokens, model=model, role=role,
                 messages=[{"role": "system", "content": system, "cache": True},
-                          {"role": "user", "content": (
-                              f"{user}\n\n---\nYou are writing PART {idx + 1} of {len(groups)} of the `{field_name}` document. Full outline:\n{toc}\n\n"
-                              f"Write ONLY these sections, in full, as markdown: {mine}. Use the outline's exact section titles as headings, "
-                              "keep numbering consistent with the outline, do not write any other section, and add no preamble, closing remarks or code "
-                              "fence around the document." + (" Start with the document's single '# ' title heading." if idx == 0 else
-                                                              " Do NOT repeat the document title."))}],
+                          {"role": "user", "content": f"{user}\n\n" + render_prompt(
+                              "long_document.part.user", part=idx + 1, parts=len(groups), field_name=field_name, outline=toc, sections=mine,
+                              title_rule=render_prompt("long_document.title_rule.first" if idx == 0 else "long_document.title_rule.rest"))}],
             )
         return (r.content or "").strip(), r
 

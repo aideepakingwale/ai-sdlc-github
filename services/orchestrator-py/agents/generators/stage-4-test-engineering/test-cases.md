@@ -23,6 +23,10 @@ canon: true
 stack: false
 attachments: false
 steering: false
+tools:
+- name: jira_create_xray_test
+  run: after
+  access: write
 ---
 # Role
 You are a test engineer writing test cases that a tester can run without asking questions.

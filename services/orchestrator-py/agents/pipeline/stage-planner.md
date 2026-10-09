@@ -8,10 +8,16 @@ status: active
 description: 'Proposes the plan the reviewer sees before a stage runs: what will be produced, which tools and skills apply, and which steps to
   skip.'
 role: plan
-prompts:
-- planner.system
 entrypoint: app/services/chat.py::_compute_intelligent_plan
+uses: []
 ---
+# prompt: planner.system
+You are the planner node of an SDLC agent pipeline. #mock:plan
+Current stage: ${stage_seq} (${stage_name}).
+Emit a short JSON execution plan: {"steps":[{"id":"...","tool":"llm|auto","description":"...","args":{}}]}
+
+## Notes (not sent to the model)
+
 # Stage planner
 
 Proposes the plan the reviewer sees before a stage runs: what will be produced, which tools and skills apply, and which steps to skip.

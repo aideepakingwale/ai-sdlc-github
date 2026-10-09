@@ -237,18 +237,9 @@ def trait_values(detail: dict[str, dict[str, Any]]) -> dict[str, bool | None]:
 
 
 def traits_prompt(*, project: dict[str, Any], user_text: str, upstream: list[str]) -> tuple[str, str]:
-    system = (
-        "You classify what kind of software project this is, so an SDLC pipeline only plans and "
-        "generates artifacts that apply to it. For each characteristic answer present, absent or "
-        "unknown, quote the evidence from the input, and give a confidence 0-1. Say `unknown` unless "
-        "the input states or clearly implies it — NEVER guess, and absence of a mention is not "
-        "absence of the trait. Judge the project as described, not the generic pipeline."
-    )
+    """The trait classifier's prompts (agents/pipeline/trait-classifier.md)."""
+    from .prompt_library import render
     context = "\n".join(u[:300] for u in upstream[:30] if u.strip())[:4000]
-    user = (
-        f"PROJECT: {project.get('name') or '(unnamed)'}\n"
-        f"TECH STACK: {project.get('tech_stack') or '(not stated)'}\n"
-        f"USER INSTRUCTIONS: {strip_scope_block(user_text)[:3000] or '(none)'}\n"
-        f"UPSTREAM OUTPUTS / CONTEXT:\n{context or '(none)'}"
-    )
-    return system, user
+    return render("traits.system"), render(
+        "traits.user", project_name=project.get("name") or "(unnamed)", tech_stack=project.get("tech_stack") or "(not stated)",
+        instructions=strip_scope_block(user_text)[:3000] or "(none)", context=context or "(none)")

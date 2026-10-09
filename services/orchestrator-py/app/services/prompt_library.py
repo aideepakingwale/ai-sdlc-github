@@ -37,13 +37,17 @@ class PromptTemplate:
 
 
 def _build() -> dict[str, PromptTemplate]:
-    return {
-        p["id"]: PromptTemplate(
+    """The library: the template files in prompts/ plus the prompts agents own (a `# prompt: <id>` section of an agents/**/*.md file)."""
+    from .agent_catalog import owned_prompts
+    out: dict[str, PromptTemplate] = {}
+    for p in [*load_prompt_packs(), *owned_prompts()]:
+        if p["id"] in out:
+            raise ValueError(f"prompt id '{p['id']}' is defined twice ({out[p['id']].file} and {p.get('file', '')})")
+        out[p["id"]] = PromptTemplate(
             id=p["id"], version=p["version"], description=p["description"],
             template=p["template"], variables=tuple(p.get("variables", [])), file=p.get("file", ""),
         )
-        for p in load_prompt_packs()
-    }
+    return out
 
 
 # Loaded once at boot (fail-fast: a broken template stops the service). Set

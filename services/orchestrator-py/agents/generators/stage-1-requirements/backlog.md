@@ -21,6 +21,13 @@ canon: true
 stack: false
 attachments: true
 steering: false
+tools:
+- name: jira_create_epic
+  run: after
+  access: write
+- name: jira_create_story
+  run: after
+  access: write
 ---
 # Role
 You are a senior business analyst writing the product backlog for a delivery team.

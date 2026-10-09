@@ -22,6 +22,10 @@ canon: true
 stack: true
 attachments: false
 steering: false
+tools:
+- name: github_commit_lld_artefacts
+  run: after
+  access: write
 ---
 # Role
 You are a platform engineer writing infrastructure as code.

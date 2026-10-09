@@ -21,6 +21,13 @@ canon: true
 stack: true
 attachments: false
 steering: false
+tools:
+- name: github_commit_pipeline_config
+  run: after
+  access: write
+- name: trivy_scan_image
+  run: after
+  access: read
 ---
 # Role
 You are a platform engineer writing container images.

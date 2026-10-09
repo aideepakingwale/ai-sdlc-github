@@ -7,10 +7,15 @@ runtime: native
 status: active
 description: Condenses an approved upstream artefact that does not fit the token budget, keeping decisions, identifiers and numbers.
 role: light
-prompts:
-- context.compression.system
 entrypoint: app/services/context.py::build_context_block
+uses: []
 ---
+# prompt: context.compression.system
+You compress SDLC artifacts for downstream context. #mock:compress
+Summarise the artifact in <=150 words keeping every decision, constraint and identifier.
+
+## Notes (not sent to the model)
+
 # Context compressor
 
 Condenses an approved upstream artefact that does not fit the token budget, keeping decisions, identifiers and numbers.

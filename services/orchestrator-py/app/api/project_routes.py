@@ -1685,9 +1685,10 @@ async def preview_canon(
 async def list_agents(user: UserPublic = Depends(current_user)) -> dict:
     """Every agent definition (the `agents/**/*.md` files): what it does, the model role it runs on, what it reads, and its instructions."""
     from ..services import agent_catalog
-    keys = ("id", "name", "version", "category", "runtime", "status", "description", "role", "prompts", "entrypoint", "stage", "kind",
+    keys = ("id", "name", "version", "category", "runtime", "status", "description", "role", "uses", "tools", "entrypoint", "stage", "kind",
             "fields", "artifacts", "upstream", "after", "canon", "stack", "attachments", "steering", "path", "body", "notes")
-    agents = [{k: a.get(k) for k in keys if a.get(k) is not None} for a in agent_catalog.catalog()]
+    agents = [{**{k: a.get(k) for k in keys if a.get(k) is not None},
+               "owns": [{"id": p["id"], "variables": p["variables"]} for p in a["owns"]]} for a in agent_catalog.catalog()]
     return {"agents": agents, "counts": {r: sum(1 for a in agents if a["runtime"] == r) for r in ("specialist", "native", "proposed")}}
 
 

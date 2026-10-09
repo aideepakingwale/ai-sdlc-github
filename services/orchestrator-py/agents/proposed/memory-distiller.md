@@ -10,6 +10,8 @@ role: light
 prompts: []
 entrypoint: (proposed) app/services/memory.py
 ---
+## Notes (not sent to the model)
+
 # Memory distiller
 
 Turns a raw clarification answer or change request into a clean, reusable memory statement and decides whether it is worth remembering.

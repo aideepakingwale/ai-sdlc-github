@@ -19,7 +19,7 @@ agents/
 | `runtime` | Who runs it | The body is |
 |---|---|---|
 | `specialist` | the specialist engine (`app/agents/phase_agents.py::_generate_with_specialists`) | the instruction sent to the model (everything above a trailing `## Notes (not sent to the model)`) |
-| `native` | a Python service that makes the call | documentation: when it runs, its context, what it returns, how it fails; the file sets its model `role` and lists the prompt-library templates it uses |
+| `native` | a Python service that makes the call | its **prompts**, as `# prompt: <id>` sections that the prompt library loads from this file (no second copy in `prompts/`), plus documentation under `## Notes`: when it runs, its context, what it returns, how it fails. The file also sets its model `role` |
 | `proposed` | nothing yet | the design |
 
 Tune an agent by editing its file and restarting (or `AGENTS_RELOAD=true`). Bump `version` when you change the body. In Docker the
@@ -133,3 +133,12 @@ test, or (d) should be reviewed or regenerated on its own.
 * The **JSON retry** in the model client re-asks with the validation errors; it is a retry policy, not a task with its own context.
 * **Skills** (`../skills/*.md`) are user-invoked helpers with their own RBAC; the security review skill is reused by the security reviewer.
 * **Memory suggestions** and **connection tests** are deterministic code (rules and HTTP checks), not model calls.
+
+## Tools
+
+An agent's `tools` lists the MCP tools the platform runs **with its output**; nothing is chosen by the model, because no agent uses function
+calling today. The stage runner runs them after the agent has written (`run: after`): for example the backlog agent's epics and stories are
+created in Jira, the PRD and HLD are published to Confluence, the Spectral linter checks the API contract. `access: write` marks a tool that
+changes an external system; Jira, Confluence and the design and pipeline commits are held until the stage is approved. An agent with no tools only
+writes text. `tests/test_specialists.py` checks that every declared tool exists in the tool connector and that each stage's agents declare exactly
+what its runner calls, so a new tool call cannot slip in unlisted.

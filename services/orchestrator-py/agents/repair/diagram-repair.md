@@ -7,12 +7,24 @@ runtime: native
 status: active
 description: Fixes or redraws a diagram whose source does not render.
 role: generate
-prompts:
-- diagram_repair.fix.system
-- diagram_repair.regenerate.system
-- diagram_repair.user
 entrypoint: app/api/project_routes.py::repair_diagram
+uses: []
 ---
+# prompt: diagram_repair.fix.system
+You fix syntax errors in ${kind} diagram code so it parses and renders. Fix ONLY syntax; preserve every node, edge, label and the diagram's meaning; do not add, remove or rename elements. Output ONLY the corrected ${kind} diagram: no code fences, no commentary.
+
+# prompt: diagram_repair.regenerate.system
+You are a ${kind} diagram expert. The ${kind} diagram below is broken and cannot render. Redraw it as a correct, well-formed ${kind} diagram that conveys the same intent — keep the same components and relationships as far as you can infer them. Output ONLY the ${kind} diagram: no code fences, no commentary.
+
+# prompt: diagram_repair.user
+Detected problems:
+${detected}
+
+Diagram:
+${content}
+
+## Notes (not sent to the model)
+
 # Diagram repair agent
 
 Fixes or redraws a diagram whose source does not render.

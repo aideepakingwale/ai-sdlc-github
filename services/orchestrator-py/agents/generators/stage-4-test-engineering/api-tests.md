@@ -20,6 +20,13 @@ canon: true
 stack: false
 attachments: false
 steering: false
+tools:
+- name: restassured_generate_tests
+  run: after
+  access: read
+- name: playwright_generate_tests
+  run: after
+  access: read
 ---
 # Role
 You are a test engineer writing automated API tests.

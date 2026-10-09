@@ -19,6 +19,10 @@ canon: true
 stack: false
 attachments: true
 steering: false
+tools:
+- name: confluence_publish_prd
+  run: after
+  access: write
 ---
 # Role
 You are a product manager writing the Product Requirements Document that engineering, QA and compliance will all rely on.

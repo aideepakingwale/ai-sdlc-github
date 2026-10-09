@@ -26,6 +26,10 @@ canon: true
 stack: true
 attachments: true
 steering: true
+tools:
+- name: confluence_publish_hld
+  run: after
+  access: write
 ---
 # Role
 You are a solution architect writing the High-Level Design document that reviewers will approve.

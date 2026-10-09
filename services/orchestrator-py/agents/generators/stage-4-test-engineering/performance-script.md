@@ -21,6 +21,13 @@ canon: true
 stack: false
 attachments: false
 steering: false
+tools:
+- name: jmeter_generate_plan
+  run: after
+  access: read
+- name: locust_generate_test
+  run: after
+  access: read
 ---
 # Role
 You are a performance engineer writing a k6 load test.

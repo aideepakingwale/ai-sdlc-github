@@ -15,6 +15,7 @@ from redis.asyncio import Redis
 from pydantic import BaseModel, Field
 
 from ..agents.phase_agents import EXTERNAL_WRITE_TOOLS, TEMPLATE_TOOLS, AgentDeps
+from .prompt_library import render as render_prompt
 from .agent_catalog import role_of
 from ..services.plan_model import build_model_catalog, derive_plan_steps
 from ..agents.prompts import build_phase_prompt, render_stack
@@ -2247,12 +2248,8 @@ class ChatService:
                 intent="standard", tag="attachment_sections", temperature=0, max_tokens=500, max_attempts=1, role=role_of("attachment-section-picker", "light"),
                 schema=SectionPick,
                 messages=[
-                    {"role": "system", "content": (
-                        "You choose which parts of a long attached document a software-delivery stage needs to read in full. "
-                        "You see only the outline: [id] title (size, pages). Pick the sections whose content the task depends on "
-                        f"(requirements, interfaces, data, constraints, decisions). Their total must stay under about {cap // 2:,} "
-                        "characters. Reply as JSON: {\"ids\": [..section ids..]}. Never invent ids.")},
-                    {"role": "user", "content": f"Task for this stage:\n{query[:1500]}\n\nOutline:\n{toc}"},
+                    {"role": "system", "content": render_prompt("attachment_sections.system", budget_chars=f"{cap // 2:,}")},
+                    {"role": "user", "content": render_prompt("attachment_sections.user", task=query[:1500], outline=toc)},
                 ])
             known = {e["id"]: e["chars"] for e in outline(body, max_entries=10_000)["entries"]}
             picked: set[int] = set()

@@ -25,6 +25,10 @@ canon: true
 stack: true
 attachments: true
 steering: true
+tools:
+- name: confluence_publish_lld
+  run: after
+  access: write
 ---
 # Role
 You are a technical architect writing the Low-Level Design document that developers implement from.

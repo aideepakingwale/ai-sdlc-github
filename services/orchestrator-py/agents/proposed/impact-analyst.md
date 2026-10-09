@@ -11,6 +11,8 @@ role: reason
 prompts: []
 entrypoint: (proposed) app/services/flow.py::mark_downstream_stale
 ---
+## Notes (not sent to the model)
+
 # Impact analyst
 
 When an upstream stage changes, says which downstream artefacts are actually affected and what to change, instead of only marking stages outdated.

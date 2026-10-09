@@ -7,9 +7,28 @@ runtime: native
 status: active
 description: Writes a Markdown document too long for one response in parts, from an outline.
 role: generate
-prompts: []
 entrypoint: app/agents/phase_agents.py::_generate_markdown_in_parts
+uses: []
 ---
+# prompt: long_document.outline.user
+---
+The `${field_name}` document is long, so it will be written in parts. First produce ONLY its outline as JSON {"sections": [{"title": "...", "covers": "one line: what it must contain"}]} - the document's real top-level sections in order (at most 20), following any governing format exactly.
+
+# prompt: long_document.part.user
+---
+You are writing PART ${part} of ${parts} of the `${field_name}` document. Full outline:
+${outline}
+
+Write ONLY these sections, in full, as markdown: ${sections}. Use the outline's exact section titles as headings, keep numbering consistent with the outline, do not write any other section, and add no preamble, closing remarks or code fence around the document.${title_rule}
+
+# prompt: long_document.title_rule.first
+Start with the document's single '# ' title heading.
+
+# prompt: long_document.title_rule.rest
+Do NOT repeat the document title.
+
+## Notes (not sent to the model)
+
 # Long-document writer
 
 Writes a Markdown document too long for one response in parts, from an outline.

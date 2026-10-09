@@ -10,6 +10,8 @@ role: light
 prompts: []
 entrypoint: (proposed) app/api/project_routes.py
 ---
+## Notes (not sent to the model)
+
 # Review summariser
 
 Writes the reviewer a short summary of what a stage produced and what changed since the last version, with open findings.

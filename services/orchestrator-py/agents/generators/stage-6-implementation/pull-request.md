@@ -25,6 +25,13 @@ canon: true
 stack: false
 attachments: false
 steering: false
+tools:
+- name: github_create_branch
+  run: after
+  access: write
+- name: github_commit_code
+  run: after
+  access: write
 ---
 # Role
 You prepare the pull request for review.
