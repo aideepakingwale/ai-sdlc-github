@@ -1,0 +1,13 @@
+id: aws-dotnet-containers
+name: "AWS containers, .NET"
+description: "ASP.NET Core services on ECS Fargate with Aurora PostgreSQL, SQS and Cognito, defined with Terraform."
+layers:
+  - {layer: hosting, technology: AWS}
+  - {layer: compute, technology: "Containers (ECS)"}
+  - {layer: backend, technology: C#, version: ".NET 8", extras: [ASP.NET Core]}
+  - {layer: database, technology: Aurora}
+  - {layer: messaging, technology: SQS}
+  - {layer: identity, technology: Cognito}
+  - {layer: iac, technology: Terraform}
+  - {layer: cicd, technology: GitHub Actions}
+  - {layer: observability, technology: CloudWatch}

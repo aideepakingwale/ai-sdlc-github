@@ -1,0 +1,28 @@
+id: bundle-insurance-us
+name: "Insurer in the US"
+description: "Insurance with SOX controls, state privacy laws, health data where relevant and the core engineering practices."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - insurance
+  regulations:
+  - sox
+  - ccpa-cpra
+  - hipaa
+  domains:
+  - customer-pii
+  - regulatory-reporting
+  - health-records
+includes:
+- industry-insurance
+- sox-itgc
+- ccpa-cpra
+- hipaa
+- data-governance
+- security-baseline
+- resilience-dr
+- api-standards
+- testing-quality
+- observability-sre

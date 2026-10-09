@@ -1,0 +1,15 @@
+id: industry-insurance
+name: "Insurance"
+description: "Policy lifecycle, claims, pricing and underwriting models, solvency reporting and fair treatment of customers."
+kind: industry
+version: 1
+baseline: false
+tags: {industries: [insurance], regulations: [], domains: [customer-pii, regulatory-reporting, health-records]}
+entries:
+  - {category: rule, priority: must, stage: 3, title: "Policy and claim history is complete and as-at queryable", body: "Policies, endorsements and claims are versioned and effective-dated so the position at any past date can be reproduced for disputes and audits."}
+  - {category: rule, priority: must, stage: 3, title: "Premium and claims calculations are traceable", body: "Every premium, reserve and payment shows the inputs, rule version and rating factors used, so a customer or auditor can see how it was reached."}
+  - {category: rule, priority: must, stage: 2, title: "Pricing and underwriting models are governed", body: "Models have an owner, documented factors, tests for unfair discrimination and proxies for protected characteristics, and approval before use."}
+  - {category: rule, priority: must, stage: 3, title: "Sensitive data in claims is protected", body: "Health, financial and special-category data in claims has field-level access control, masking and retention limits."}
+  - {category: rule, priority: should, stage: 3, title: "Fraud detection with human review", body: "Claims fraud scoring routes suspicious cases to a person with the reasons shown, never to automatic denial alone."}
+  - {category: rule, priority: should, stage: 2, title: "Fair treatment and clear communication", body: "Customer communications, renewals and claim decisions are explainable, timely and recorded, with a route to complaint."}
+  - {category: rule, priority: should, stage: 3, title: "Regulatory and solvency reporting lineage", body: "Data feeding solvency and statutory reports has lineage, reconciliation to the ledger and sign-off."}

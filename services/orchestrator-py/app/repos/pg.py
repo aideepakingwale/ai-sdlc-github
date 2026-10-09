@@ -1022,6 +1022,39 @@ class Database:
         assert self.pool
         return await self.pool.fetch("SELECT * FROM canon_checks WHERE project_id=$1 ORDER BY phase, checked_at", project_id)
 
+    async def list_org_packs(self) -> list[dict]:
+        assert self.pool
+        return [dict(r) for r in await self.pool.fetch("SELECT * FROM org_packs ORDER BY name")]
+
+    async def upsert_org_pack(self, pack: dict, user_id: str) -> dict:
+        assert self.pool
+        r = await self.pool.fetchrow(
+            """INSERT INTO org_packs (id, name, description, kind, version, baseline, tags, includes, entries, active, created_by)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+               ON CONFLICT (id) DO UPDATE SET name=$2, description=$3, kind=$4, version=$5, baseline=$6, tags=$7, includes=$8, entries=$9,
+                 active=$10, updated_at=now() RETURNING *""",
+            pack["id"], pack["name"], pack["description"], pack["kind"], pack["version"], pack["baseline"], pack["tags"], pack["includes"],
+            pack["entries"], pack.get("active", True), user_id)
+        return dict(r)
+
+    async def delete_org_pack(self, pack_id: str) -> bool:
+        assert self.pool
+        return (await self.pool.execute("DELETE FROM org_packs WHERE id=$1", pack_id)).endswith("1")
+
+    async def get_org_profile(self) -> list[dict]:
+        assert self.pool
+        r = await self.pool.fetchrow("SELECT items FROM org_profile WHERE id='default'")
+        if not r:
+            return []
+        items = r["items"]
+        return json.loads(items) if isinstance(items, str) else list(items)
+
+    async def set_org_profile(self, items: list[dict], user_id: str) -> None:
+        assert self.pool
+        await self.pool.execute(
+            """INSERT INTO org_profile (id, items, updated_by) VALUES ('default', $1, $2)
+               ON CONFLICT (id) DO UPDATE SET items=$1, updated_by=$2, updated_at=now()""", items, user_id)
+
     async def list_stack_presets(self) -> list[dict]:
         assert self.pool
         rows = await self.pool.fetch("SELECT id, name, description, layers FROM org_stack_presets WHERE active ORDER BY name")

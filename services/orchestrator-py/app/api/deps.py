@@ -46,6 +46,8 @@ class Container:
     stack_advisor: Any = None   # identifies the stack from a stage's documents
     rule_assist: Any = None     # drafts rules from a document; hints before a rule is saved
     rule_checker: Any = None    # checks a stage's documents against the must-rules
+    pack_admin: Any = None      # the organisation's rule packs (create, import, export, hide, restore)
+    rule_advisor: Any = None    # recommends rule packs from the project's profile
     code_edit: Any = None  # prompt-based code assistant: agentic edits shown as a diff, applied by a person
     gen_jobs: Any = None  # durable background stage generation (D-97 L2)
     extras: dict[str, Any] = field(default_factory=dict)

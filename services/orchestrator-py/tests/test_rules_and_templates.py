@@ -49,6 +49,9 @@ class Db:
         self.org.append(r)
         return r
 
+    async def list_org_packs(self):
+        return []
+
     async def list_org_optouts(self, pid):
         return [{"org_entry_id": k, "reason": v[0], "opted_out_by": v[1]} for k, v in self.optouts.items()]
 
@@ -128,9 +131,9 @@ PM, ADMIN, DEV = make_user("PROJECT_MANAGER"), make_user("SUPER_ADMIN"), make_us
 # ---------------------------------------------------------------- packs
 def test_every_shipped_pack_is_valid():
     packs = rule_packs.rule_packs()
-    assert {p["id"] for p in packs} >= {"security-baseline", "api-standards", "code-style-naming", "data-protection", "testing-quality"}
-    assert all(p["entries"] for p in packs)
-    assert {p["id"] for p in rule_packs.stack_presets()} >= {"aws-serverless-python", "aws-containers-java", "azure-dotnet", "onprem-java-oracle"}
+    assert {p["id"] for p in packs} >= {"security-baseline", "api-standards", "code-style-naming", "testing-quality", "gdpr", "pci-dss-4", "hipaa", "industry-banking", "bundle-banking-eu"}
+    assert all(p["entries"] or p["includes"] for p in packs)
+    assert len(rule_packs.stack_presets()) >= 8
 
 
 async def test_a_pack_adds_its_rules_once():
@@ -138,7 +141,7 @@ async def test_a_pack_adds_its_rules_once():
     first = await svc.apply_pack("p1", PM, "security-baseline")
     again = await svc.apply_pack("p1", PM, "security-baseline")
     assert first["added"] >= 5 and first["skipped"] == 0 and again["added"] == 0 and again["skipped"] == first["added"]
-    assert all(r["origin"] == "pack:security-baseline" for r in db.canon)
+    assert all(r["origin"] == "pack:security-baseline@1" for r in db.canon)
     with pytest.raises(SdlcError):
         await svc.apply_pack("p1", PM, "nope")
     with pytest.raises(SdlcError) as e:

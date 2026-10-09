@@ -1,0 +1,32 @@
+id: bundle-banking-eu
+name: "Bank or lender in the EU or UK"
+description: "Retail and corporate banking under GDPR, DORA, PSD2 and ISO 27001, with the engineering practices a regulated bank needs."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - banking
+  regulations:
+  - gdpr
+  - uk-gdpr
+  - dora
+  - psd2
+  - iso-27001
+  domains:
+  - payments
+  - regulatory-reporting
+includes:
+- industry-banking
+- gdpr
+- dora
+- psd2-open-banking
+- iso-27001
+- security-baseline
+- resilience-dr
+- observability-sre
+- api-standards
+- testing-quality
+- devsecops-supply-chain
+- data-governance
+- accessibility-wcag

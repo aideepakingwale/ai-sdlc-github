@@ -1,0 +1,15 @@
+id: ccpa-cpra
+name: "US state privacy (CCPA and CPRA)"
+description: "Consumer rights to know, delete, correct and opt out of sale or sharing, with notice, purpose limitation and service-provider controls."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [retail-ecommerce, media-entertainment, saas-technology, telecom], regulations: [ccpa-cpra], domains: [customer-pii]}
+entries:
+  - {category: constraint, priority: must, stage: 1, title: "Notice at collection", body: "Tell consumers at or before collection which categories of personal information are collected, why, how long they are kept and whether they are sold or shared."}
+  - {category: rule, priority: must, stage: 3, title: "Handle requests to know, delete and correct", body: "The design shows how verified consumer requests are received, authenticated, fulfilled across all systems and service providers, and answered within 45 days."}
+  - {category: rule, priority: must, stage: 3, title: "Honour opt-out of sale or sharing and global privacy signals", body: "Provide a clear opt-out and respect browser opt-out signals such as Global Privacy Control. Opt-outs reach analytics, advertising and downstream partners."}
+  - {category: rule, priority: must, stage: 3, title: "Limit use of sensitive personal information", body: "Identify sensitive personal information, use it only for disclosed purposes and give consumers a way to limit its use."}
+  - {category: rule, priority: should, stage: 2, title: "Service provider and contractor terms", body: "Third parties that process personal information act under contracts that restrict use to the stated business purpose."}
+  - {category: rule, priority: should, stage: 3, title: "Reasonable security and data minimisation", body: "Apply security proportionate to the data and collect and keep only what the disclosed purposes need."}
+  - {category: rule, priority: should, stage: 3, title: "Do not discriminate against consumers who use their rights", body: "Service levels and prices do not change because someone exercised a privacy right, unless a permitted loyalty programme says otherwise."}

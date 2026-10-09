@@ -1,0 +1,26 @@
+id: bundle-telecom
+name: "Telecommunications operator or provider"
+description: "Carrier-grade services with billing integrity, subscriber privacy, NIS2 and resilience."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - telecom
+  regulations:
+  - nis2
+  - gdpr
+  - iso-27001
+  domains:
+  - customer-pii
+  - event-driven
+includes:
+- industry-telecom
+- nis2
+- gdpr
+- iso-27001
+- resilience-dr
+- observability-sre
+- performance-capacity
+- security-baseline
+- microservices-event-driven

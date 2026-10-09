@@ -1,0 +1,15 @@
+id: industry-telecom
+name: "Telecommunications"
+description: "Carrier-grade availability, accurate rating and billing, network automation and subscriber privacy."
+kind: industry
+version: 1
+baseline: false
+tags: {industries: [telecom], regulations: [], domains: [customer-pii, event-driven, iot-devices]}
+entries:
+  - {category: constraint, priority: must, stage: 1, title: "Carrier-grade availability targets", body: "State availability per service (for example five nines for core network functions) and the regulatory reporting duties on outages."}
+  - {category: rule, priority: must, stage: 3, title: "Usage records are complete, ordered and exactly-once in effect", body: "Call, session and data usage records are collected without loss, deduplicated, time-ordered and reconciled between network and billing."}
+  - {category: rule, priority: must, stage: 3, title: "Rating and billing are reproducible", body: "Charges can be recalculated from the usage and the tariff versions in force at the time, with dispute evidence."}
+  - {category: rule, priority: must, stage: 3, title: "Subscriber data and traffic metadata are protected", body: "Treat identity, location and traffic data as sensitive, restrict access, retain only as long as the law requires and support lawful requests through a controlled process."}
+  - {category: rule, priority: should, stage: 3, title: "Standard network and product APIs", body: "Use industry standards such as TM Forum Open APIs and 3GPP interfaces instead of bespoke ones."}
+  - {category: rule, priority: should, stage: 5, title: "Zero-touch, automated network operations", body: "Network and service changes are automated, tested and reversible with intent-based or declarative configuration."}
+  - {category: rule, priority: should, stage: 2, title: "Number portability and fraud prevention", body: "Support number porting and SIM-swap and subscription fraud controls with verification before sensitive changes."}

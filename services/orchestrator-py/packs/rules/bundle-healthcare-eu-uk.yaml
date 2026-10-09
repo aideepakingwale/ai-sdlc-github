@@ -1,0 +1,26 @@
+id: bundle-healthcare-eu-uk
+name: "Healthcare provider or health-tech in the EU or UK"
+description: "Health data under GDPR with clinical safety, interoperability and ISO 27001 controls."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - healthcare
+  regulations:
+  - gdpr
+  - uk-gdpr
+  - iso-27001
+  domains:
+  - health-records
+includes:
+- industry-healthcare
+- gdpr
+- iso-27001
+- data-governance
+- security-baseline
+- resilience-dr
+- accessibility-wcag
+- api-standards
+- testing-quality
+- observability-sre

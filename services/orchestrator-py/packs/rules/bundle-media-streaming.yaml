@@ -1,0 +1,26 @@
+id: bundle-media-streaming
+name: "Media, streaming or entertainment"
+description: "Content delivery at scale with rights enforcement, privacy and accessibility."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - media-entertainment
+  regulations:
+  - gdpr
+  - ccpa-cpra
+  - wcag
+  domains:
+  - public-web
+  - mobile-app
+  - customer-pii
+includes:
+- industry-media-entertainment
+- gdpr
+- ccpa-cpra
+- accessibility-wcag
+- frontend-web
+- performance-capacity
+- observability-sre
+- security-baseline

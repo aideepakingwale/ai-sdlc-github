@@ -1,0 +1,15 @@
+id: iec-62443-ot
+name: "Industrial and OT security (IEC 62443)"
+description: "Zones and conduits, secure product development and system security levels for industrial automation and operational technology."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [manufacturing, energy-utilities, logistics-transport, automotive], regulations: [iec-62443], domains: [ot-industrial, iot-devices]}
+entries:
+  - {category: rule, priority: must, stage: 2, title: "Divide the system into zones and conduits", body: "Group assets into zones by criticality and function, control all traffic through defined conduits, and show the IT and OT boundary and any demilitarised zone."}
+  - {category: constraint, priority: must, stage: 1, title: "Set target security levels", body: "State the target security level (SL-T) for each zone from a risk assessment, and the safety implications of failure."}
+  - {category: rule, priority: must, stage: 3, title: "Safety first: security must not defeat safety", body: "Security controls (patching, authentication, lockouts) must not prevent safe operation or emergency actions. Describe fail-safe behaviour."}
+  - {category: rule, priority: must, stage: 3, title: "No direct internet exposure of control systems", body: "Control networks have no inbound internet paths. Remote access goes through a hardened, monitored gateway with multi-factor authentication and session recording."}
+  - {category: rule, priority: must, stage: 5, title: "Patch and update with testing", body: "Define how patches are assessed, tested on a representative system and deployed in maintenance windows, and how unpatched risks are compensated."}
+  - {category: rule, priority: should, stage: 3, title: "Secure product development lifecycle", body: "Apply threat modelling, secure coding, component inventory and vulnerability handling in line with IEC 62443-4-1."}
+  - {category: rule, priority: should, stage: 5, title: "Passive monitoring and asset inventory", body: "Maintain an asset inventory and monitor OT networks for anomalies without disturbing operation."}

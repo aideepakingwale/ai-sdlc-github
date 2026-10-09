@@ -1,0 +1,14 @@
+id: industry-manufacturing
+name: "Manufacturing and supply chain"
+description: "Production systems, product traceability, quality, plant connectivity and partner exchange."
+kind: industry
+version: 1
+baseline: false
+tags: {industries: [manufacturing, automotive, logistics-transport], regulations: [], domains: [ot-industrial, iot-devices, event-driven]}
+entries:
+  - {category: rule, priority: must, stage: 2, title: "Follow the plant integration model", body: "Separate enterprise, manufacturing operations and control levels (for example ISA-95), and show data flows between ERP, MES and the shop floor."}
+  - {category: rule, priority: must, stage: 3, title: "Product and component traceability", body: "Record serial and lot numbers, materials, process parameters and operators so any unit can be traced forward and backward for quality and recall."}
+  - {category: rule, priority: must, stage: 3, title: "Production keeps running when the network does not", body: "Plant-floor applications work with intermittent connectivity, buffer data locally and synchronise safely without duplicating or losing records."}
+  - {category: rule, priority: should, stage: 3, title: "Use industrial and trading-partner standards", body: "Use OPC UA and MQTT on the shop floor and EDI or standard APIs with partners, with schema validation and acknowledgement."}
+  - {category: rule, priority: should, stage: 3, title: "Master data and bill of materials are governed", body: "Material, bill of materials and routing data have owners, versions, effective dates and change control."}
+  - {category: rule, priority: should, stage: 4, title: "Test against simulated plant equipment", body: "Test integrations with simulators or digital twins before touching live equipment, and never test on production lines without a controlled window."}

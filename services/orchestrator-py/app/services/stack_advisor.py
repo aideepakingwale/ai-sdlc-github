@@ -34,8 +34,16 @@ class AdvisedLayer(BaseModel):
     confidence: str = "medium"
 
 
+class AdvisedProfile(BaseModel):
+    kind: str
+    value: str
+    evidence: str = ""
+    confidence: str = "medium"
+
+
 class StackAdvice(BaseModel):
     layers: list[AdvisedLayer] = Field(default_factory=list)
+    profile: list[AdvisedProfile] = Field(default_factory=list)
     notes: str = ""
 
 
@@ -120,6 +128,60 @@ def parse_decision_layers(text: str) -> list[dict[str, Any]]:
     return out
 
 
+# ---------------------------------------------------------------- the project profile (industry, regulations, what the system does)
+_INDUSTRY_WORDS = {
+    "banking": r"\b(bank|banking|lender|lending|mortgage|loan|retail banking|core banking)\b", "insurance": r"\b(insur\w*|policyholder|underwrit\w*|claims? handling)\b",
+    "capital-markets": r"\b(trading|broker|capital markets?|order book|securities)\b", "payments-fintech": r"\b(fintech|payment (provider|service|processor)|wallet|acquirer)\b",
+    "healthcare": r"\b(patient|clinical|hospital|clinician|ehr|electronic health)\b", "life-sciences": r"\b(pharma\w*|biotech|clinical trial|gxp|laborator\w+)\b",
+    "retail-ecommerce": r"\b(e-?commerce|retail\w*|shopper|checkout|online store|basket)\b", "travel-hospitality": r"\b(hotel|airline|booking engine|travel|hospitality)\b",
+    "public-sector": r"\b(citizen|government|public sector|ministry|council|municipal\w*)\b", "education": r"\b(student|school|universit\w+|learner|teacher|edtech)\b",
+    "telecom": r"\b(telecom\w*|subscriber|mobile network|5g|carrier|msisdn)\b", "energy-utilities": r"\b(utility|utilities|power grid|smart meter|energy supplier|scada)\b",
+    "manufacturing": r"\b(manufactur\w+|factory|production line|mes|bill of materials)\b", "automotive": r"\b(vehicle|automotive|oem|connected car)\b",
+    "logistics-transport": r"\b(logistics|shipment|freight|carrier tracking|fleet|warehouse)\b", "media-entertainment": r"\b(streaming|broadcast\w*|publisher|content rights|media company)\b",
+    "saas-technology": r"\b(saas|multi-?tenant|software as a service)\b",
+}
+_REGULATION_WORDS = {
+    "gdpr": r"\bgdpr\b|general data protection", "uk-gdpr": r"\buk gdpr\b|data protection act 2018", "ccpa-cpra": r"\bccpa\b|\bcpra\b", "pci-dss": r"\bpci[- ]?dss\b|\bpci\b",
+    "hipaa": r"\bhipaa\b", "sox": r"\bsox\b|sarbanes", "soc2": r"\bsoc ?2\b", "iso-27001": r"\biso[ /]?(iec )?27001\b", "dora": r"\bdora\b|digital operational resilience",
+    "nis2": r"\bnis ?2\b", "psd2": r"\bpsd ?2\b|open banking", "gxp-part11": r"\bgxp\b|21 cfr|part 11", "fedramp": r"\bfedramp\b|nist 800-53", "ferpa-coppa": r"\bferpa\b|\bcoppa\b",
+    "iec-62443": r"\b62443\b", "unece-r155": r"\br155\b|iso/sae 21434", "eu-ai-act": r"\bai act\b", "wcag": r"\bwcag\b|section 508|accessib\w+",
+}
+_DOMAIN_WORDS = {
+    "payments": r"\b(payments?|card payments?|credit card|checkout)\b", "customer-pii": r"\b(personal data|customer data|pii|personally identifiable)\b",
+    "health-records": r"\b(health records?|patient records?|phi|medical records?)\b", "public-web": r"\b(public website|web portal|public api|customer portal|public-facing)\b",
+    "mobile-app": r"\b(mobile app|ios|android)\b", "ai-ml": r"\b(machine learning|ml model|llm|generative ai|ai feature)\b", "iot-devices": r"\b(iot|connected devices?|telemetry from devices)\b",
+    "ot-industrial": r"\b(scada|plc|operational technology|industrial control)\b", "multi-tenant-saas": r"\b(multi-?tenant|tenants?)\b",
+    "event-driven": r"\b(event-driven|message queue|kafka|event bus)\b", "regulatory-reporting": r"\bregulatory (reports?|reporting)\b",
+}
+_REGION_WORDS = {"eu": r"\b(european union|eu member|\beu\b|eea)\b", "uk": r"\b(united kingdom|\buk\b)\b", "us": r"\b(united states|u\.s\.|\bus\b|usa)\b",
+                 "canada": r"\bcanad\w+\b", "apac": r"\b(apac|asia[- ]pacific|singapore|australia)\b", "middle-east": r"\b(middle east|gcc|uae|saudi)\b"}
+
+
+def detect_profile_from_text(text: str) -> list[dict[str, Any]]:
+    """Profile values a text names, by keyword. A fallback for the model, and a floor: the single most-mentioned industry, and every
+    regulation, domain and region that is named at least once."""
+    blob = text or ""
+    if not blob.strip():
+        return []
+    found: list[dict[str, Any]] = []
+
+    def snippet(rx: str) -> str:
+        m = re.search(rx, blob, re.I)
+        return blob[max(0, m.start() - 40):m.end() + 60].replace("\n", " ").strip() if m else ""
+
+    counts = {k: len(re.findall(rx, blob, re.I)) for k, rx in _INDUSTRY_WORDS.items()}
+    counts = {k: v for k, v in counts.items() if v}
+    if counts:
+        best = max(counts.items(), key=lambda kv: kv[1])
+        if best[1] >= 2:
+            found.append({"kind": "industry", "value": best[0], "evidence": snippet(_INDUSTRY_WORDS[best[0]]), "confidence": "medium"})
+    for kind, words in (("regulation", _REGULATION_WORDS), ("domain", _DOMAIN_WORDS), ("region", _REGION_WORDS)):
+        for value, rx in words.items():
+            if re.search(rx, blob, re.I):
+                found.append({"kind": kind, "value": value, "evidence": snippet(rx), "confidence": "medium"})
+    return found
+
+
 # ---------------------------------------------------------------- codebase detection
 _FILES = (
     (r"(^|/)pom\.xml$", "backend", "Java", "Maven project"), (r"(^|/)build\.gradle(\.kts)?$", "backend", "Java", "Gradle project"),
@@ -180,6 +242,12 @@ def detect_from_codebase(files: dict[str, str]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------- the advisor
 def _layers_help() -> str:
     return "\n".join(f"- {layer['id']}: {layer.get('label', layer['id'])} ({layer.get('hint', '')})" for layer in get_layers())
+
+
+def _profile_help() -> str:
+    from . import profile as prof
+
+    return "\n".join(f"- {kind} ({prof.KIND_LABEL[kind]}): " + ", ".join(f"{x['id']}" for x in prof.VOCAB[kind]) for kind in prof.KINDS)
 
 
 def _digest(texts: list[tuple[str, str]]) -> str:
@@ -247,7 +315,7 @@ class StackAdvisor:
             blob = "\n\n".join(b for _, b in docs)
             if decider:
                 found += parse_decision_layers(blob)
-            llm_found = await self._ask_model(docs, current, template)
+            llm_found, llm_profile = await self._ask_model(docs, current, template)
             run["model"] = bool(llm_found is not None)
             if llm_found:
                 found += llm_found
@@ -262,6 +330,9 @@ class StackAdvisor:
                 seen.add(key)
                 unique.append(f)
             changes = await self._config.apply_found(project_id, unique, stage=seq, source="ta" if decider else "llm", decider=decider, run=run)
+            profile_found = llm_profile or detect_profile_from_text(blob)
+            if profile_found:
+                await self._config.apply_profile_found(project_id, profile_found, stage=seq, source="llm", run={"template": template})
             if emit and changes:
                 emit({"type": "node", "node": "agent", "label": "Technology stack identified: " + "; ".join(
                     f"{layer_label(c['layer'])}: {c['to']}" for c in changes[:6])})
@@ -270,11 +341,11 @@ class StackAdvisor:
             log.warning("stack advisor failed", exc_info=True)
             return []
 
-    async def _ask_model(self, docs: list[tuple[str, str]], current: list[dict[str, Any]], template: int) -> list[dict[str, Any]] | None:
-        """The model's findings, [] when it found nothing, None when the call failed."""
+    async def _ask_model(self, docs: list[tuple[str, str]], current: list[dict[str, Any]], template: int) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
+        """The model's layer and profile findings: ([], []) when it found nothing, (None, []) when the call failed."""
         try:
             have = "\n".join(f"- {layer_label(e['layer'])}: {render_entry(e)} [{e['status']}]" for e in current if render_entry(e)) or "(nothing recorded yet)"
-            system = render_prompt("stack_advisor.system", layers=_layers_help())
+            system = render_prompt("stack_advisor.system", layers=_layers_help(), profile_vocab=_profile_help())
             user = render_prompt("stack_advisor.user", stage=str(template), current=have, documents=_digest(docs))
             advice, _res = await self._llm.generate_json(
                 intent="standard", tag="stack_advisor", schema=StackAdvice, temperature=0, max_tokens=2000, max_attempts=2,
@@ -282,10 +353,11 @@ class StackAdvisor:
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": user}])
         except Exception:  # noqa: BLE001
             log.warning("stack advisor model call failed", exc_info=True)
-            return None
+            return None, []
+        profile = [p.model_dump() for p in advice.profile if p.confidence.lower() != "low" and p.value.strip()]
         out = []
         for a in advice.layers:
             if a.confidence.lower() == "low" or not a.technology.strip():
                 continue
             out.append(a.model_dump())
-        return out
+        return out, profile

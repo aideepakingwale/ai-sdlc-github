@@ -1,0 +1,14 @@
+id: ferpa-coppa
+name: "Student and children's data (FERPA and COPPA)"
+description: "Protecting education records and the personal information of children, with consent and limited disclosure."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [education, media-entertainment, saas-technology, retail-ecommerce], regulations: [ferpa-coppa], domains: [customer-pii, mobile-app]}
+entries:
+  - {category: constraint, priority: must, stage: 1, title: "Identify education records and children's data", body: "Identify which data are education records or personal information of children under 13, the purpose and the legal basis for each use."}
+  - {category: rule, priority: must, stage: 3, title: "Verifiable parental consent for under-13s", body: "Obtain verifiable parental consent before collecting personal information from children under 13, and offer a way to review, delete and stop further collection."}
+  - {category: rule, priority: must, stage: 3, title: "Disclose education records only with consent or an exception", body: "Release personally identifiable information from education records only with consent or under a documented exception, to school officials with a legitimate educational interest."}
+  - {category: rule, priority: must, stage: 3, title: "Data minimisation and retention for children", body: "Collect no more than needed to take part in an activity, retain it only as long as necessary and delete it securely afterwards."}
+  - {category: rule, priority: should, stage: 3, title: "No behavioural advertising to children", body: "Do not use children's data for targeted advertising or profiling unrelated to the service."}
+  - {category: rule, priority: should, stage: 3, title: "Parent and student access", body: "Provide a way for parents and eligible students to inspect and request correction of records within the required time."}

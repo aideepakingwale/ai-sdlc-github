@@ -1,6 +1,6 @@
 id: azure-dotnet
-name: Azure, .NET
-description: ASP.NET Core services on Azure with SQL Server, Service Bus and Entra ID sign-in, defined with Bicep.
+name: "Azure, .NET"
+description: "ASP.NET Core services on Azure with SQL Server, Service Bus and Entra ID sign-in, defined with Bicep."
 layers:
   - {layer: hosting, technology: Azure}
   - {layer: compute, technology: "Azure Container Apps"}

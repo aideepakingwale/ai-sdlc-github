@@ -1,0 +1,26 @@
+id: bundle-life-sciences-gxp
+name: "Pharma, biotech or medical products (GxP)"
+description: "Validated systems with data integrity, electronic records and signatures, clinical data standards and privacy."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - life-sciences
+  regulations:
+  - gxp-part11
+  - gdpr
+  - hipaa
+  domains:
+  - health-records
+  - regulatory-reporting
+includes:
+- industry-life-sciences
+- gxp-part11
+- gdpr
+- data-governance
+- iso-27001
+- security-baseline
+- testing-quality
+- architecture-documentation
+- devsecops-supply-chain

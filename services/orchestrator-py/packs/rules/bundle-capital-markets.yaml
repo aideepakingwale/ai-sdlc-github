@@ -1,0 +1,27 @@
+id: bundle-capital-markets
+name: "Trading and capital markets"
+description: "Order and trade systems with regulatory record keeping, resilience and low-latency design."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - capital-markets
+  regulations:
+  - dora
+  - sox
+  - iso-27001
+  domains:
+  - regulatory-reporting
+  - payments
+includes:
+- industry-capital-markets
+- dora
+- sox-itgc
+- iso-27001
+- security-baseline
+- resilience-dr
+- observability-sre
+- performance-capacity
+- testing-quality
+- devsecops-supply-chain

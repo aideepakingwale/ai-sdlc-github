@@ -1,0 +1,17 @@
+id: industry-banking
+name: "Banking and retail financial services"
+description: "Ledger integrity, payments, customer due diligence, fraud, model risk and regulatory reporting for banks and lenders."
+kind: industry
+version: 1
+baseline: false
+tags: {industries: [banking], regulations: [], domains: [payments, regulatory-reporting, customer-pii]}
+entries:
+  - {category: rule, priority: must, stage: 3, title: "Ledger is append-only and balanced", body: "Financial postings are immutable, double-entry and balanced. Corrections are new reversing entries, never edits. Every posting references its source transaction and user or service."}
+  - {category: rule, priority: must, stage: 3, title: "Money uses exact decimal arithmetic", body: "Amounts use fixed-point or decimal types with an explicit currency and rounding rule. Floating point is never used for money."}
+  - {category: rule, priority: must, stage: 3, title: "Payment operations are idempotent and reconciled", body: "Every payment instruction carries a unique reference so retries cannot duplicate it, and each flow has automated end-of-day reconciliation with exception handling."}
+  - {category: rule, priority: must, stage: 2, title: "Know your customer and anti-money-laundering checks", body: "Onboarding and ongoing monitoring include identity verification, sanctions and politically-exposed-person screening, transaction monitoring and suspicious-activity reporting hooks, with an auditable decision record."}
+  - {category: rule, priority: must, stage: 3, title: "Fraud controls in the transaction path", body: "Risk-score transactions in near real time, support step-up authentication and holds, and feed confirmed fraud back to the models."}
+  - {category: rule, priority: must, stage: 3, title: "Maker-checker for sensitive changes", body: "Changes to limits, beneficiaries, rates, fees and customer data above a threshold need a second authorised person."}
+  - {category: rule, priority: should, stage: 2, title: "Model risk governance for decisioning models", body: "Credit, pricing and fraud models have an owner, documented purpose and limits, independent validation, monitoring and a fallback."}
+  - {category: rule, priority: should, stage: 3, title: "Regulatory and management reporting is reproducible", body: "Reports can be regenerated for any past date from retained data and versioned logic, with lineage back to source systems."}
+  - {category: rule, priority: should, stage: 2, title: "Business continuity for critical banking services", body: "Payment, account access and card services have defined impact tolerances, recovery objectives and tested contingency options."}

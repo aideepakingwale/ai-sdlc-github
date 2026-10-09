@@ -1,11 +1,18 @@
 id: security-baseline
-name: Security baseline
-description: Secrets, authentication, input handling and logging rules every service should follow.
+name: "Secure engineering baseline (OWASP)"
+description: "Authentication, input handling, secrets, cryptography and logging rules aligned with the OWASP Top 10 and ASVS. Suits every system."
+kind: practice
+version: 1
+baseline: true
+tags: {industries: [], regulations: [], domains: []}
 entries:
-  - {category: rule, priority: must, stage: null, title: No secrets in code or documents, body: "Never put passwords, tokens, keys or connection strings in code, configuration files that are committed, diagrams or documents. Read them from the environment or a secrets manager and say so in the design."}
-  - {category: rule, priority: must, stage: null, title: Authenticate and authorise every entry point, body: "Every API operation, queue consumer and scheduled job states who may call it and how that is enforced. No endpoint is public unless the requirements say so explicitly."}
-  - {category: rule, priority: must, stage: null, title: Validate all input at the boundary, body: "Treat every external input (requests, messages, files, headers) as untrusted. Validate type, size and format at the boundary and use parameterised queries. Never build queries or commands from raw input."}
-  - {category: rule, priority: must, stage: null, title: Encrypt data in transit and at rest, body: "Use TLS for every network hop and encryption at rest for every data store that holds customer or business data. State the key management approach."}
-  - {category: rule, priority: should, stage: null, title: Log security-relevant events without sensitive data, body: "Log authentication, authorisation failures and administrative actions with who, what and when. Never log passwords, tokens, full card numbers or personal data."}
-  - {category: rule, priority: should, stage: null, title: Least privilege for every identity, body: "Service roles, database users and pipeline credentials get only the permissions they need. Wildcard permissions need a written justification."}
-  - {category: constraint, priority: must, stage: 5, title: Pipelines scan dependencies and containers, body: "The CI/CD pipeline fails the build on critical vulnerabilities found by dependency and container scanning, and on committed secrets."}
+  - {category: rule, priority: must, stage: null, title: "No secrets in code, configuration or documents", body: "Never put passwords, tokens, keys or connection strings in source code, committed configuration, diagrams or documents. Read them from a secrets manager or the runtime environment and say so in the design."}
+  - {category: rule, priority: must, stage: null, title: "Authenticate and authorise every entry point", body: "Every API operation, queue consumer, scheduled job and admin function states who may call it and how that is enforced on the server side. Nothing is public unless the requirements say so explicitly (OWASP A01 Broken Access Control)."}
+  - {category: rule, priority: must, stage: null, title: "Validate all input at the boundary", body: "Treat every external input (requests, messages, files, headers, query strings) as untrusted. Validate type, length, range and format at the boundary, use parameterised queries and encode output for its context (OWASP A03 Injection)."}
+  - {category: rule, priority: must, stage: null, title: "Use vetted cryptography", body: "Use TLS 1.2 or later on every network hop and strong, standard algorithms for data at rest. Never invent cryptography, never use MD5 or SHA-1 for security, hash passwords with a slow salted algorithm (Argon2, scrypt or bcrypt) and state the key management approach."}
+  - {category: rule, priority: must, stage: 3, title: "Session and token handling", body: "Tokens are short-lived, scoped and revocable. Session identifiers are random, rotated on login and marked HttpOnly, Secure and SameSite. State how tokens are validated, refreshed and revoked."}
+  - {category: rule, priority: must, stage: 3, title: "Threat model the design", body: "The technical design includes a short threat model (assets, trust boundaries, abuse cases and mitigations, for example STRIDE) and links each significant threat to a control or an accepted risk."}
+  - {category: rule, priority: should, stage: null, title: "Log security events without sensitive data", body: "Log authentication, authorisation failures, administrative actions and input-validation failures with who, what, when and a correlation id. Never log passwords, tokens, full card numbers or personal data (OWASP A09)."}
+  - {category: rule, priority: should, stage: null, title: "Least privilege for every identity", body: "Service roles, database users, pipeline credentials and human accounts get only the permissions they need. Wildcard permissions need a written justification and an owner."}
+  - {category: rule, priority: should, stage: 3, title: "Secure defaults and safe failure", body: "Deny by default, fail closed, return generic error messages to callers and keep detail in logs. Disable debug endpoints and sample accounts outside development."}
+  - {category: constraint, priority: must, stage: 5, title: "Pipelines scan code, dependencies and containers", body: "The CI/CD pipeline runs static analysis, dependency and container image scanning and secret detection, and fails the build on critical findings."}

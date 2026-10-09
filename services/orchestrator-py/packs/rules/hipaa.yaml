@@ -1,0 +1,18 @@
+id: hipaa
+name: "HIPAA (US protected health information)"
+description: "Privacy, security and breach notification safeguards for systems that create, receive, maintain or transmit protected health information."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [healthcare, life-sciences, insurance], regulations: [hipaa], domains: [health-records]}
+entries:
+  - {category: constraint, priority: must, stage: 1, title: "Identify PHI and the minimum necessary use", body: "Identify every element of protected health information, the purposes for which it is used and disclosed, and apply the minimum necessary standard to each role and integration."}
+  - {category: rule, priority: must, stage: 2, title: "Business associate agreements for every vendor touching PHI", body: "Any cloud service, subcontractor or integration that handles PHI is covered by a business associate agreement. List them in the architecture."}
+  - {category: rule, priority: must, stage: 3, title: "Access control, unique identity and automatic logoff", body: "Every user has a unique identity, access is role-based with an emergency-access procedure, and sessions end automatically after inactivity (Security Rule 164.312(a))."}
+  - {category: rule, priority: must, stage: 3, title: "Audit controls on PHI access", body: "Record who viewed, changed, exported or deleted PHI and when, protect the records from alteration and review them regularly (164.312(b)). Keep documentation for six years."}
+  - {category: rule, priority: must, stage: 3, title: "Encrypt PHI in transit and at rest", body: "Use strong encryption for PHI on networks, devices, backups and portable media, with managed keys. Treat unencrypted PHI as a risk to be justified (164.312(e) and addressable specifications)."}
+  - {category: rule, priority: must, stage: 5, title: "Breach detection and notification", body: "Detect and investigate suspected breaches, assess the risk and notify affected individuals and the regulator without unreasonable delay and within 60 days of discovery."}
+  - {category: rule, priority: must, stage: 2, title: "Risk analysis and risk management", body: "Maintain a documented, periodic security risk analysis of the system and track the risks and mitigations."}
+  - {category: rule, priority: should, stage: 3, title: "Integrity and authenticity of records", body: "Protect PHI from improper alteration or destruction and verify the source of data received from other systems."}
+  - {category: rule, priority: should, stage: 4, title: "No PHI in non-production environments", body: "Use de-identified or synthetic data for development and testing, following the de-identification standard where real data is the origin."}
+  - {category: rule, priority: should, stage: 5, title: "Contingency plan", body: "Maintain a data backup plan, disaster recovery plan and emergency mode operation plan, and test them."}

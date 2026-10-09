@@ -1,0 +1,14 @@
+id: industry-iot-connected-devices
+name: "IoT and connected devices"
+description: "Device identity, secure updates, telemetry at scale and lifecycle management for connected products."
+kind: industry
+version: 1
+baseline: false
+tags: {industries: [manufacturing, automotive, energy-utilities, telecom, saas-technology], regulations: [], domains: [iot-devices]}
+entries:
+  - {category: rule, priority: must, stage: 3, title: "Unique device identity with protected keys", body: "Each device has a unique identity and credentials in secure storage, provisioned at manufacture or onboarding, with no shared or default passwords."}
+  - {category: rule, priority: must, stage: 3, title: "Signed, staged and recoverable firmware updates", body: "Updates are signed and verified on the device, rolled out in stages and recoverable, so a failed update cannot brick a device."}
+  - {category: rule, priority: must, stage: 3, title: "Mutually authenticated, encrypted communication", body: "Devices and the platform authenticate each other and encrypt traffic, with certificate rotation and revocation."}
+  - {category: rule, priority: should, stage: 3, title: "Telemetry design for scale and cost", body: "State message rates, payload sizes, batching, ordering and retention, and design ingestion for bursts after outages."}
+  - {category: rule, priority: should, stage: 3, title: "Operate with intermittent connectivity", body: "Devices buffer data, retry safely and keep working offline within defined limits."}
+  - {category: rule, priority: should, stage: 5, title: "Fleet management and end of life", body: "Track device inventory, versions and health, support remote disable and define support periods and decommissioning."}

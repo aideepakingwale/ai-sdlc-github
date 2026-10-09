@@ -1,0 +1,16 @@
+id: accessibility-wcag
+name: "Accessibility (WCAG 2.2 AA)"
+description: "Perceivable, operable, understandable and robust user interfaces. Also serves EN 301 549 and Section 508 expectations."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [public-sector, education, retail-ecommerce, banking, insurance, healthcare, telecom, media-entertainment], regulations: [wcag], domains: [public-web, mobile-app]}
+entries:
+  - {category: constraint, priority: must, stage: 1, title: "Target WCAG 2.2 level AA", body: "User interfaces meet WCAG 2.2 level AA. State this as a non-functional requirement and name any approved exceptions."}
+  - {category: rule, priority: must, stage: 3, title: "Semantic structure and names", body: "Use semantic HTML or native controls, a logical heading order, landmarks, and accessible names and roles for every interactive element."}
+  - {category: rule, priority: must, stage: 3, title: "Everything works with the keyboard", body: "All functions are operable by keyboard with a visible focus indicator and no keyboard traps. Targets are large enough to use (at least 24 by 24 CSS pixels)."}
+  - {category: rule, priority: must, stage: 3, title: "Colour contrast and not colour alone", body: "Text has at least 4.5:1 contrast (3:1 for large text and UI components) and information is never conveyed by colour alone."}
+  - {category: rule, priority: must, stage: 3, title: "Text alternatives and captions", body: "Images that carry meaning have text alternatives, and video and audio have captions or transcripts."}
+  - {category: rule, priority: should, stage: 3, title: "Forms are clear and recoverable", body: "Fields have visible labels, errors say what is wrong and how to fix it, and users can review and correct entries before submitting important data."}
+  - {category: rule, priority: should, stage: 4, title: "Test with assistive technology", body: "Automated checks run in the pipeline, and key journeys are tested manually with a screen reader, keyboard only and zoom to 400 percent."}
+  - {category: rule, priority: should, stage: 3, title: "Respect user preferences", body: "Honour reduced motion, text size and dark or high-contrast settings, and do not time out without warning and a way to extend."}

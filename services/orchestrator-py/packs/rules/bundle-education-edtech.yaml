@@ -1,0 +1,25 @@
+id: bundle-education-edtech
+name: "School, university or edtech product"
+description: "Learner data, accessibility and children's privacy for education products."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - education
+  regulations:
+  - ferpa-coppa
+  - gdpr
+  - wcag
+  domains:
+  - customer-pii
+  - public-web
+  - mobile-app
+includes:
+- industry-education
+- ferpa-coppa
+- gdpr
+- accessibility-wcag
+- security-baseline
+- data-governance
+- api-standards

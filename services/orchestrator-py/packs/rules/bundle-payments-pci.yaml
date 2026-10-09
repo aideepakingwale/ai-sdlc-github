@@ -1,0 +1,25 @@
+id: bundle-payments-pci
+name: "Payments product handling card data"
+description: "Payment services in PCI DSS scope with the reliability and security practices payments need."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - payments-fintech
+  - retail-ecommerce
+  regulations:
+  - pci-dss
+  - psd2
+  domains:
+  - payments
+includes:
+- industry-payments-fintech
+- pci-dss-4
+- psd2-open-banking
+- security-baseline
+- api-standards
+- resilience-dr
+- observability-sre
+- devsecops-supply-chain
+- testing-quality

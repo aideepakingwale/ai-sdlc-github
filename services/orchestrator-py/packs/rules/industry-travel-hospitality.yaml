@@ -1,0 +1,13 @@
+id: industry-travel-hospitality
+name: "Travel and hospitality"
+description: "Booking integrity, inventory across suppliers, payments and traveller data."
+kind: industry
+version: 1
+baseline: false
+tags: {industries: [travel-hospitality], regulations: [], domains: [payments, public-web, customer-pii]}
+entries:
+  - {category: rule, priority: must, stage: 3, title: "Bookings are consistent across suppliers", body: "Search, hold, book, change and cancel flows handle supplier timeouts, price changes and partial failures with compensating actions and clear customer messaging."}
+  - {category: rule, priority: must, stage: 3, title: "Availability and price are re-validated before payment", body: "Re-check inventory and price at the last moment and show the customer any change before they pay."}
+  - {category: rule, priority: should, stage: 3, title: "Traveller documents and sensitive data", body: "Passport, loyalty and preference data have field-level protection and retention limits, and are shared with suppliers only as needed."}
+  - {category: rule, priority: should, stage: 2, title: "Seasonal and event peaks", body: "Design and test for peak searches and bookings, with caching of search results and protection against scraping."}
+  - {category: rule, priority: should, stage: 3, title: "Time zones, currencies and locales are explicit", body: "Store timestamps with their zone, amounts with currency and show them in the user's locale."}

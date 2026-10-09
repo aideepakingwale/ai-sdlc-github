@@ -1,0 +1,13 @@
+id: hybrid-java-kafka
+name: "Hybrid cloud, Java and Kafka event backbone"
+description: "Spring Boot services on OpenShift across data centre and cloud with Kafka as the event backbone, PostgreSQL and Keycloak."
+layers:
+  - {layer: hosting, technology: Hybrid}
+  - {layer: compute, technology: "Kubernetes (EKS)", notes: "Red Hat OpenShift"}
+  - {layer: backend, technology: Java, version: "21 (LTS)", extras: [Spring Boot]}
+  - {layer: database, technology: PostgreSQL, version: "16"}
+  - {layer: messaging, technology: Kafka}
+  - {layer: identity, technology: Keycloak}
+  - {layer: iac, technology: Terraform}
+  - {layer: cicd, technology: GitLab CI}
+  - {layer: observability, technology: Prometheus and Grafana}

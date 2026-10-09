@@ -1,0 +1,16 @@
+id: soc2
+name: "SOC 2 (trust services criteria)"
+description: "Security, availability, confidentiality, processing integrity and privacy controls customers ask a service provider to evidence."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [saas-technology, payments-fintech, healthcare, education], regulations: [soc2], domains: [multi-tenant-saas, customer-pii]}
+entries:
+  - {category: rule, priority: must, stage: 3, title: "Logical access with MFA and least privilege", body: "Access to production systems and customer data uses single sign-on, multi-factor authentication and role-based least privilege, reviewed at least quarterly (CC6)."}
+  - {category: rule, priority: must, stage: 5, title: "Change management with review and testing", body: "Changes are authorised, tested, peer-reviewed and deployed through a controlled pipeline, with the evidence retained (CC8)."}
+  - {category: rule, priority: must, stage: 5, title: "Monitoring, alerting and incident response", body: "Security events are logged and monitored, incidents follow a documented process with severity levels, and lessons are tracked to completion (CC7)."}
+  - {category: rule, priority: must, stage: 2, title: "Vendor and sub-service organisation management", body: "Maintain an inventory of critical vendors, assess their controls before use and monitor them (CC9)."}
+  - {category: rule, priority: should, stage: 2, title: "Availability commitments are measured", body: "State availability commitments, capacity planning and recovery objectives, and measure them (A1)."}
+  - {category: rule, priority: should, stage: 3, title: "Confidential data is classified and protected", body: "Classify customer and company data, encrypt it in transit and at rest and dispose of it securely at end of retention (C1)."}
+  - {category: rule, priority: should, stage: 3, title: "Processing integrity checks", body: "Inputs, processing and outputs are validated and reconciled so customers can rely on results (PI1)."}
+  - {category: rule, priority: should, stage: 5, title: "Controls produce evidence automatically", body: "Access reviews, change approvals, backups and vulnerability scans keep dated, retrievable evidence for the audit period."}

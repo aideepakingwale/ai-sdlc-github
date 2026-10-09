@@ -1,0 +1,15 @@
+id: industry-saas-multi-tenant
+name: "SaaS and multi-tenant platforms"
+description: "Tenant isolation, identity and provisioning, metering, extensibility and customer assurance for software-as-a-service products."
+kind: industry
+version: 1
+baseline: false
+tags: {industries: [saas-technology], regulations: [], domains: [multi-tenant-saas]}
+entries:
+  - {category: rule, priority: must, stage: 2, title: "Tenant isolation model is explicit", body: "State how tenants are isolated (silo, pool or bridge) for compute, data and keys, and the controls that stop one tenant reaching another's data."}
+  - {category: rule, priority: must, stage: 3, title: "Tenant id is enforced on every data access", body: "Tenant context is established once from the authenticated identity and enforced centrally (row-level security or scoped repositories), never trusted from request parameters."}
+  - {category: rule, priority: must, stage: 3, title: "Enterprise identity: SSO, SCIM and RBAC", body: "Support SAML or OIDC single sign-on, SCIM user provisioning and role-based access with an audit log customers can export."}
+  - {category: rule, priority: must, stage: 3, title: "Tenant data export and deletion", body: "Customers can export their data in open formats and have it deleted on exit, including backups, within a stated period."}
+  - {category: rule, priority: should, stage: 3, title: "Metering, quotas and noisy-neighbour protection", body: "Meter usage per tenant for billing and limits, enforce quotas and rate limits and protect shared resources from one tenant's load."}
+  - {category: rule, priority: should, stage: 3, title: "Safe, tenant-aware releases", body: "Roll out with feature flags and staged cohorts, migrate tenant data without downtime and support per-tenant version pinning where contracts need it."}
+  - {category: rule, priority: should, stage: 5, title: "Service status, SLAs and customer assurance", body: "Publish status, measure SLAs per tenant tier and keep a security and compliance pack available to customers."}

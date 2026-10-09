@@ -1,0 +1,15 @@
+id: industry-retail-ecommerce
+name: "Retail and e-commerce"
+description: "Checkout reliability, inventory and order consistency, pricing and promotions, peak events and customer data."
+kind: industry
+version: 1
+baseline: false
+tags: {industries: [retail-ecommerce, travel-hospitality], regulations: [], domains: [payments, public-web, customer-pii]}
+entries:
+  - {category: rule, priority: must, stage: 2, title: "Plan for peak events", body: "Design and test for named peaks (sales, launches, holidays) with load targets, queueing or waiting-room options and a freeze period before them."}
+  - {category: rule, priority: must, stage: 3, title: "Checkout and payment flow is resilient and idempotent", body: "A browser refresh, retry or provider timeout never creates a duplicate order or charge, and the customer always sees a clear state."}
+  - {category: rule, priority: must, stage: 3, title: "Inventory is consistent across channels", body: "Define the source of truth for stock, how reservations are held and released and how overselling is prevented or compensated."}
+  - {category: rule, priority: should, stage: 3, title: "Prices and promotions are deterministic and explainable", body: "Pricing, discounts, tax and shipping are computed by one service with versioned rules, and the basket shows how each amount was reached."}
+  - {category: rule, priority: should, stage: 3, title: "Order lifecycle events drive downstream systems", body: "Orders, shipments, returns and refunds are modelled as an event-driven lifecycle with clear ownership of each state."}
+  - {category: rule, priority: should, stage: 3, title: "Search, catalogue and page performance targets", body: "Set targets for search latency and relevance, catalogue freshness and page speed, and measure conversion impact."}
+  - {category: rule, priority: should, stage: 3, title: "Protect against bots and abuse", body: "Rate-limit and detect scraping, credential stuffing, card testing and fake accounts without harming real customers."}

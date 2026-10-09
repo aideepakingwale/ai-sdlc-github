@@ -1,0 +1,24 @@
+id: bundle-travel-hospitality
+name: "Travel, booking or hospitality"
+description: "Booking platforms with card payments, privacy and peak-season resilience."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - travel-hospitality
+  regulations:
+  - pci-dss
+  - gdpr
+  domains:
+  - payments
+  - public-web
+  - customer-pii
+includes:
+- industry-travel-hospitality
+- industry-retail-ecommerce
+- pci-dss-4
+- gdpr
+- performance-capacity
+- resilience-dr
+- security-baseline

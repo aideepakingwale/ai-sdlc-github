@@ -1,0 +1,19 @@
+id: bundle-event-driven-platform
+name: "Event-driven or microservice platform"
+description: "Service boundaries, messaging contracts and the resilience and operations that go with them."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries: []
+  regulations: []
+  domains:
+  - event-driven
+includes:
+- microservices-event-driven
+- resilience-dr
+- observability-sre
+- api-standards
+- security-baseline
+- testing-quality
+- architecture-documentation

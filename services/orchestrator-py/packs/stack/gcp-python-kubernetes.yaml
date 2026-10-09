@@ -1,0 +1,13 @@
+id: gcp-python-kubernetes
+name: "Google Cloud, Python on Kubernetes"
+description: "FastAPI services on GKE with PostgreSQL, Redis and Pub/Sub, defined with Terraform."
+layers:
+  - {layer: hosting, technology: GCP}
+  - {layer: compute, technology: "Kubernetes (EKS)", notes: "Google Kubernetes Engine"}
+  - {layer: backend, technology: Python, version: "3.12", extras: [FastAPI]}
+  - {layer: database, technology: PostgreSQL, version: "16"}
+  - {layer: cache, technology: Redis}
+  - {layer: messaging, technology: "Pub/Sub"}
+  - {layer: iac, technology: Terraform}
+  - {layer: cicd, technology: GitHub Actions}
+  - {layer: observability, technology: OpenTelemetry}

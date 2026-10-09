@@ -1,0 +1,25 @@
+id: bundle-energy-utilities
+name: "Energy or utility company"
+description: "Critical infrastructure with IT and OT separation, NIS2, IEC 62443 and strong resilience."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - energy-utilities
+  regulations:
+  - nis2
+  - iec-62443
+  - iso-27001
+  domains:
+  - ot-industrial
+  - iot-devices
+includes:
+- industry-energy-utilities
+- nis2
+- iec-62443-ot
+- iso-27001
+- resilience-dr
+- security-baseline
+- observability-sre
+- industry-iot-connected-devices

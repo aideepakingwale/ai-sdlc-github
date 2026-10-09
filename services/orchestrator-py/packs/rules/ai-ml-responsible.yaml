@@ -1,0 +1,16 @@
+id: ai-ml-responsible
+name: "Responsible AI and ML systems"
+description: "Risk classification, human oversight, transparency, data and model governance, evaluation and security for AI features (EU AI Act and NIST AI RMF aligned)."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [], regulations: [eu-ai-act], domains: [ai-ml]}
+entries:
+  - {category: rule, priority: must, stage: 1, title: "Classify the AI use by risk", body: "State the intended purpose of each AI feature and classify its risk (for example prohibited, high-risk, limited or minimal under the EU AI Act). High-risk uses add the controls below as requirements."}
+  - {category: rule, priority: must, stage: 2, title: "Human oversight for consequential decisions", body: "Decisions that significantly affect people are reviewed or can be overridden by a person. The design shows who, with what information and how overrides are recorded."}
+  - {category: rule, priority: must, stage: 3, title: "Tell people when they deal with AI", body: "Users are told when they interact with an AI system or receive AI-generated content, and can reach a person where the use warrants it."}
+  - {category: rule, priority: must, stage: 3, title: "Data used to train and test is governed", body: "Record the sources, licences, consent basis and quality checks of training, evaluation and retrieval data, and keep personal data out unless justified and protected."}
+  - {category: rule, priority: must, stage: 4, title: "Evaluate before and after release", body: "Define quality, safety and fairness measures with acceptance thresholds, test on representative and adversarial cases, and monitor for drift and regressions in production."}
+  - {category: rule, priority: should, stage: 4, title: "Test for bias and harmful output", body: "Test results across relevant groups and scenarios, record the outcome and the mitigations chosen."}
+  - {category: rule, priority: must, stage: 3, title: "Defend against prompt injection and data leakage", body: "Treat model inputs and retrieved content as untrusted, never give a model more privileges than the user, filter output, and keep secrets and other users' data out of prompts (OWASP Top 10 for LLM applications)."}
+  - {category: rule, priority: should, stage: 3, title: "Document models and keep logs", body: "Keep a model or system card (purpose, limits, data, evaluation) and log inputs, outputs and decisions as the risk requires, with retention and privacy controls."}

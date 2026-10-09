@@ -1,0 +1,15 @@
+id: industry-healthcare
+name: "Healthcare providers and health IT"
+description: "Clinical safety, interoperability, consent, patient identity and availability for care delivery systems."
+kind: industry
+version: 1
+baseline: false
+tags: {industries: [healthcare], regulations: [], domains: [health-records]}
+entries:
+  - {category: rule, priority: must, stage: 2, title: "Clinical safety case and hazard log", body: "Identify hazards to patients, their causes and controls in a hazard log, owned by a named clinical safety officer, and update it with every significant change."}
+  - {category: rule, priority: must, stage: 3, title: "Use standard clinical interoperability", body: "Exchange data using standards such as HL7 FHIR, HL7 v2, DICOM and standard terminologies (SNOMED CT, LOINC, ICD) rather than custom formats."}
+  - {category: rule, priority: must, stage: 3, title: "Reliable patient identification", body: "Match patients with a defined identifier and algorithm, show confidence, prevent and detect duplicates and merge safely with an audit trail."}
+  - {category: rule, priority: must, stage: 3, title: "Consent and break-glass access are recorded", body: "Respect recorded consent and restrictions. Emergency access is allowed but justified, flagged and reviewed."}
+  - {category: rule, priority: must, stage: 2, title: "Availability matches the care setting", body: "Define downtime procedures and recovery objectives for each clinical function, including how clinicians work when the system is unavailable."}
+  - {category: rule, priority: should, stage: 3, title: "Clear display of clinical information", body: "Show units, dates and source clearly, avoid ambiguous abbreviations and make alerts specific enough to avoid alert fatigue."}
+  - {category: rule, priority: should, stage: 3, title: "Medical device software is classified and controlled", body: "Decide whether the software is a medical device, and if so follow the lifecycle for its class (for example IEC 62304) including risk management and post-market monitoring."}

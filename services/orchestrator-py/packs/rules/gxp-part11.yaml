@@ -1,0 +1,16 @@
+id: gxp-part11
+name: "GxP and FDA 21 CFR Part 11 (regulated life sciences)"
+description: "Validated computerised systems, data integrity (ALCOA+), electronic records and signatures, and audit trails for pharma, biotech and medical products."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [life-sciences, healthcare], regulations: [gxp-part11], domains: [health-records, regulatory-reporting]}
+entries:
+  - {category: constraint, priority: must, stage: 1, title: "Determine GxP impact and validation approach", body: "State whether the system is GxP-relevant, its risk category and the validation approach (risk-based, for example GAMP 5), with a validation plan and traceable requirements."}
+  - {category: rule, priority: must, stage: 3, title: "Secure, computer-generated, time-stamped audit trails", body: "Record the who, what, when and why of every create, modify and delete of regulated records. Audit trails cannot be altered or disabled and previous values stay visible (21 CFR 11.10(e))."}
+  - {category: rule, priority: must, stage: 3, title: "Electronic signatures are unique and meaningful", body: "Signatures are unique to one person, require two components, show the signer, date, time and meaning (review, approval, responsibility) and are linked to their record (11.50, 11.70, 11.200)."}
+  - {category: rule, priority: must, stage: 3, title: "Data integrity (ALCOA+)", body: "Records are attributable, legible, contemporaneous, original and accurate, plus complete, consistent, enduring and available. Controls prevent loss, back-dating and overwriting."}
+  - {category: rule, priority: must, stage: 4, title: "Validation evidence: IQ, OQ, PQ or equivalent", body: "Provide traceable test evidence that the system does what is specified, executed from approved scripts with recorded results, deviations and sign-off."}
+  - {category: rule, priority: must, stage: 5, title: "Change control and periodic review", body: "Changes go through documented impact assessment, testing and approval, and the validated state is reviewed periodically."}
+  - {category: rule, priority: should, stage: 3, title: "Record retention and retrieval", body: "Regulated records are retained for the required period in a readable, retrievable form, including after system retirement."}
+  - {category: rule, priority: should, stage: 3, title: "Access limited to authorised individuals", body: "Access is restricted by role, with unique user IDs and managed passwords, and device and operational system checks where relevant."}

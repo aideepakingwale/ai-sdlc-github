@@ -1,0 +1,14 @@
+id: unece-r155-automotive
+name: "Automotive cybersecurity (UNECE R155 and ISO/SAE 21434)"
+description: "Cybersecurity management, threat analysis and risk assessment, secure updates and monitoring for connected vehicles and their back ends."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [automotive, manufacturing, logistics-transport], regulations: [unece-r155], domains: [iot-devices, ot-industrial]}
+entries:
+  - {category: rule, priority: must, stage: 2, title: "Threat analysis and risk assessment (TARA)", body: "Perform a TARA for vehicle functions and back-end services, identify assets, threats and attack paths, and trace each risk to a control or accepted residual risk (ISO/SAE 21434)."}
+  - {category: rule, priority: must, stage: 3, title: "Secure over-the-air updates", body: "Updates are authenticated, integrity-protected and rollback-safe, with a record of the software version of every vehicle."}
+  - {category: rule, priority: must, stage: 3, title: "Strong device identity and secure communication", body: "Each vehicle and electronic unit has a unique identity and keys protected in hardware, and all back-end communication is mutually authenticated and encrypted."}
+  - {category: rule, priority: must, stage: 5, title: "Monitor, detect and respond across the fleet", body: "Collect security events from vehicles and the back end, detect attacks and run an incident response that can contain and update affected vehicles."}
+  - {category: rule, priority: should, stage: 3, title: "Protect personal and location data", body: "Treat vehicle, location and driver data as personal data with minimisation, consent and retention controls."}
+  - {category: rule, priority: should, stage: 4, title: "Security testing through the lifecycle", body: "Include fuzzing, penetration tests and software composition analysis on components and the back end before release and after significant change."}

@@ -1,0 +1,14 @@
+id: performance-capacity
+name: "Performance and capacity"
+description: "Performance budgets, load profiles, capacity planning and efficiency."
+kind: practice
+version: 1
+baseline: false
+tags: {industries: [retail-ecommerce, banking, telecom, media-entertainment, payments-fintech], regulations: [], domains: [public-web, payments]}
+entries:
+  - {category: constraint, priority: must, stage: 1, title: "State expected load and growth", body: "Requirements give expected users, peak and average request rates, data volumes and growth for the next 12 to 24 months, with named peak events."}
+  - {category: rule, priority: must, stage: 2, title: "Set performance budgets", body: "State response-time, throughput and resource budgets per journey or API (for example p95 and p99 latency) and how they are verified."}
+  - {category: rule, priority: should, stage: 4, title: "Load, stress and soak tests", body: "Test at expected, peak and beyond-peak load and over long durations, in an environment shaped like production, and record the limits found."}
+  - {category: rule, priority: should, stage: 3, title: "Cache with a clear invalidation strategy", body: "Say what is cached, for how long, how it is invalidated and what happens when the cache is cold or unavailable."}
+  - {category: rule, priority: should, stage: 3, title: "Avoid unbounded work", body: "Bound page sizes, batch sizes, query result sizes and concurrency. Offload heavy work to queues and report progress."}
+  - {category: rule, priority: should, stage: 3, title: "Index and review queries", body: "Design indexes for the known access patterns, avoid N+1 queries and review the slowest queries before release."}

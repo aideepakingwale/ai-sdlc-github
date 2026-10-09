@@ -1,6 +1,6 @@
 id: onprem-java-oracle
-name: On-premises, Java and Oracle
-description: Spring Boot on virtual machines in the company data centre with Oracle, IBM MQ and Jenkins.
+name: "On-premises, Java and Oracle"
+description: "Spring Boot on virtual machines in the company data centre with Oracle, IBM MQ and Jenkins."
 layers:
   - {layer: hosting, technology: On-premises}
   - {layer: compute, technology: Virtual machines}

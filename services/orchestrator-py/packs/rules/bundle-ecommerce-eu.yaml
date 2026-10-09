@@ -1,0 +1,30 @@
+id: bundle-ecommerce-eu
+name: "E-commerce or retail in the EU or UK"
+description: "Online retail with card payments, GDPR, accessibility and peak-event performance."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - retail-ecommerce
+  regulations:
+  - gdpr
+  - uk-gdpr
+  - pci-dss
+  - wcag
+  domains:
+  - payments
+  - public-web
+  - customer-pii
+includes:
+- industry-retail-ecommerce
+- pci-dss-4
+- gdpr
+- accessibility-wcag
+- frontend-web
+- performance-capacity
+- security-baseline
+- api-standards
+- resilience-dr
+- observability-sre
+- testing-quality

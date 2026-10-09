@@ -1,9 +1,15 @@
 id: code-style-naming
-name: Code style and naming
-description: Conventions the generated code and tests follow.
+name: "Code style and naming"
+description: "Conventions for readable, maintainable generated code and tests."
+kind: practice
+version: 1
+baseline: true
+tags: {industries: [], regulations: [], domains: []}
 entries:
-  - {category: preference, priority: should, stage: 6, title: Small, single-purpose modules, body: "Prefer small modules and functions with one responsibility. Keep business rules out of controllers and handlers."}
-  - {category: rule, priority: must, stage: 6, title: Follow the language's standard naming and formatting, body: "Use the formatter and linter standard for the stack (for example PEP 8 with Ruff, Prettier with ESLint, gofmt). Code that does not pass them is not finished."}
-  - {category: rule, priority: should, stage: 6, title: Explicit error handling, body: "Handle errors where they can be acted on, never swallow them silently, and add context when re-raising. Use the project's error type, not bare exceptions."}
-  - {category: preference, priority: should, stage: 6, title: Tests mirror the source layout, body: "Test files sit beside or mirror the module they test and are named after it. One behaviour per test, with a name that says what it proves."}
-  - {category: glossary, priority: context, stage: null, title: Use the domain's words, body: "Name things with the terms used in the requirements. If the business says purchase order, the code does not say PO or order_doc."}
+  - {category: rule, priority: must, stage: 6, title: "Follow the language's standard formatting and linting", body: "Use the standard formatter and linter for the stack (for example PEP 8 with Ruff, Prettier with ESLint, gofmt, Checkstyle). Code that does not pass them is not finished."}
+  - {category: preference, priority: should, stage: 6, title: "Small, single-purpose modules", body: "Prefer small modules and functions with one responsibility. Keep business rules out of controllers, handlers and persistence code."}
+  - {category: rule, priority: should, stage: 6, title: "Explicit error handling", body: "Handle errors where they can be acted on, never swallow them silently, add context when re-raising and use the project's error types instead of bare exceptions."}
+  - {category: preference, priority: should, stage: 6, title: "Tests mirror the source layout", body: "Test files sit beside or mirror the module they test and are named after it. One behaviour per test, with a name that says what it proves."}
+  - {category: rule, priority: should, stage: 6, title: "No dead code, no commented-out code", body: "Remove unused code, imports and feature flags that are no longer needed. History lives in version control."}
+  - {category: rule, priority: should, stage: 6, title: "Configuration outside the code", body: "Environment-specific values come from configuration, with safe defaults and validation at start-up. Nothing environment-specific is hard-coded."}
+  - {category: glossary, priority: context, stage: null, title: "Use the domain's words", body: "Name things with the terms used in the requirements. If the business says purchase order, the code does not say PO or order_doc."}

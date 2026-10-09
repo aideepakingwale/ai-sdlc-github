@@ -1,0 +1,25 @@
+id: bundle-public-sector-us
+name: "Federal, state or local government in the US"
+description: "Government systems with FedRAMP and NIST controls, Section 508 accessibility and strong delivery practices."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - public-sector
+  regulations:
+  - fedramp
+  - wcag
+  domains:
+  - public-web
+  - customer-pii
+includes:
+- industry-public-sector
+- fedramp-nist-800-53
+- accessibility-wcag
+- security-baseline
+- devsecops-supply-chain
+- data-governance
+- observability-sre
+- api-standards
+- testing-quality

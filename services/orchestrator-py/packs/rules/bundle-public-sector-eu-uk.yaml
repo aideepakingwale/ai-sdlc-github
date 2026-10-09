@@ -1,0 +1,30 @@
+id: bundle-public-sector-eu-uk
+name: "Government or public body in the EU or UK"
+description: "Citizen services with accessibility, GDPR, NIS2 and ISO 27001, built on open standards."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - public-sector
+  regulations:
+  - gdpr
+  - uk-gdpr
+  - nis2
+  - iso-27001
+  - wcag
+  domains:
+  - public-web
+  - customer-pii
+includes:
+- industry-public-sector
+- gdpr
+- nis2
+- iso-27001
+- accessibility-wcag
+- security-baseline
+- data-governance
+- observability-sre
+- api-standards
+- testing-quality
+- frontend-web

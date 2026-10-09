@@ -44,7 +44,8 @@ def now_iso() -> str:
 
 
 def empty_config() -> dict[str, Any]:
-    return {"schemaVersion": SCHEMA_VERSION, "version": 1, "updatedAt": now_iso(), "stack": {"summary": "", "layers": [], "conflicts": [], "advisor": {}}}
+    return {"schemaVersion": SCHEMA_VERSION, "version": 1, "updatedAt": now_iso(), "stack": {"summary": "", "layers": [], "conflicts": [], "advisor": {}},
+            "profile": {"items": [], "advisor": {}, "advice": {"dismissed": {}}}}
 
 
 def slug(text: str) -> str:
@@ -232,6 +233,7 @@ class ProjectConfigService:
         if row is not None and row["config"].get("stack") is not None:
             cfg = row["config"]
             cfg["version"] = row["version"]
+            cfg.setdefault("profile", {"items": [], "advisor": {}, "advice": {"dismissed": {}}})
             return cfg
         # No lock here: callers that write hold it, and two first reads create the same empty document.
         cfg = empty_config()
@@ -345,6 +347,104 @@ class ProjectConfigService:
                 e["updatedBy"] = actor
             cfg["stack"]["layers"] = [*keep, *entries]
             await self._write(project_id, cfg, actor=actor)
+
+    # ---- the project profile (industry, regulations, what the system does, sensitivity, regions)
+    async def org_profile(self) -> list[dict[str, Any]]:
+        return list(await self._db.get_org_profile()) if hasattr(self._db, "get_org_profile") else []
+
+    async def set_org_profile(self, user: UserPublic, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        from . import profile as prof
+
+        if user.role != "SUPER_ADMIN":
+            raise SdlcError("FORBIDDEN", "Only an administrator can change the organisation's default profile")
+        clean: list[dict[str, Any]] = []
+        for raw in items:
+            it = prof.normalise_item(raw, status="pinned", source="user", actor=user.email)
+            if it["kind"] in prof.SINGLE:
+                clean = [c for c in clean if c["kind"] != it["kind"]]
+            if all(c["id"] != it["id"] for c in clean):
+                clean.append(it)
+        await self._db.set_org_profile(clean, user.id)
+        self._audit.record(project_id=None, agent_role="Orchestrator", event="org_profile.updated", human_reviewer=user.email,
+                           detail={"items": [c["id"] for c in clean]})
+        return clean
+
+    async def profile(self, project_id: str) -> dict[str, Any]:
+        """The project's own profile items, the organisation's default and what applies (see profile.effective)."""
+        from . import profile as prof
+
+        cfg = await self.get(project_id)
+        mine = cfg["profile"]["items"]
+        org = await self.org_profile()
+        return {"items": mine, "org": org, "effective": prof.effective(org, mine), "advisor": cfg["profile"].get("advisor", {})}
+
+    async def effective_profile(self, project_id: str) -> dict[str, Any]:
+        return (await self.profile(project_id))["effective"]
+
+    async def update_profile(self, project_id: str, user: UserPublic, *, upsert: list[dict[str, Any]], remove: list[str], confirm: list[str]) -> dict[str, Any]:
+        """A person's edit: upserted values are pinned (or excluded, to drop an inherited organisation value); `remove` returns a field to what the
+        organisation or the documents say; `confirm` pins identified values as they are."""
+        from . import profile as prof
+
+        await self.assert_can_edit(project_id, user)
+        async with self._lock(project_id):
+            cfg = await self.get(project_id)
+            items = cfg["profile"]["items"]
+            changes: list[dict[str, Any]] = []
+            for rid in remove:
+                gone = next((i for i in items if i["id"] == rid), None)
+                if gone:
+                    items.remove(gone)
+                    changes.append({"kind": gone["kind"], "value": gone["value"], "action": "removed"})
+            for raw in upsert:
+                status = "excluded" if str(raw.get("status") or "") == "excluded" else "pinned"
+                it = prof.normalise_item(raw, status=status, source="user", actor=user.email)
+                if it["kind"] in prof.SINGLE and status == "pinned":
+                    items[:] = [i for i in items if i["kind"] != it["kind"]]
+                items[:] = [i for i in items if i["id"] != it["id"]]
+                items.append(it)
+                changes.append({"kind": it["kind"], "value": it["value"], "action": "excluded" if status == "excluded" else "set"})
+            for i in items:
+                if i["id"] in confirm and i["status"] == "identified":
+                    i.update(status="pinned", source="user", updatedBy=user.email, updatedAt=now_iso())
+                    changes.append({"kind": i["kind"], "value": i["value"], "action": "confirmed"})
+            cfg = await self._write(project_id, cfg, actor=user.email)
+        if changes:
+            self._audit.record(project_id=project_id, agent_role="Orchestrator", event="project.profile_updated", human_reviewer=user.email, detail={"changes": changes[:30]})
+        return await self.profile(project_id)
+
+    async def apply_profile_found(self, project_id: str, found: list[dict[str, Any]], *, stage: int, source: str, actor: str = "platform",
+                                  run: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        """What the advisor identified. Never raises; returns the changes made."""
+        from . import profile as prof
+
+        try:
+            async with self._lock(project_id):
+                cfg = await self.get(project_id)
+                entries = []
+                for f in found:
+                    try:
+                        entries.append(prof.normalise_item(f, status="identified", source=source, actor=actor, stage=stage))
+                    except SdlcError:
+                        continue
+                changes = prof.merge_found(cfg["profile"]["items"], entries, stage=stage)
+                if run is not None:
+                    cfg["profile"]["advisor"][str(stage)] = {**run, "at": now_iso(), "found": len(entries), "changed": len(changes)}
+                if changes or run is not None:
+                    await self._write(project_id, cfg, actor=actor)
+            if changes:
+                self._audit.record(project_id=project_id, phase=stage, agent_role="Orchestrator", event="project.profile_identified", detail={"changes": changes[:30]})
+            return changes
+        except Exception:  # noqa: BLE001 - identifying the profile must never fail a stage
+            log.warning("could not apply the identified profile", exc_info=True)
+            return []
+
+    async def dismiss_advice(self, project_id: str, user: UserPublic, stage: int) -> None:
+        await self.assert_can_edit(project_id, user)
+        async with self._lock(project_id):
+            cfg = await self.get(project_id)
+            cfg["profile"].setdefault("advice", {"dismissed": {}})["dismissed"][str(stage)] = {"by": user.email, "at": now_iso()}
+            await self._write(project_id, cfg, actor=user.email)
 
     # ---- presets: the platform's starter presets and the organisation's own
     async def presets(self) -> list[dict[str, Any]]:

@@ -1,0 +1,14 @@
+id: industry-life-sciences
+name: "Life sciences and clinical research"
+description: "Clinical trial data, traceability, quality systems and regulatory submissions for pharma, biotech and medical products."
+kind: industry
+version: 1
+baseline: false
+tags: {industries: [life-sciences], regulations: [], domains: [health-records, regulatory-reporting]}
+entries:
+  - {category: rule, priority: must, stage: 3, title: "Clinical data is attributable and traceable", body: "Every data point in a study traces to its source, collector and time, with corrections recorded as new entries and a reason (good clinical practice)."}
+  - {category: rule, priority: must, stage: 3, title: "Subject privacy and blinding", body: "Use pseudonymous subject identifiers, restrict re-identification keys and enforce blinding rules in what each role can see."}
+  - {category: rule, priority: must, stage: 3, title: "Use clinical data standards", body: "Capture and exchange data using CDISC standards (for example CDASH, SDTM, ADaM) and controlled terminologies where submissions are planned."}
+  - {category: rule, priority: should, stage: 2, title: "Quality management and deviations", body: "Record deviations, corrective and preventive actions and change control within the quality system, linked to the affected records."}
+  - {category: rule, priority: should, stage: 3, title: "Batch, lot and supply chain traceability", body: "Track materials and products by lot from source to subject or patient, with recall support."}
+  - {category: rule, priority: should, stage: 3, title: "Long-term archive of study records", body: "Keep study records readable and retrievable for the required retention period after the system is retired."}

@@ -1,0 +1,16 @@
+id: observability-sre
+name: "Observability and reliability (SRE)"
+description: "SLOs, structured logs, metrics, traces, alerting and runbooks so a service can be run and fixed in production."
+kind: practice
+version: 1
+baseline: false
+tags: {industries: [], regulations: [], domains: [public-web, event-driven, multi-tenant-saas]}
+entries:
+  - {category: rule, priority: must, stage: 2, title: "Define service level objectives", body: "Each user-facing service states availability and latency SLOs with an error budget, taken from the non-functional requirements, and says how they are measured."}
+  - {category: rule, priority: must, stage: 3, title: "Structured logs with correlation ids", body: "Services emit structured (JSON) logs with timestamp, level, service, version and a correlation id that follows a request across services and queues. No personal data or secrets in logs."}
+  - {category: rule, priority: should, stage: 3, title: "Golden-signal metrics", body: "Expose rate, errors, duration and saturation for every service and dependency, plus business metrics for the key journeys."}
+  - {category: rule, priority: should, stage: 3, title: "Distributed tracing", body: "Propagate trace context (W3C Trace Context / OpenTelemetry) across HTTP calls and messages, with sampling that keeps errors and slow requests."}
+  - {category: rule, priority: must, stage: 5, title: "Alerts on symptoms, with an owner and a runbook", body: "Page on user-visible symptoms (SLO burn), not on every cause. Every alert has an owner, a severity and a runbook link."}
+  - {category: rule, priority: should, stage: 5, title: "Health checks and graceful shutdown", body: "Expose liveness and readiness checks, drain in-flight work on shutdown and report dependency health without leaking internals."}
+  - {category: rule, priority: should, stage: 5, title: "Dashboards and on-call readiness", body: "Ship a dashboard per service and an on-call guide covering common failures, escalation and rollback before go-live."}
+  - {category: rule, priority: should, stage: 5, title: "Blameless post-incident reviews", body: "Incidents above a stated severity get a written review with causes, impact and tracked follow-up actions."}

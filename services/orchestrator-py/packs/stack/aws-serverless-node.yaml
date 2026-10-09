@@ -1,0 +1,14 @@
+id: aws-serverless-node
+name: "AWS serverless, Node.js and React"
+description: "Lambda functions in TypeScript behind API Gateway with a React front end, DynamoDB, SQS and Cognito, defined with the AWS CDK."
+layers:
+  - {layer: hosting, technology: AWS}
+  - {layer: compute, technology: "Serverless (Lambda)"}
+  - {layer: backend, technology: TypeScript, version: "5.x", extras: [Node.js]}
+  - {layer: frontend, technology: React, version: "18", extras: [TypeScript]}
+  - {layer: database, technology: DynamoDB}
+  - {layer: messaging, technology: SQS}
+  - {layer: identity, technology: Cognito}
+  - {layer: iac, technology: AWS CDK}
+  - {layer: cicd, technology: GitHub Actions}
+  - {layer: observability, technology: CloudWatch}

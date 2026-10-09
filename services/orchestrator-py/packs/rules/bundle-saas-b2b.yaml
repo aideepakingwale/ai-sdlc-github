@@ -1,0 +1,28 @@
+id: bundle-saas-b2b
+name: "B2B SaaS platform"
+description: "Multi-tenant software sold to enterprises, with SOC 2, ISO 27001, GDPR and customer-assurance practices."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - saas-technology
+  regulations:
+  - soc2
+  - iso-27001
+  - gdpr
+  - ccpa-cpra
+  domains:
+  - multi-tenant-saas
+includes:
+- industry-saas-multi-tenant
+- soc2
+- iso-27001
+- gdpr
+- ccpa-cpra
+- security-baseline
+- api-standards
+- observability-sre
+- resilience-dr
+- devsecops-supply-chain
+- testing-quality

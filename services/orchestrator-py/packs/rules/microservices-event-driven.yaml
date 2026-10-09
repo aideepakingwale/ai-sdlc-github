@@ -1,0 +1,16 @@
+id: microservices-event-driven
+name: "Microservices and event-driven design"
+description: "Service boundaries, messaging contracts, delivery guarantees and consistency across services."
+kind: practice
+version: 1
+baseline: false
+tags: {industries: [], regulations: [], domains: [event-driven]}
+entries:
+  - {category: rule, priority: must, stage: 2, title: "Services own their data", body: "Each service owns its data store and exposes it only through its API or events. No shared databases between services."}
+  - {category: rule, priority: should, stage: 2, title: "Boundaries follow business capabilities", body: "Draw service boundaries around business capabilities (bounded contexts), not technical layers, and justify any split that needs distributed transactions."}
+  - {category: rule, priority: must, stage: 3, title: "Events and messages have versioned schemas", body: "Message contracts are described (for example AsyncAPI, Avro or JSON Schema), registered, versioned and evolved compatibly. Consumers ignore unknown fields."}
+  - {category: rule, priority: must, stage: 3, title: "At-least-once delivery means idempotent consumers", body: "Assume messages can be delivered more than once and out of order. Consumers deduplicate by a stable key and tolerate reordering."}
+  - {category: rule, priority: must, stage: 3, title: "Publish reliably with an outbox", body: "A state change and the event announcing it are made atomic (transactional outbox or change data capture), so neither is lost."}
+  - {category: rule, priority: must, stage: 3, title: "Dead-letter queues and poison messages", body: "Every consumer has a retry policy and a dead-letter queue with monitoring, an alert and a documented way to inspect and replay failures."}
+  - {category: rule, priority: should, stage: 3, title: "Use sagas for cross-service workflows", body: "Long-running business transactions use orchestrated or choreographed sagas with compensating actions instead of distributed locks."}
+  - {category: rule, priority: should, stage: 3, title: "Ordering only where needed", body: "Request ordering (FIFO, partition keys) only for the entities that need it, and state the throughput trade-off."}

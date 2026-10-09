@@ -1,0 +1,16 @@
+id: devsecops-supply-chain
+name: "Secure delivery and software supply chain"
+description: "Branch protection, dependency hygiene, SBOMs, signed artefacts and hardened pipelines (NIST SSDF and SLSA aligned)."
+kind: practice
+version: 1
+baseline: false
+tags: {industries: [], regulations: [iso-27001, soc2, fedramp, dora, nis2], domains: []}
+entries:
+  - {category: rule, priority: must, stage: 5, title: "Protected main branch and reviewed changes", body: "The main branch requires pull requests, at least one independent review and passing checks. Direct pushes and force pushes are blocked."}
+  - {category: rule, priority: must, stage: 5, title: "Pin and scan dependencies", body: "Dependencies are pinned by version or digest, come from approved registries and are scanned for known vulnerabilities and licence problems on every build."}
+  - {category: rule, priority: must, stage: 5, title: "Produce an SBOM for every release", body: "Each release publishes a software bill of materials (SPDX or CycloneDX) so affected components can be found when a vulnerability is announced."}
+  - {category: rule, priority: should, stage: 5, title: "Sign and verify build artefacts", body: "Build artefacts and container images are built by the pipeline, signed, stored immutably and verified before deployment (SLSA build provenance)."}
+  - {category: rule, priority: must, stage: 5, title: "Pipelines have least-privilege credentials", body: "Pipeline identities are short-lived, scoped to one environment and cannot be used by pull requests from forks. Secrets are injected at run time, never stored in the repository."}
+  - {category: rule, priority: should, stage: 6, title: "Hardened container images", body: "Use minimal, regularly rebuilt base images, run as a non-root user with a read-only filesystem where possible, and drop unneeded capabilities."}
+  - {category: rule, priority: should, stage: 5, title: "Separate duties for production changes", body: "A person who writes a change does not approve its deployment to production alone. Approvals and deployments are logged."}
+  - {category: rule, priority: should, stage: 5, title: "Fix vulnerabilities within stated time limits", body: "Critical findings are fixed or formally accepted within a stated number of days, high findings within a longer one. Exceptions are recorded with an owner and expiry."}

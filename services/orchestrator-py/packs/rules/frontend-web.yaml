@@ -1,0 +1,14 @@
+id: frontend-web
+name: "Web front-end standards"
+description: "Browser security, performance, internationalisation and maintainability for web applications."
+kind: practice
+version: 1
+baseline: false
+tags: {industries: [], regulations: [], domains: [public-web, mobile-app]}
+entries:
+  - {category: rule, priority: must, stage: 3, title: "Browser security headers", body: "Serve a Content Security Policy, Strict-Transport-Security, X-Content-Type-Options and a frame-ancestors policy. Avoid inline scripts and eval."}
+  - {category: rule, priority: must, stage: 3, title: "Never trust the client", body: "All validation and authorisation is repeated on the server. Tokens are not kept in local storage and rendering uses frameworks that escape output by default."}
+  - {category: rule, priority: should, stage: 3, title: "Performance budget for Core Web Vitals", body: "Set targets for LCP, INP and CLS, ship only the code a page needs, optimise images and fonts and measure real-user performance."}
+  - {category: rule, priority: should, stage: 3, title: "Internationalisation from the start", body: "Keep all text, dates, numbers and currency formats out of code, support right-to-left layouts where needed and avoid concatenating translated strings."}
+  - {category: rule, priority: should, stage: 3, title: "Design system and shared components", body: "Use the organisation's design system and shared components, and record deviations with a reason."}
+  - {category: rule, priority: should, stage: 6, title: "Typed code and component tests", body: "Use static typing, test components and critical journeys, and keep state management and data fetching out of presentational components."}

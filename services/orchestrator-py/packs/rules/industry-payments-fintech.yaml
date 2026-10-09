@@ -1,0 +1,15 @@
+id: industry-payments-fintech
+name: "Payments and fintech"
+description: "Payment flows, wallets, settlement, disputes and partner integrations for payment providers and fintech products."
+kind: industry
+version: 1
+baseline: false
+tags: {industries: [payments-fintech], regulations: [], domains: [payments]}
+entries:
+  - {category: rule, priority: must, stage: 3, title: "Idempotent payment API with unique references", body: "Every payment request has a client reference and the API returns the original result on repeat, so retries never double-charge."}
+  - {category: rule, priority: must, stage: 3, title: "Explicit payment state machine", body: "Payments move through documented states (created, authorised, captured, settled, failed, refunded, disputed) with allowed transitions and an event for each."}
+  - {category: rule, priority: must, stage: 3, title: "Wallet and balance operations are atomic and auditable", body: "Balance changes are made through a double-entry ledger in a single transaction with an immutable history."}
+  - {category: rule, priority: must, stage: 5, title: "Daily settlement reconciliation", body: "Reconcile processor, bank and ledger records every day, with automated matching, aging of breaks and escalation."}
+  - {category: rule, priority: must, stage: 3, title: "Webhooks are signed, retried and replay-safe", body: "Outbound webhooks are signed, retried with backoff and carry event ids so receivers can deduplicate. Inbound webhooks are verified before use."}
+  - {category: rule, priority: should, stage: 3, title: "Dispute and refund handling", body: "Model chargebacks, refunds and disputes as first-class flows with evidence capture and deadlines."}
+  - {category: rule, priority: should, stage: 2, title: "Partner and scheme dependency resilience", body: "Isolate each payment partner behind an adapter with timeouts, circuit breakers and a documented fallback route."}

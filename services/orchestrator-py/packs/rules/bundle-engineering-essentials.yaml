@@ -1,0 +1,18 @@
+id: bundle-engineering-essentials
+name: "Engineering essentials (any project)"
+description: 'The practices every delivery team should start from: security, APIs, testing, code style, observability, supply chain and architecture records.'
+kind: bundle
+version: 1
+baseline: true
+tags:
+  industries: []
+  regulations: []
+  domains: []
+includes:
+- security-baseline
+- api-standards
+- testing-quality
+- code-style-naming
+- observability-sre
+- devsecops-supply-chain
+- architecture-documentation

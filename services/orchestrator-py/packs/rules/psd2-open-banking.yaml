@@ -1,0 +1,15 @@
+id: psd2-open-banking
+name: "PSD2 and open banking"
+description: "Strong customer authentication, secure communication with third-party providers, transaction monitoring and consent for payment services."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [banking, payments-fintech, retail-ecommerce], regulations: [psd2], domains: [payments]}
+entries:
+  - {category: rule, priority: must, stage: 3, title: "Strong customer authentication", body: "Require two independent factors (knowledge, possession, inherence) to access payment accounts online and to initiate electronic payments, unless a documented exemption applies. Link payment authentication to the amount and payee (dynamic linking)."}
+  - {category: rule, priority: must, stage: 3, title: "Document each SCA exemption used", body: "Where exemptions (low value, trusted beneficiary, transaction risk analysis) are used, state the rule, the fraud-rate thresholds and the monitoring that justifies them."}
+  - {category: rule, priority: must, stage: 3, title: "Secure interfaces for third-party providers", body: "Offer dedicated, documented, tested interfaces for account information and payment initiation providers, with the same availability and performance as the customer channels, and identify providers by qualified certificates."}
+  - {category: rule, priority: must, stage: 3, title: "Explicit, revocable customer consent", body: "Record the customer's explicit consent for third-party access, show what is shared, allow revocation and re-confirm access at the required interval."}
+  - {category: rule, priority: must, stage: 3, title: "Transaction monitoring for fraud", body: "Monitor transactions in real time for unusual patterns and keep fraud statistics to report to the regulator."}
+  - {category: rule, priority: should, stage: 5, title: "Security incident and fraud reporting", body: "Support major incident reporting and periodic fraud reporting to the competent authority."}
+  - {category: rule, priority: should, stage: 3, title: "Protect personalised security credentials", body: "Credentials are never stored or transmitted in clear form, and their creation, delivery and revocation are controlled."}

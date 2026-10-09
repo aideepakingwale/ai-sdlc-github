@@ -1,0 +1,14 @@
+id: industry-logistics-transport
+name: "Logistics and transport"
+description: "Shipment tracking, event ingestion at scale, offline mobile work, routing and partner integration."
+kind: industry
+version: 1
+baseline: false
+tags: {industries: [logistics-transport, travel-hospitality], regulations: [], domains: [event-driven, mobile-app, iot-devices]}
+entries:
+  - {category: rule, priority: must, stage: 3, title: "Tracking events are idempotent and ordered by occurrence", body: "Scan and sensor events carry unique ids and event times, can arrive late or twice and are applied in the order they happened, not the order received."}
+  - {category: rule, priority: must, stage: 3, title: "Mobile and handheld apps work offline", body: "Drivers and warehouse staff can complete work without connectivity, with local storage, conflict resolution and safe synchronisation."}
+  - {category: rule, priority: should, stage: 3, title: "Geospatial data is standard and accurate", body: "Use standard coordinate systems and address validation, and state accuracy, update rate and privacy handling for location data."}
+  - {category: rule, priority: should, stage: 3, title: "Partner integrations use standard messages", body: "Exchange shipment, booking and status data with carriers and customers through standard APIs or EDI with validation and acknowledgements."}
+  - {category: rule, priority: should, stage: 2, title: "Customs and dangerous goods compliance", body: "Capture the data required for customs, dangerous goods and cross-border documents, and keep records for the required period."}
+  - {category: rule, priority: should, stage: 4, title: "Peak season capacity", body: "Test and plan for seasonal peaks and disruption, with prioritisation of critical shipments."}

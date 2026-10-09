@@ -1,0 +1,25 @@
+id: bundle-manufacturing-ot
+name: "Manufacturer with plant and supply-chain systems"
+description: "Production and traceability systems with OT security and partner integration."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - manufacturing
+  regulations:
+  - iec-62443
+  - nis2
+  domains:
+  - ot-industrial
+  - iot-devices
+  - event-driven
+includes:
+- industry-manufacturing
+- iec-62443-ot
+- industry-iot-connected-devices
+- nis2
+- security-baseline
+- resilience-dr
+- microservices-event-driven
+- data-governance

@@ -1,0 +1,18 @@
+id: iso-27001
+name: "ISO/IEC 27001:2022 information security"
+description: "Annex A controls most relevant to building and running systems: organisational, people, physical and technological themes."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [banking, insurance, public-sector, saas-technology, telecom, energy-utilities, healthcare], regulations: [iso-27001], domains: []}
+entries:
+  - {category: rule, priority: must, stage: 1, title: "Classify information and assign owners", body: "Each information asset has an owner and a classification that determines handling, access and protection (A.5.9 to A.5.13)."}
+  - {category: rule, priority: must, stage: 3, title: "Access control and strong authentication", body: "Access follows least privilege and need-to-know, privileged access is restricted and logged, and authentication strength matches the risk (A.5.15 to A.5.18, A.8.2, A.8.5)."}
+  - {category: rule, priority: must, stage: 3, title: "Secure development life cycle", body: "Security requirements, secure design principles, code review and security testing are part of every release (A.8.25 to A.8.29)."}
+  - {category: rule, priority: must, stage: 3, title: "Cryptography policy applied", body: "Use approved cryptography and key management for data in transit and at rest, with documented key lifecycles (A.8.24)."}
+  - {category: rule, priority: must, stage: 5, title: "Logging, monitoring and clock synchronisation", body: "Log security-relevant activity, protect and review the logs, monitor for anomalies and synchronise clocks (A.8.15 to A.8.17)."}
+  - {category: rule, priority: must, stage: 5, title: "Vulnerability and configuration management", body: "Identify and fix technical vulnerabilities on a defined schedule and keep secure baseline configurations (A.8.8, A.8.9)."}
+  - {category: rule, priority: should, stage: 2, title: "Supplier security", body: "Assess suppliers, agree security terms and monitor them, including cloud services (A.5.19 to A.5.23)."}
+  - {category: rule, priority: should, stage: 5, title: "Backup, redundancy and continuity", body: "Back up information, test restoration and design redundancy to meet availability requirements (A.8.13, A.8.14, A.5.30)."}
+  - {category: rule, priority: should, stage: 5, title: "Incident management", body: "Define how security events are reported, assessed, handled and learned from, with roles and evidence collection (A.5.24 to A.5.28)."}
+  - {category: rule, priority: should, stage: 4, title: "Separate and protect test data", body: "Separate development, test and production, and protect any test data (A.8.31, A.8.33)."}

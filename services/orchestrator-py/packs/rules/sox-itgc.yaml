@@ -1,0 +1,16 @@
+id: sox-itgc
+name: "SOX IT general controls"
+description: "Change management, access, operations and segregation of duties for systems that affect financial reporting."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [banking, insurance, capital-markets, retail-ecommerce, manufacturing, energy-utilities, saas-technology], regulations: [sox], domains: [regulatory-reporting, payments]}
+entries:
+  - {category: constraint, priority: must, stage: 1, title: "Identify in-scope financial processes and systems", body: "State which business processes, reports and systems feed financial reporting, so the controls below apply to the right components."}
+  - {category: rule, priority: must, stage: 5, title: "Controlled, approved and traceable changes", body: "Every production change is linked to an approved request, tested, peer-reviewed and deployed through the pipeline by an authorised person. Emergency changes get after-the-fact approval and review."}
+  - {category: rule, priority: must, stage: 3, title: "Segregation of duties", body: "No one person can both create and approve a financial transaction, or develop and deploy to production unchecked. Conflicting roles are defined and enforced in the system."}
+  - {category: rule, priority: must, stage: 3, title: "Periodic user access reviews", body: "Privileged and business access is reviewed by owners at least quarterly, with evidence, and joiner, mover and leaver changes take effect promptly."}
+  - {category: rule, priority: must, stage: 3, title: "Immutable audit trail for financial data", body: "Record who changed what and when for financial data and configuration, keep it tamper-evident and retain it for at least seven years or the stated policy."}
+  - {category: rule, priority: should, stage: 3, title: "Interfaces and batch jobs are controlled and reconciled", body: "Interfaces that move financial data have completeness and accuracy checks, are monitored and reconciled, and failures are tracked to resolution."}
+  - {category: rule, priority: should, stage: 5, title: "Backup, recovery and job scheduling controls", body: "Backups run and restore as planned, scheduled jobs are monitored, and failures follow an incident process."}
+  - {category: rule, priority: should, stage: 5, title: "Evidence is generated, not assembled", body: "Pipelines, tickets and access systems keep the evidence auditors need automatically."}

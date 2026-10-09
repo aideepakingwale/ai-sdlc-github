@@ -1,0 +1,25 @@
+id: bundle-healthcare-us
+name: "Healthcare provider or health-tech in the US"
+description: "Systems handling protected health information with HIPAA, SOC 2 and clinical safety practices."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - healthcare
+  regulations:
+  - hipaa
+  - soc2
+  domains:
+  - health-records
+includes:
+- industry-healthcare
+- hipaa
+- soc2
+- data-governance
+- security-baseline
+- resilience-dr
+- observability-sre
+- accessibility-wcag
+- api-standards
+- testing-quality

@@ -1,0 +1,23 @@
+id: bundle-logistics
+name: "Logistics, transport or supply-chain visibility"
+description: "Tracking and event platforms with offline mobile work and partner integration."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - logistics-transport
+  regulations:
+  - gdpr
+  domains:
+  - event-driven
+  - mobile-app
+  - iot-devices
+includes:
+- industry-logistics-transport
+- microservices-event-driven
+- industry-iot-connected-devices
+- resilience-dr
+- observability-sre
+- security-baseline
+- gdpr

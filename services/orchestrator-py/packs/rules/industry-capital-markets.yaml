@@ -1,0 +1,15 @@
+id: industry-capital-markets
+name: "Capital markets and trading"
+description: "Order and trade integrity, low-latency design, market data, time synchronisation, record keeping and surveillance."
+kind: industry
+version: 1
+baseline: false
+tags: {industries: [capital-markets], regulations: [], domains: [payments, regulatory-reporting]}
+entries:
+  - {category: rule, priority: must, stage: 3, title: "Order and trade lifecycle is deterministic and recorded", body: "Every order, amendment, cancel and fill is sequenced, time-stamped and stored immutably so the book can be rebuilt and disputes resolved."}
+  - {category: rule, priority: must, stage: 3, title: "Synchronised, traceable clocks", body: "Systems record events with synchronised clocks to the accuracy the venue and regulation require (for example MiFID II RTS 25) and keep time-source evidence."}
+  - {category: rule, priority: must, stage: 3, title: "Pre-trade risk and kill-switch controls", body: "Orders pass pre-trade checks (limits, fat-finger, price collars, credit) and the business can halt trading instantly."}
+  - {category: rule, priority: must, stage: 5, title: "Record retention for communications and trades", body: "Retain orders, trades, reference data and related communications for the regulatory period in a searchable, tamper-evident store."}
+  - {category: rule, priority: should, stage: 3, title: "Trade surveillance and reporting hooks", body: "Provide data feeds for market-abuse surveillance and regulatory transaction reporting with reconciliation to source."}
+  - {category: rule, priority: should, stage: 4, title: "Replay and capacity testing with market-like data", body: "Test with replayed market data at multiples of peak volume, and verify behaviour during venue outages and reconnects."}
+  - {category: rule, priority: should, stage: 3, title: "Reference and market data quality", body: "Version and validate instrument and price data, and define fallbacks for stale or missing data."}

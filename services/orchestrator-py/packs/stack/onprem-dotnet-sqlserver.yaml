@@ -1,0 +1,13 @@
+id: onprem-dotnet-sqlserver
+name: "On-premises, .NET and SQL Server"
+description: "ASP.NET Core services on virtual machines in the company data centre with SQL Server, RabbitMQ and Active Directory sign-in."
+layers:
+  - {layer: hosting, technology: On-premises}
+  - {layer: compute, technology: Virtual machines}
+  - {layer: backend, technology: C#, version: ".NET 8", extras: [ASP.NET Core]}
+  - {layer: database, technology: SQL Server}
+  - {layer: messaging, technology: RabbitMQ}
+  - {layer: identity, technology: Entra ID, notes: "Active Directory federation"}
+  - {layer: iac, technology: Ansible}
+  - {layer: cicd, technology: Jenkins}
+  - {layer: observability, technology: Prometheus and Grafana}

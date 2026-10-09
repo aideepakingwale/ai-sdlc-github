@@ -1,0 +1,21 @@
+id: bundle-ai-product
+name: "Product with AI or machine-learning features"
+description: "AI features with risk classification, oversight, evaluation, data governance and security."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries: []
+  regulations:
+  - eu-ai-act
+  - gdpr
+  domains:
+  - ai-ml
+includes:
+- ai-ml-responsible
+- gdpr
+- security-baseline
+- data-governance
+- testing-quality
+- devsecops-supply-chain
+- observability-sre

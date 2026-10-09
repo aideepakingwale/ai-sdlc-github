@@ -1,0 +1,14 @@
+id: architecture-documentation
+name: "Architecture documentation"
+description: "Decision records, C4 views, interface and operations documentation that stay useful."
+kind: practice
+version: 1
+baseline: false
+tags: {industries: [], regulations: [], domains: []}
+entries:
+  - {category: rule, priority: must, stage: 2, title: "Record significant decisions as ADRs", body: "Each significant architecture decision gets a short ADR with context, options considered, decision, consequences and status. Superseded decisions are kept and linked."}
+  - {category: rule, priority: should, stage: 2, title: "Use C4 views", body: "Describe the system with context, container and component views. Every box and arrow is labelled with its responsibility, technology and protocol."}
+  - {category: rule, priority: should, stage: 2, title: "State quality attributes and trade-offs", body: "List the quality attributes that drive the design (availability, latency, security, cost) with measurable targets and the trade-offs accepted."}
+  - {category: rule, priority: should, stage: 2, title: "Name assumptions, constraints and risks", body: "Keep an explicit list of assumptions, constraints, risks and open questions with owners, and revisit it at each stage."}
+  - {category: rule, priority: should, stage: 3, title: "Document interfaces where they live", body: "Interface descriptions (OpenAPI, AsyncAPI, schemas) are kept with the code and published, not copied into prose."}
+  - {category: rule, priority: should, stage: 5, title: "Runbooks and operations guide", body: "Provide a runbook for deployment, rollback, common failures, scaling and routine tasks before go-live."}

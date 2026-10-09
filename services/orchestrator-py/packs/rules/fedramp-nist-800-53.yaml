@@ -1,0 +1,16 @@
+id: fedramp-nist-800-53
+name: "US federal baseline (FedRAMP and NIST SP 800-53)"
+description: "Control families expected of cloud services and systems used by US federal agencies, mapped to design and delivery rules."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [public-sector, saas-technology], regulations: [fedramp], domains: []}
+entries:
+  - {category: constraint, priority: must, stage: 1, title: "Categorise the system and choose the baseline", body: "Categorise the system by confidentiality, integrity and availability impact (FIPS 199) and select the Low, Moderate or High baseline accordingly."}
+  - {category: rule, priority: must, stage: 3, title: "Access control and multi-factor authentication", body: "Enforce least privilege, role-based access and multi-factor authentication for privileged and remote access (AC and IA families)."}
+  - {category: rule, priority: must, stage: 3, title: "FIPS-validated cryptography", body: "Use FIPS 140-validated cryptographic modules for data in transit and at rest, with documented key management (SC family)."}
+  - {category: rule, priority: must, stage: 5, title: "Audit logging and continuous monitoring", body: "Generate, protect and review audit records, and run continuous monitoring with monthly vulnerability scanning and tracked plans of action and milestones (AU, CA, RA families)."}
+  - {category: rule, priority: must, stage: 5, title: "Configuration and change management", body: "Maintain baseline configurations, control and review changes, and perform security impact analysis before changes (CM family)."}
+  - {category: rule, priority: must, stage: 2, title: "Boundary protection and data location", body: "Define and protect the authorisation boundary, restrict interconnections and keep federal data in the permitted locations (SC and CA families)."}
+  - {category: rule, priority: should, stage: 5, title: "Contingency planning and incident response", body: "Maintain contingency, backup and incident response plans and test them at the required frequency (CP and IR families)."}
+  - {category: rule, priority: should, stage: 2, title: "Supply chain risk management", body: "Assess suppliers and components, and keep an inventory of the system's parts (SR and SA families)."}

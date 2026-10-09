@@ -1,0 +1,18 @@
+id: gdpr
+name: "GDPR and UK GDPR (personal data)"
+description: "Lawful basis, data minimisation, privacy by design, subject rights, transfers, DPIA and breach handling for systems that process personal data of people in the EU or UK."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [], regulations: [gdpr, uk-gdpr], domains: [customer-pii, health-records]}
+entries:
+  - {category: constraint, priority: must, stage: 1, title: "Record the lawful basis and purpose for each use of personal data", body: "For every processing purpose, state the lawful basis (Art. 6; Art. 9 for special categories), the data involved and why. Where consent is the basis, record how it is given, evidenced and withdrawn."}
+  - {category: rule, priority: must, stage: 2, title: "Data protection by design and by default", body: "Collect only what each purpose needs, keep it only as long as needed, restrict access by default and prefer pseudonymisation (Art. 5 and 25)."}
+  - {category: rule, priority: must, stage: 2, title: "State where personal data is stored and processed", body: "Name the regions and processors involved. Transfers outside the EU or UK need a valid mechanism (adequacy decision, standard contractual clauses and a transfer assessment) (Chapter V)."}
+  - {category: rule, priority: must, stage: 3, title: "Support data subject rights", body: "The design shows how a person's data is found, exported in a portable format, corrected, restricted and erased across every store, cache, search index, log and backup within one month (Art. 15 to 22)."}
+  - {category: rule, priority: must, stage: 3, title: "Retention schedule enforced automatically", body: "Each category of personal data has a retention period and an automated deletion or anonymisation job, with evidence that it ran."}
+  - {category: rule, priority: must, stage: 2, title: "Run a DPIA for high-risk processing", body: "Large-scale, profiling, special-category or systematic monitoring processing requires a data protection impact assessment before go-live (Art. 35). Link it from the architecture."}
+  - {category: rule, priority: must, stage: 5, title: "Personal data breach detection and 72-hour notification", body: "Logging and alerting can detect a breach, and a documented process lets the controller notify the regulator within 72 hours and affected people without undue delay (Art. 33 and 34)."}
+  - {category: rule, priority: should, stage: 3, title: "Processor contracts and sub-processors", body: "List each processor and sub-processor, the data they handle and the contract (Art. 28) that covers them."}
+  - {category: rule, priority: should, stage: 3, title: "Keep records of processing", body: "Maintain a record of processing activities (Art. 30) that can be generated from the data model and integration catalogue."}
+  - {category: rule, priority: should, stage: 4, title: "No real personal data in tests", body: "Use synthetic or irreversibly anonymised data for development, testing and demonstrations."}

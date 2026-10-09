@@ -1,0 +1,15 @@
+id: nis2
+name: "NIS2 (EU cybersecurity for essential and important entities)"
+description: "Risk management measures, supply chain security and incident reporting for operators of essential and important services in the EU."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [energy-utilities, telecom, public-sector, manufacturing, logistics-transport, healthcare, saas-technology, banking], regulations: [nis2], domains: [ot-industrial]}
+entries:
+  - {category: rule, priority: must, stage: 2, title: "Cybersecurity risk analysis and policies", body: "Document a risk analysis for the system and the security policies that follow from it, approved by management who remain accountable."}
+  - {category: rule, priority: must, stage: 5, title: "Incident handling and reporting", body: "Detect and handle incidents, and support an early warning within 24 hours, an incident notification within 72 hours and a final report within one month to the authority or CSIRT."}
+  - {category: rule, priority: must, stage: 2, title: "Supply chain security", body: "Assess the security of direct suppliers and service providers, include security requirements in contracts and track their vulnerabilities."}
+  - {category: rule, priority: must, stage: 3, title: "Security in acquisition, development and maintenance", body: "Include vulnerability handling and disclosure and secure development practices in how the system is built and maintained."}
+  - {category: rule, priority: must, stage: 3, title: "Multi-factor authentication and encryption", body: "Use multi-factor or continuous authentication, secured communications and appropriate cryptography."}
+  - {category: rule, priority: should, stage: 2, title: "Business continuity and crisis management", body: "Plan for backup, disaster recovery and crisis management, and test the plans."}
+  - {category: rule, priority: should, stage: 3, title: "Access control and asset management", body: "Maintain an asset inventory and apply access control policies and human resources security to those with privileged access."}

@@ -1,9 +1,16 @@
 id: testing-quality
-name: Testing and quality
-description: Test strategy, coverage and acceptance criteria expectations.
+name: "Testing and quality"
+description: "Testable requirements, traceability, test levels, non-functional targets and quality gates."
+kind: practice
+version: 1
+baseline: true
+tags: {industries: [], regulations: [], domains: []}
 entries:
-  - {category: rule, priority: must, stage: 1, title: Every requirement has testable acceptance criteria, body: "Write acceptance criteria as observable, testable statements (given, when, then). Avoid words like fast, easy or robust without a number."}
-  - {category: rule, priority: must, stage: 4, title: Trace every requirement to a test, body: "The traceability matrix links each requirement to at least one test and flags any requirement without one."}
-  - {category: rule, priority: should, stage: 4, title: Cover the unhappy paths, body: "For each feature include tests for invalid input, missing permissions, dependency failure and retries, not only the happy path."}
-  - {category: rule, priority: should, stage: 4, title: Non-functional tests have targets, body: "Performance and resilience tests state the target (for example p95 latency, error rate, failover time) taken from the requirements."}
-  - {category: constraint, priority: must, stage: 5, title: Tests run in the pipeline before deploy, body: "The pipeline runs unit and integration tests and stops on failure. Deployment to any environment needs a green run."}
+  - {category: rule, priority: must, stage: 1, title: "Every requirement has testable acceptance criteria", body: "Write acceptance criteria as observable statements (given, when, then). Avoid words like fast, easy or robust without a number."}
+  - {category: rule, priority: must, stage: 4, title: "Trace every requirement to a test", body: "The traceability matrix links each requirement to at least one test and flags any requirement without one."}
+  - {category: rule, priority: should, stage: 4, title: "Cover the unhappy paths", body: "For each feature include tests for invalid input, missing permissions, dependency failure, timeouts and retries, not only the happy path."}
+  - {category: rule, priority: should, stage: 4, title: "Follow the test pyramid", body: "Many fast unit tests, fewer integration and contract tests, a small number of end-to-end tests for critical journeys. State what each level proves."}
+  - {category: rule, priority: should, stage: 4, title: "Non-functional tests have targets", body: "Performance, load, resilience and security tests state a target taken from the requirements (for example p95 latency, error rate, failover time, vulnerabilities allowed)."}
+  - {category: rule, priority: should, stage: 4, title: "Deterministic, isolated test data", body: "Tests create their own data, do not depend on execution order and never use real personal data. Test environments are reproducible from code."}
+  - {category: constraint, priority: must, stage: 5, title: "Tests run in the pipeline before deploy", body: "The pipeline runs unit, integration and contract tests, enforces the coverage threshold and stops on failure. Deployment to any environment needs a green run."}
+  - {category: rule, priority: should, stage: 4, title: "Contract tests between services", body: "Services that call each other have consumer-driven contract tests so a provider change cannot silently break a consumer."}

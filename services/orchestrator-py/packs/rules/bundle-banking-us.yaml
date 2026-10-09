@@ -1,0 +1,30 @@
+id: bundle-banking-us
+name: "Bank or lender in the US"
+description: "Banking with SOX IT controls, PCI DSS, state privacy laws and the engineering practices a regulated bank needs."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - banking
+  regulations:
+  - sox
+  - pci-dss
+  - ccpa-cpra
+  - soc2
+  domains:
+  - payments
+  - regulatory-reporting
+includes:
+- industry-banking
+- sox-itgc
+- pci-dss-4
+- ccpa-cpra
+- security-baseline
+- resilience-dr
+- observability-sre
+- api-standards
+- testing-quality
+- devsecops-supply-chain
+- data-governance
+- accessibility-wcag

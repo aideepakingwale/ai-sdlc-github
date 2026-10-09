@@ -1,0 +1,16 @@
+id: data-governance
+name: "Data governance and quality"
+description: "Ownership, classification, lineage, retention, quality and safe use of data."
+kind: practice
+version: 1
+baseline: false
+tags: {industries: [banking, insurance, healthcare, life-sciences, public-sector, telecom, retail-ecommerce], regulations: [gdpr, uk-gdpr, ccpa-cpra, hipaa], domains: [customer-pii, health-records, data-platform, regulatory-reporting]}
+entries:
+  - {category: rule, priority: must, stage: 2, title: "Every data set has an owner and a classification", body: "Each data store and feed has a named business owner and a classification (public, internal, confidential, restricted) that drives its controls."}
+  - {category: rule, priority: must, stage: 3, title: "Data model records personal and sensitive fields", body: "The data model marks every personal, sensitive or regulated field so access control, masking, retention and deletion can be applied by field."}
+  - {category: rule, priority: must, stage: 3, title: "Retention and deletion are designed in", body: "State the retention period for each data set, how expiry is enforced automatically and how deletion reaches backups, caches, search indexes and downstream copies."}
+  - {category: rule, priority: should, stage: 3, title: "Record lineage", body: "Document where data comes from, how it is transformed and where it goes, so impact analysis and audits are possible."}
+  - {category: rule, priority: must, stage: 4, title: "No production personal data in non-production", body: "Test and development environments use synthetic or irreversibly masked data. Production data copies need an approved exception."}
+  - {category: rule, priority: should, stage: 3, title: "Data quality checks at the boundary", body: "Validate completeness, format, uniqueness and referential integrity on ingestion and report quality metrics to the data owner."}
+  - {category: rule, priority: should, stage: 3, title: "Single source of truth", body: "Each business entity has one system of record. Copies are read-only, labelled and refreshed by defined jobs."}
+  - {category: rule, priority: should, stage: 3, title: "Schema evolution is managed", body: "Schema changes are versioned, backward compatible by default and communicated to consumers before release."}

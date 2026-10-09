@@ -1,0 +1,15 @@
+id: industry-energy-utilities
+name: "Energy and utilities"
+description: "Safety and reliability of critical infrastructure, metering and market data integrity, and IT and OT separation."
+kind: industry
+version: 1
+baseline: false
+tags: {industries: [energy-utilities], regulations: [], domains: [ot-industrial, iot-devices, regulatory-reporting]}
+entries:
+  - {category: constraint, priority: must, stage: 1, title: "Identify critical assets and safety impact", body: "State which functions are safety-critical or part of critical national infrastructure, and the consequence and tolerable duration of failure."}
+  - {category: rule, priority: must, stage: 2, title: "Separate IT and OT with controlled conduits", body: "Control systems are isolated from corporate and internet networks, with defined and monitored crossings."}
+  - {category: rule, priority: must, stage: 3, title: "Meter and market data integrity", body: "Meter readings and settlement data are validated, estimated under documented rules, versioned and reconcilable, with an audit of every correction."}
+  - {category: rule, priority: must, stage: 3, title: "Real-time data has defined latency and quality", body: "State latency, loss tolerance and data quality flags for telemetry, and handle gaps and out-of-order data safely."}
+  - {category: rule, priority: should, stage: 5, title: "Resilience for extreme events", body: "Plan for storms, outages and cyber events with manual fallback procedures and regular exercises."}
+  - {category: rule, priority: should, stage: 3, title: "Customer vulnerability and billing fairness", body: "Identify customers with special needs, protect their data and design billing and disconnection with the required safeguards."}
+  - {category: rule, priority: should, stage: 5, title: "Regulatory and sector reporting", body: "Produce the sector's required operational and incident reports from governed data."}

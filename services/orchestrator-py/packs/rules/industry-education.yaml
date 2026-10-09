@@ -1,0 +1,14 @@
+id: industry-education
+name: "Education and learning technology"
+description: "Learner data, assessment integrity, interoperability and accessibility for schools, universities and edtech."
+kind: industry
+version: 1
+baseline: false
+tags: {industries: [education], regulations: [], domains: [public-web, customer-pii, mobile-app]}
+entries:
+  - {category: rule, priority: must, stage: 3, title: "Learner records are protected and role-scoped", body: "Teachers, learners, parents and administrators see only the records their role and relationship allow, with an audit of access."}
+  - {category: rule, priority: must, stage: 3, title: "Assessment integrity", body: "Protect question banks and results, log attempts and changes and offer integrity controls proportionate to the stakes."}
+  - {category: rule, priority: should, stage: 3, title: "Use learning interoperability standards", body: "Support LTI, OneRoster, xAPI or Caliper where learning tools and records connect to other systems."}
+  - {category: rule, priority: should, stage: 3, title: "Accessible by design", body: "Meet WCAG 2.2 AA and support assistive technology and adjustments for learners with additional needs."}
+  - {category: rule, priority: should, stage: 3, title: "Child-appropriate privacy and design", body: "Collect the minimum data from children, avoid dark patterns and tracking, and use age-appropriate defaults."}
+  - {category: rule, priority: should, stage: 2, title: "Handle term-time peaks", body: "Plan capacity for enrolment, exam and results days and keep a fallback for critical assessments."}

@@ -44,6 +44,9 @@ class CanonService:
         self._db = db
         self._authz = authz
         self._audit = audit
+        from .rule_packs import PackCatalog
+
+        self.catalog = PackCatalog(db)      # the built-in samples plus the organisation's own packs
 
     # ------------------------------------------------------------------ authz
     async def assert_can_author(self, project_id: str, user: UserPublic) -> None:
@@ -196,24 +199,32 @@ class CanonService:
 
     # ------------------------------------------------------------------ starter packs, memory
     async def apply_pack(self, project_id: str, user: UserPublic, pack_id: str) -> dict:
-        """Add a starter pack's rules to the project; a rule whose title is already there is skipped."""
-        from .rule_packs import get_rule_pack
+        """Add a pack's rules to the project (a ready-made set adds every pack it includes); a rule whose title is already there is skipped."""
+        from .rule_packs import resolve_entries
 
         await self._authz.assert_project_access(project_id, user)
         await self.assert_can_author(project_id, user)
-        pack = get_rule_pack(pack_id)
+        entries = resolve_entries(await self.catalog.all(), pack_id)
         have = {" ".join(str(r["title"]).lower().split()) for r in await self._db.list_canon(project_id, active_only=False)}
         added, skipped = 0, 0
-        for e in pack["entries"]:
+        for e in entries:
             if " ".join(e["title"].lower().split()) in have:
                 skipped += 1
                 continue
             await self._db.insert_canon(project_id=project_id, category=e["category"], priority=e["priority"], stage=e.get("stage"),
-                                        title=e["title"], body=e["body"], user_id=user.id, origin=f"pack:{pack_id}")
+                                        title=e["title"], body=e["body"], user_id=user.id, origin=f"pack:{e['pack']}@{e['packVersion']}")
+            have.add(" ".join(e["title"].lower().split()))
             added += 1
         self._audit.record(project_id=project_id, agent_role="Canon", event="canon.pack_applied", human_reviewer=user.email,
                            detail={"pack": pack_id, "added": added, "skipped": skipped})
         return {"pack": pack_id, "added": added, "skipped": skipped}
+
+    async def apply_packs(self, project_id: str, user: UserPublic, pack_ids: list[str]) -> dict:
+        results = [await self.apply_pack(project_id, user, pid) for pid in dict.fromkeys(pack_ids)]
+        return {"added": sum(r["added"] for r in results), "skipped": sum(r["skipped"] for r in results), "packs": results}
+
+    async def rule_titles(self, project_id: str) -> set[str]:
+        return {" ".join(str(r["title"]).lower().split()) for r in await self._db.list_canon(project_id, active_only=False)}
 
     async def from_memory(self, project_id: str, memory_id: str, user: UserPublic) -> dict:
         """Promote a remembered decision, convention or lesson to a binding rule."""

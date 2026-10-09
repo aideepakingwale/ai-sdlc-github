@@ -1,0 +1,13 @@
+id: azure-java-spring
+name: "Azure, Java Spring Boot"
+description: "Spring Boot services on Azure Kubernetes Service with Azure SQL, Service Bus and Entra ID, defined with Bicep."
+layers:
+  - {layer: hosting, technology: Azure}
+  - {layer: compute, technology: "Kubernetes (EKS)", notes: "Azure Kubernetes Service"}
+  - {layer: backend, technology: Java, version: "21 (LTS)", extras: [Spring Boot]}
+  - {layer: database, technology: SQL Server, notes: "Azure SQL"}
+  - {layer: messaging, technology: Azure Service Bus}
+  - {layer: identity, technology: Entra ID}
+  - {layer: iac, technology: Bicep}
+  - {layer: cicd, technology: Azure DevOps}
+  - {layer: observability, technology: OpenTelemetry}

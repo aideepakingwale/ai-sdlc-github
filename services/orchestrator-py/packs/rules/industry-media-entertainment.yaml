@@ -1,0 +1,14 @@
+id: industry-media-entertainment
+name: "Media and entertainment"
+description: "Content rights, delivery at scale, live events, recommendation and audience data."
+kind: industry
+version: 1
+baseline: false
+tags: {industries: [media-entertainment], regulations: [], domains: [public-web, mobile-app, customer-pii]}
+entries:
+  - {category: rule, priority: must, stage: 3, title: "Rights and availability windows are enforced in the system", body: "Territories, windows, licences and age ratings are data that the platform enforces consistently across catalogue, playback and download."}
+  - {category: rule, priority: must, stage: 3, title: "Content protection for premium content", body: "Use the protection required by rights holders (for example DRM, watermarking and token-protected delivery) and keep keys out of clients."}
+  - {category: rule, priority: should, stage: 2, title: "Plan for live events and viral demand", body: "Design for sudden audience spikes with CDN offload, autoscaling, backpressure and a degraded mode, and rehearse before major events."}
+  - {category: rule, priority: should, stage: 3, title: "Protect minors and moderate content", body: "Apply age gates, parental controls and moderation workflows where the content or community needs them."}
+  - {category: rule, priority: should, stage: 3, title: "Transparent recommendations and consented profiling", body: "Explain and let users control personalisation and use consent for tracking and advertising data."}
+  - {category: rule, priority: should, stage: 3, title: "Playback quality is measured", body: "Measure start-up time, rebuffering, bitrate and errors from real users and use them as service level indicators."}

@@ -1,0 +1,16 @@
+id: industry-public-sector
+name: "Public sector and government services"
+description: "Citizen-centred, accessible, open and auditable digital services with strong identity and data residency."
+kind: industry
+version: 1
+baseline: false
+tags: {industries: [public-sector, education], regulations: [], domains: [public-web, customer-pii]}
+entries:
+  - {category: constraint, priority: must, stage: 1, title: "Start with user needs and the whole journey", body: "Requirements describe the citizen or staff user, their need and the end-to-end service including offline and assisted channels, not only the system."}
+  - {category: rule, priority: must, stage: 3, title: "Accessible and usable by everyone", body: "Meet WCAG 2.2 AA, work on low-bandwidth connections and older devices, and provide non-digital alternatives for people who cannot use the service."}
+  - {category: rule, priority: must, stage: 2, title: "Use open standards and avoid lock-in", body: "Prefer open standards, open interfaces and reusable government platforms, and record exit options for proprietary components."}
+  - {category: rule, priority: must, stage: 2, title: "Data residency and sovereignty", body: "Keep citizen data in the permitted jurisdiction and under the permitted classification, and name any cross-border processing."}
+  - {category: rule, priority: must, stage: 3, title: "Assured digital identity", body: "Use the national or approved identity scheme at the assurance level the risk needs, and avoid collecting identity data twice."}
+  - {category: rule, priority: should, stage: 3, title: "Only ask once, share data lawfully", body: "Reuse data already held by government with a lawful basis and consent where needed, instead of asking citizens again."}
+  - {category: rule, priority: should, stage: 5, title: "Publish service performance and keep records for audit", body: "Measure completion rate, cost per transaction, user satisfaction and digital take-up, and keep decision records for public accountability and freedom-of-information requests."}
+  - {category: rule, priority: should, stage: 2, title: "Procurement and supplier transparency", body: "Document supplier choices, contract terms and who owns the code, and publish source code where it is not sensitive."}

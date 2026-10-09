@@ -1,0 +1,15 @@
+id: dora
+name: "DORA (EU digital operational resilience)"
+description: "ICT risk management, incident reporting, resilience testing and third-party risk for EU financial entities and their critical ICT providers."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [banking, insurance, capital-markets, payments-fintech], regulations: [dora], domains: [payments, regulatory-reporting]}
+entries:
+  - {category: rule, priority: must, stage: 2, title: "ICT risk management framework and asset inventory", body: "Identify and classify ICT assets, dependencies and critical or important functions, and show how the design manages ICT risk, including recovery objectives."}
+  - {category: rule, priority: must, stage: 5, title: "Detect, classify and report major ICT incidents", body: "Monitoring and processes classify incidents by impact and support initial, intermediate and final reports to the competent authority within the required timelines."}
+  - {category: rule, priority: must, stage: 4, title: "Digital operational resilience testing", body: "Include a programme of resilience tests (vulnerability scans, scenario tests, failover, and for critical entities threat-led penetration testing) with findings tracked to closure."}
+  - {category: rule, priority: must, stage: 2, title: "Third-party ICT risk and register of information", body: "Maintain a register of all ICT third-party arrangements, assess concentration and exit risk, and include required contract provisions (audit, location, subcontracting, termination and exit)."}
+  - {category: rule, priority: must, stage: 2, title: "Backup, restoration and recovery", body: "Define backup and restoration policies and procedures, keep separate recovery environments, and test recovery against the recovery objectives."}
+  - {category: rule, priority: should, stage: 2, title: "Exit strategy for critical providers", body: "Document how a critical ICT service can be replaced or brought in-house without disrupting critical functions."}
+  - {category: rule, priority: should, stage: 5, title: "Learn and evolve after incidents and tests", body: "Review incidents and test results, update the design and controls, and report to management."}

@@ -1,0 +1,18 @@
+id: pci-dss-4
+name: "PCI DSS 4.0 (payment card data)"
+description: "Protecting cardholder data and the systems that store, process or transmit it. Reduce scope first, then apply the controls that remain."
+kind: regulation
+version: 1
+baseline: false
+tags: {industries: [retail-ecommerce, banking, payments-fintech, travel-hospitality, telecom], regulations: [pci-dss], domains: [payments]}
+entries:
+  - {category: rule, priority: must, stage: 2, title: "Minimise the cardholder data environment", body: "Keep card data out of as many systems as possible by using a PCI-compliant payment provider, hosted fields or tokenisation. Show the scope boundary and the data flows in the architecture."}
+  - {category: rule, priority: must, stage: 3, title: "Never store sensitive authentication data after authorisation", body: "Do not store full track data, card verification codes (CVV/CVC) or PIN blocks after authorisation, even if encrypted (Req. 3.3)."}
+  - {category: rule, priority: must, stage: 3, title: "Mask and render the PAN unreadable wherever stored", body: "Display at most the first six and last four digits, and render stored primary account numbers unreadable with strong cryptography, truncation or tokens (Req. 3.4 and 3.5)."}
+  - {category: rule, priority: must, stage: 3, title: "Strong cryptography in transit", body: "Use TLS 1.2 or later with strong cipher suites for card data on any network, and never send PANs by end-user messaging such as email or chat (Req. 4)."}
+  - {category: rule, priority: must, stage: 3, title: "Multi-factor authentication into the cardholder data environment", body: "Require MFA for all access into the cardholder data environment and for administrative access (Req. 8.4)."}
+  - {category: rule, priority: must, stage: 5, title: "Log and retain audit trails", body: "Log all access to cardholder data and system components, protect logs from change, review them daily by automated means and keep them at least 12 months with 3 months immediately available (Req. 10)."}
+  - {category: rule, priority: must, stage: 4, title: "Test security regularly", body: "Run quarterly internal and external vulnerability scans and penetration tests at least annually and after significant change, and remediate findings (Req. 11)."}
+  - {category: rule, priority: must, stage: 3, title: "Secure development and payment-page script control", body: "Follow a secure development lifecycle, review code for common vulnerabilities and inventory, authorise and monitor every script on payment pages (Req. 6.4.3 and 11.6.1)."}
+  - {category: rule, priority: should, stage: 2, title: "Segment the cardholder data environment", body: "Isolate the cardholder data environment with network controls and verify the segmentation with testing."}
+  - {category: rule, priority: should, stage: 5, title: "Document roles, responsibilities and third parties", body: "Record who owns each PCI requirement, which service providers are in scope and the evidence of their compliance."}

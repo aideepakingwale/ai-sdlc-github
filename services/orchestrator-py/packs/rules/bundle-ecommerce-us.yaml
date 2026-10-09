@@ -1,0 +1,29 @@
+id: bundle-ecommerce-us
+name: "E-commerce or retail in the US"
+description: "Online retail with card payments, state privacy laws, accessibility and peak-event performance."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - retail-ecommerce
+  regulations:
+  - ccpa-cpra
+  - pci-dss
+  - wcag
+  domains:
+  - payments
+  - public-web
+  - customer-pii
+includes:
+- industry-retail-ecommerce
+- pci-dss-4
+- ccpa-cpra
+- accessibility-wcag
+- frontend-web
+- performance-capacity
+- security-baseline
+- api-standards
+- resilience-dr
+- observability-sre
+- testing-quality

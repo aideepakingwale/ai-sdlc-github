@@ -1,0 +1,23 @@
+id: bundle-automotive-connected
+name: "Connected vehicle or automotive software"
+description: "Vehicle and back-end cybersecurity with secure updates, device identity and fleet monitoring."
+kind: bundle
+version: 1
+baseline: false
+tags:
+  industries:
+  - automotive
+  regulations:
+  - unece-r155
+  - iec-62443
+  domains:
+  - iot-devices
+  - ot-industrial
+includes:
+- unece-r155-automotive
+- industry-iot-connected-devices
+- industry-manufacturing
+- security-baseline
+- devsecops-supply-chain
+- testing-quality
+- data-governance

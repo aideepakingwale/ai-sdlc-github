@@ -1,0 +1,16 @@
+id: resilience-dr
+name: "Resilience and disaster recovery"
+description: "Recovery objectives, redundancy, backups, graceful degradation and failure testing."
+kind: practice
+version: 1
+baseline: false
+tags: {industries: [banking, insurance, healthcare, telecom, energy-utilities, public-sector], regulations: [dora, nis2, iso-27001], domains: [payments, health-records]}
+entries:
+  - {category: constraint, priority: must, stage: 1, title: "State RTO and RPO per capability", body: "Requirements give a recovery time objective and recovery point objective for each business capability, agreed with the business owner."}
+  - {category: rule, priority: must, stage: 2, title: "No single point of failure for critical paths", body: "Critical paths run across at least two failure domains (availability zones or sites). The architecture shows where redundancy stops and why."}
+  - {category: rule, priority: must, stage: 3, title: "Timeouts, retries with backoff and circuit breakers", body: "Every remote call has a timeout, retries use exponential backoff with jitter and a retry budget, and circuit breakers protect against cascading failure."}
+  - {category: rule, priority: must, stage: 3, title: "Idempotent operations and safe replays", body: "Operations that can be retried or replayed (queues, webhooks, batch jobs) are idempotent or deduplicated, so recovery cannot double-apply an action."}
+  - {category: rule, priority: must, stage: 5, title: "Backups are tested restores", body: "Backups are automated, encrypted, stored in a separate account or site and restored on a schedule to prove the RPO and RTO."}
+  - {category: rule, priority: should, stage: 2, title: "Degrade gracefully", body: "Define which features can be switched off or served stale when a dependency is down, so the core journey keeps working."}
+  - {category: rule, priority: should, stage: 4, title: "Test failure on purpose", body: "Include resilience tests (dependency outage, zone loss, failover, load shedding) and run recovery exercises at a stated frequency."}
+  - {category: rule, priority: should, stage: 5, title: "Release safely and roll back quickly", body: "Use progressive delivery (canary or blue-green), database changes that are backward compatible, and a rehearsed rollback."}

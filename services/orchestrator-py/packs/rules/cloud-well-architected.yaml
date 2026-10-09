@@ -1,0 +1,16 @@
+id: cloud-well-architected
+name: "Cloud architecture (Well-Architected)"
+description: "Operational excellence, security, reliability, performance, cost and sustainability practices from the major cloud frameworks."
+kind: practice
+version: 1
+baseline: false
+tags: {industries: [], regulations: [], domains: []}
+entries:
+  - {category: rule, priority: must, stage: 5, title: "Everything is infrastructure as code", body: "Environments are created and changed only through version-controlled infrastructure code (Terraform, CDK, Bicep or similar) with review and automated checks. No manual changes in production."}
+  - {category: rule, priority: must, stage: 2, title: "Separate accounts or subscriptions per environment", body: "Production, non-production and shared services run in separate accounts or subscriptions with their own identities, budgets and guardrails."}
+  - {category: rule, priority: must, stage: 3, title: "Managed identity instead of long-lived keys", body: "Workloads use roles or managed identities with short-lived credentials. Static access keys are not created."}
+  - {category: rule, priority: should, stage: 2, title: "Prefer managed services", body: "Choose managed services over self-hosted ones unless a requirement forbids it, and record the reason in an ADR."}
+  - {category: rule, priority: should, stage: 3, title: "Tag everything for ownership and cost", body: "Resources carry tags for owner, cost centre, environment and data classification, enforced by policy."}
+  - {category: rule, priority: should, stage: 2, title: "Design for cost", body: "State expected cost drivers and a budget with alerts, right-size resources, use autoscaling and schedules for non-production and review spend monthly."}
+  - {category: rule, priority: should, stage: 2, title: "Design for scale out and statelessness", body: "Keep compute stateless, put state in managed stores, and scale horizontally behind load balancers with health checks."}
+  - {category: rule, priority: should, stage: 2, title: "Consider sustainability", body: "Prefer efficient instance types and regions, avoid idle capacity and set data retention so storage does not grow without limit."}

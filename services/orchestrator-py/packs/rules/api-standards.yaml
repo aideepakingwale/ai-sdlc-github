@@ -1,10 +1,17 @@
 id: api-standards
-name: API standards
-description: Resource naming, errors, versioning and pagination for HTTP APIs.
+name: "API design standards"
+description: "Contract-first design, resource naming, errors, versioning, pagination and idempotency for HTTP APIs."
+kind: practice
+version: 1
+baseline: true
+tags: {industries: [], regulations: [], domains: [public-web, event-driven]}
 entries:
-  - {category: rule, priority: must, stage: 3, title: Contract first with OpenAPI, body: "Every HTTP API is described by an OpenAPI 3 document that passes linting before any code is written. The code follows the document, not the other way round."}
-  - {category: rule, priority: must, stage: 3, title: One error shape, body: "All errors use the same JSON shape with a stable machine-readable code, a human message and a correlation id. Do not return stack traces or internal details."}
-  - {category: rule, priority: should, stage: 3, title: Plural nouns and consistent resource names, body: "Resources are plural nouns in kebab-case (/purchase-orders). Actions that are not CRUD are modelled as sub-resources or explicit action endpoints and documented as such."}
-  - {category: rule, priority: should, stage: 3, title: Version in the path, body: "Breaking changes ship under a new version prefix (/v2). Additive changes keep the version. State the deprecation window for the old one."}
-  - {category: rule, priority: should, stage: 3, title: Paginate every list, body: "List endpoints are paginated, with a documented default and maximum page size, and return a stable sort order."}
-  - {category: rule, priority: should, stage: 3, title: Idempotent writes where retries are possible, body: "Operations that clients or queues may retry accept an idempotency key or are naturally idempotent. The design says which."}
+  - {category: rule, priority: must, stage: 3, title: "Contract first with OpenAPI", body: "Every HTTP API is described by an OpenAPI 3 document that passes linting before code is written. The code follows the document, and consumers can generate clients from it."}
+  - {category: rule, priority: must, stage: 3, title: "One error shape", body: "All errors use the same JSON shape (for example RFC 9457 problem details) with a stable machine-readable code, a human message and a correlation id. Never return stack traces or internal details."}
+  - {category: rule, priority: should, stage: 3, title: "Plural nouns and consistent resource names", body: "Resources are plural nouns in kebab-case (/purchase-orders). Operations that are not CRUD are modelled as sub-resources or explicit action endpoints and documented as such."}
+  - {category: rule, priority: should, stage: 3, title: "Version in the path or header, and plan deprecation", body: "Breaking changes ship under a new version (/v2). Additive changes keep the version. State the deprecation window and how consumers are told."}
+  - {category: rule, priority: should, stage: 3, title: "Paginate every list", body: "List endpoints are paginated (cursor-based for large or changing data) with a documented default and maximum page size and a stable sort order."}
+  - {category: rule, priority: must, stage: 3, title: "Idempotent writes where retries are possible", body: "Operations that clients, gateways or queues may retry accept an idempotency key or are naturally idempotent. The design says which and how long keys are kept."}
+  - {category: rule, priority: should, stage: 3, title: "Use HTTP correctly", body: "Use the right methods and status codes, cache headers for cacheable reads, ETags or version fields for optimistic concurrency, and 429 with Retry-After for rate limits."}
+  - {category: rule, priority: should, stage: 3, title: "Rate limiting and payload limits", body: "Every public API states per-client rate limits, maximum request size and timeouts, and returns clear errors when they are exceeded."}
+  - {category: rule, priority: should, stage: 3, title: "Backward-compatible changes by default", body: "Adding optional fields, endpoints or enum values is allowed; removing or renaming fields, changing types or tightening validation is a breaking change that needs a new version."}

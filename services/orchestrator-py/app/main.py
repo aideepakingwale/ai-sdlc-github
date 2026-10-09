@@ -131,6 +131,10 @@ async def lifespan(app: FastAPI):
     from .services.rule_assist import RuleAssist
     from .services.rule_checks import RuleChecker
     rule_assist = RuleAssist(llm, canon, project_config)
+    from .services.pack_admin import PackAdmin
+    from .services.rule_advice import RuleAdvisor
+    pack_admin = PackAdmin(db, audit, canon.catalog)
+    rule_advisor = RuleAdvisor(canon, project_config)
     rule_checker = RuleChecker(db, content, llm, canon, settings)
     agent_deps = AgentDeps(
         llm=llm, mcp=mcp, db=db, audit=audit, rag=rag, content=content, monitor=monitor,
@@ -184,6 +188,7 @@ async def lifespan(app: FastAPI):
     container.memory = memory
     container.project_config, container.stack_advisor = project_config, stack_advisor
     container.rule_assist, container.rule_checker = rule_assist, rule_checker
+    container.pack_admin, container.rule_advisor = pack_admin, rule_advisor
     from .services.code_edit import CodeEditService
     container.code_edit = CodeEditService(db, content, rag, audit, authz, llm, chat, workflow, dynamo, canon=canon, memory=memory)
     container.connections = connections
