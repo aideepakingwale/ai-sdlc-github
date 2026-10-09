@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import MiddleText from './MiddleText';
 import { useState } from 'react';
 import { api } from '../api/client';
 import { Pill } from './bits';
@@ -23,7 +24,7 @@ export default function ProjectFiles({ projectId, onOpenArtifact }: { projectId:
   }
   return (
     <div data-testid="v2-files-tab">
-      <div className="mb-3 flex flex-wrap items-center gap-2 text-xs"><Pill>Storage: {tree.data.storageMode.toUpperCase()}</Pill><span className="truncate font-mono text-slate-500" title={tree.data.root}>{tree.data.root}</span></div>
+      <div className="mb-3 flex flex-wrap items-center gap-2 text-xs"><Pill>Storage: {tree.data.storageMode.toUpperCase()}</Pill><MiddleText text={tree.data.root} className="flex-1 font-mono text-slate-500" /></div>
       <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter files…" aria-label="Filter files" className="mb-3 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none" />
       {tree.data.folders.length === 0 && <div className="rounded-lg bg-slate-100 p-4 text-center text-sm text-slate-500">No files yet.</div>}
       <ul className="space-y-0.5">
@@ -41,7 +42,7 @@ export default function ProjectFiles({ projectId, onOpenArtifact }: { projectId:
                   {files.map((x) => (
                     <li key={x.name}>
                       <button type="button" onClick={() => (x.artefactId ? onOpenArtifact(x.artefactId) : x.codebaseFileId ? void openCode(x.codebaseFileId) : undefined)} className="flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-sm hover:bg-slate-100">
-                        <span aria-hidden="true">{ICON[x.ext] ?? '📄'}</span><span className="min-w-0 flex-1 truncate font-mono text-[13px] text-slate-800">{x.name}</span>
+                        <span aria-hidden="true">{ICON[x.ext] ?? '📄'}</span><MiddleText text={x.name} className="flex-1 font-mono text-[13px] text-slate-800" />
                         {x.sizeBytes != null && <Pill>{size(x.sizeBytes)}</Pill>}
                       </button>
                     </li>
@@ -54,7 +55,7 @@ export default function ProjectFiles({ projectId, onOpenArtifact }: { projectId:
       </ul>
       {codeFile && (
         <div className="mt-3 rounded-xl border border-slate-200 bg-white">
-          <div className="flex items-center gap-2 border-b border-slate-200 px-3 py-2"><span className="min-w-0 flex-1 truncate font-mono text-xs text-slate-600">{codeFile.path}</span><button type="button" onClick={() => setCodeFile(null)} className="text-xs text-slate-500 hover:text-navy">Close</button></div>
+          <div className="flex items-center gap-2 border-b border-slate-200 px-3 py-2"><MiddleText text={codeFile.path} className="flex-1 font-mono text-xs text-slate-600" /><button type="button" onClick={() => setCodeFile(null)} className="text-xs text-slate-500 hover:text-navy">Close</button></div>
           <pre className="max-h-80 overflow-auto p-3 font-mono text-xs text-slate-800">{codeFile.content}</pre>
         </div>
       )}

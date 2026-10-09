@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import CodeView from './CodeView';
+import MiddleText from '../v2/MiddleText';
 import SplitPair from '../v2/SplitPair';
 import { Badge } from './ui/Badge';
 import { Button } from './ui/Button';
@@ -105,7 +106,7 @@ export default function CodeExplorer({ projectId, phase }: { projectId: string; 
         </div>
       )}
 
-      <SplitPair className="mt-3 min-h-[360px] border-t border-slate-100" storageKey="sdlc:v2:code-split" def={320} min={200} max={620} label="Resize the file tree"
+      <SplitPair className="mt-3 min-h-[360px] border-t border-slate-100" storageKey="sdlc:v2:code-split" def={320} min={200} max={900} label="Resize the file tree"
         left={(
           <div className="p-3">
           <div className="mb-2 flex items-center gap-1.5">
@@ -141,7 +142,7 @@ function Row({ node, depth, isOpen, toggle, selected, onSelect }: {
         <button type="button" onClick={() => toggle(node.path)} style={pad} data-dir={node.path}
           className="flex w-full items-center gap-1.5 rounded py-0.5 pr-1 text-left hover:bg-slate-50" title={node.purpose || node.path}>
           <span className="w-3 text-slate-400">{open ? '▾' : '▸'}</span><span>{open ? '📂' : '📁'}</span>
-          <span className="truncate font-semibold text-slate-700">{node.name}</span>
+          <MiddleText text={node.name} title={node.path} className="flex-1 font-semibold text-slate-700" />
           <span className="ml-auto shrink-0 text-[10px] text-slate-400">{c.generated}/{c.files}</span>
         </button>
         {open && <div role="group">{(node.children ?? []).map((n) => <Row key={n.path} node={n} depth={depth + 1} isOpen={isOpen} toggle={toggle} selected={selected} onSelect={onSelect} />)}</div>}
@@ -153,7 +154,7 @@ function Row({ node, depth, isOpen, toggle, selected, onSelect }: {
     <button type="button" role="treeitem" aria-selected={active} data-file={node.path} onClick={() => onSelect(node.path)} style={pad}
       className={`flex w-full items-center gap-1.5 rounded py-0.5 pr-1 text-left ${active ? 'bg-brand-50 ring-1 ring-brand-200' : 'hover:bg-slate-50'}`} title={node.purpose}>
       <span className="w-3" /><span>{iconFor(node.path)}</span>
-      <span className="min-w-0 flex-1"><span className="block truncate text-slate-800">{node.name}</span><span className="block truncate text-[10px] text-slate-400">{node.purpose}</span></span>
+      <span className="min-w-0 flex-1"><MiddleText text={node.name} title={node.path} className="text-slate-800" /><span className="block truncate text-[10px] text-slate-400">{node.purpose}</span></span>
       <span className={`shrink-0 text-[11px] ${node.generated ? 'text-emerald-500' : 'text-slate-300'}`} title={node.generated ? 'Written' : 'Planned — not written yet'}>{node.generated ? '✓' : '○'}</span>
     </button>
   );
@@ -170,7 +171,7 @@ function FileDetail({ projectId, file }: { projectId: string; file: CodeFile }) 
   return (
     <div>
       <div className="mb-2 flex flex-wrap items-center gap-2">
-        <span className="font-mono text-xs font-semibold text-slate-800 [overflow-wrap:anywhere]">{file.path}</span>
+        <MiddleText text={file.path} className="min-w-0 flex-1 basis-48 font-mono text-xs font-semibold text-slate-800" />
         <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${badge.cls}`}>{badge.label}</span>
         {file.layer && <Badge>{file.layer}</Badge>}
       </div>
