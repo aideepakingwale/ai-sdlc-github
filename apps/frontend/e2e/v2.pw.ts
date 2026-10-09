@@ -488,29 +488,34 @@ test.describe('project config and the stack by layer', () => {
 });
 
 test.describe('rules and templates', () => {
-  test('starter pack, a new rule with hints, draft from a document, a template drop, and what the agents see', async ({ page }) => {
+  test('rule pack, a new rule with hints, draft from a document, a template drop, and what the agents see', async ({ page }) => {
     await login(page, '/?ui=v2');
     const { id, name } = await newProject(page);
     await page.reload();
     await openProject(page, name);
     await page.getByTestId('v2-nav-context').click();
-    // Rules: add a starter pack, then once more (nothing is added twice)
+    // Rules: add a rule pack, then once more (nothing is added twice)
     await page.getByTestId('v2-context-tab-rules').click();
     await page.getByTestId('v2-rules-packs').click();
+    // without a profile the essentials are recommended; the whole library can be browsed by kind
+    await expect(page.getByTestId('v2-pack-recommended')).toContainText('Engineering essentials');
+    await page.getByTestId('v2-packkind-regulation').click();
+    await expect(page.getByTestId('v2-pack-grid')).toContainText('GDPR');
+    await page.getByTestId('v2-packkind-all').click();
     await page.getByTestId('v2-pack-security-baseline').click();
-    await expect(page.getByTestId('v2-rules-note')).toContainText('Added 7 rules');
+    await expect(page.getByTestId('v2-rules-note')).toContainText('Added 10 rules');
     await expect(page.getByTestId('v2-rule').first()).toContainText('Must');
     await expect(page.getByTestId('v2-pack-security-baseline')).toHaveText('Added');
     // a new rule that repeats one is flagged before it is saved
     await page.getByTestId('v2-rules-new').click();
-    await page.getByTestId('v2-rule-title').fill('No secrets in code or documents');
+    await page.getByTestId('v2-rule-title').fill('No secrets in code, configuration or documents');
     await page.getByTestId('v2-rule-body').fill('Never put passwords, tokens, keys or connection strings in code, committed configuration, diagrams or documents.');
     await page.getByTestId('v2-rule-save').click();
     await expect(page.getByTestId('v2-rule-hints')).toContainText('Very close to the existing rule');
     await page.getByTestId('v2-rule-save-anyway').click();
-    await expect(page.getByTestId('v2-rule')).toHaveCount(8);
+    await expect(page.getByTestId('v2-rule')).toHaveCount(11);
     // search narrows the list
-    await page.getByLabel('Search rules').fill('encrypt');
+    await page.getByLabel('Search rules').fill('vetted');
     await expect(page.getByTestId('v2-rule')).toHaveCount(1);
     await page.getByLabel('Search rules').fill('');
     // draft rules from a pasted document (the offline mock falls back to the wording of the text)
@@ -530,10 +535,71 @@ test.describe('rules and templates', () => {
     // What agents see: the rules and the template for the stage that writes the HLD
     await page.getByTestId('v2-context-tab-see').click();
     await page.getByTestId('v2-see-stage-2').click();
-    await expect(page.getByTestId('v2-see-rules')).toContainText('Encrypt data in transit and at rest');
+    await expect(page.getByTestId('v2-see-rules')).toContainText('Use vetted cryptography');
     await expect(page.getByTestId('v2-see-templates')).toContainText('High-Level Design');
     await expect(page.getByTestId('v2-see-stack')).toContainText('technology');
     void id;
+  });
+});
+
+test.describe('profile, advice and organisation packs', () => {
+  test('the profile shapes the recommended packs, and stages 2 and 3 are advised only about what is missing', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-nav-context').click();
+    await page.getByTestId('v2-context-tab-profile').click();
+    await page.getByTestId('v2-profile-add-industry').selectOption({ label: 'Banking and lending' });
+    await page.getByTestId('v2-profile-add-regulation').selectOption({ label: 'GDPR' });
+    await expect(page.getByTestId('v2-profile-industry:banking')).toContainText('Set by you');
+    // the recommendation now names a ready-made set that fits, with its reasons
+    await page.getByTestId('v2-context-tab-rules').click();
+    await page.getByTestId('v2-rules-packs').click();
+    await expect(page.getByTestId('v2-pack-recommended')).toContainText('Banking');
+    await expect(page.getByTestId('v2-pack-recommended')).toContainText('GDPR');
+    // stage 2 is advised until the pack is applied, and not afterwards
+    const due = async (stage: number) => ((await (await page.request.get(`/api/projects/${id}/rules/recommendations?stage=${stage}`)).json()) as { due: boolean; primary: { id: string; missing: number } | null });
+    const before = await due(2);
+    expect(before.due).toBe(true);
+    expect((await due(1)).due).toBe(false);
+    expect(before.primary?.id).toBe('bundle-banking-eu');
+    await page.getByTestId('v2-rec-bundle-banking-eu').click();
+    await expect(page.getByTestId('v2-rules-note')).toContainText('Added');
+    // the set is in; what is still advised is only what is missing (the essentials), never the set again
+    const after = await due(2);
+    expect(after.due).toBe(true);
+    expect(after.primary?.missing).toBe(0);
+    await page.getByTestId('v2-rec-bundle-engineering-essentials').click();
+    await expect(page.getByTestId('v2-rec-bundle-engineering-essentials')).toHaveText('Added');
+    // what is left to advise is only what the set did not cover; dismissing it silences stage 2 but not stage 3
+    const rest = (await (await page.request.get(`/api/projects/${id}/rules/recommendations?stage=2`)).json()) as { todo: string[] };
+    expect(rest.todo).not.toContain('gdpr');
+    expect(rest.todo).not.toContain('bundle-banking-eu');
+    expect(rest.todo).not.toContain('bundle-engineering-essentials');
+    await page.request.post(`/api/projects/${id}/rules/recommendations/dismiss`, { data: { stage: 2 } });
+    expect((await due(2)).due).toBe(false);
+    expect((await due(3)).due).toBe(true);
+  });
+
+  test('an administrator keeps an organisation profile and organisation packs', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    await page.getByTestId('v2-nav-governance').click();
+    await page.getByTestId('v2-gov-org').click();
+    await page.getByTestId('v2-org-packs').click();
+    await expect(page.getByTestId('v2-org-pack-list')).toContainText('Banking');
+    await page.getByTestId('v2-org-pack-new').click();
+    const id = `team-${Date.now()}`;
+    await page.getByTestId('v2-org-pack-text').fill(`id: ${id}\nname: Team standards ${id}\ndescription: What our teams always do.\nkind: practice\nentries:\n  - {title: Write the runbook, body: Every service has a runbook before release., priority: must, category: rule, stage: null}\n`);
+    await page.getByTestId('v2-org-pack-save').click();
+    await expect(page.getByTestId('v2-org-pack-note')).toContainText('Saved');
+    await expect(page.getByTestId(`v2-org-pack-${id}`)).toContainText('Your organisation');
+    // a bad pack is refused with a reason
+    await page.getByTestId('v2-org-pack-new').click();
+    await page.getByTestId('v2-org-pack-text').fill('id: x\nname: y\n');
+    await page.getByTestId('v2-org-pack-save').click();
+    await expect(page.getByTestId('v2-org-pack-note')).toContainText('id');
+    await page.request.delete(`/api/org/packs/${id}`);
   });
 });
 

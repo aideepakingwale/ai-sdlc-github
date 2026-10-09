@@ -31,7 +31,7 @@ class RuleAdvisor:
         todo = [v for v in ([primary] if primary else []) + rec["packs"] + rec["baseline"] if v and v["missing"] > 0]
         unconfirmed = [i for i in eff["items"] if i["state"] == "identified"]
         return {
-            "stage": stage, "due": bool(stage in ADVISE_STAGES and todo and not dismissed), "dismissed": dismissed,
+            "canAuthor": await self._config.can_edit(project_id, user), "stage": stage, "due": bool(stage in ADVISE_STAGES and todo and not dismissed), "dismissed": dismissed,
             "profile": {"items": eff["items"], "text": prof.describe(eff), "empty": not eff["items"], "unconfirmed": len(unconfirmed)},
             "primary": primary, "bundles": rec["bundles"], "packs": rec["packs"], "baseline": rec["baseline"], "todo": [v["id"] for v in todo],
         }

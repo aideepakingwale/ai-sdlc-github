@@ -14,6 +14,7 @@ import { Icon } from '../../components/ui/Icon';
 import { COLOR_CLASSES } from '../../api/flow';
 import { Pill, StageDot, stageTone } from '../bits';
 import QualityCards, { useFeedback } from './QualityCards';
+import RuleAdviceCard from './RuleAdviceCard';
 import { stageMode, type StageMode } from './stageMode';
 
 const fmtTime = (iso: string): string => {
@@ -367,6 +368,7 @@ export default function StageChat(props: StageControllerProps & { onOpenPipeline
           {blockedReason.length > 0 ? (
             <div className="rounded-lg bg-amber-50 px-3.5 py-3 text-sm text-amber-900"><b>This stage is waiting for an earlier one.</b> It runs once {blockedReason.join(', ')} {blockedReason.length > 1 ? 'are' : 'is'} approved.</div>
           ) : nextBanner}
+          {blockedReason.length === 0 && (stage.template === 2 || stage.template === 3) && (mode === 'new' || mode === 'plan') && <RuleAdviceCard projectId={props.projectId} stage={stage.template} onOpenContext={props.onOpenContext} />}
           {stageMessages.length === 0 && mode === 'new' && (
             <Said who={`DevMind · ${stage.persona}`}>Tell me what <b>{stage.name}</b> should produce. I will ask a few questions if I need to, then show you a plan before anything is generated.</Said>
           )}

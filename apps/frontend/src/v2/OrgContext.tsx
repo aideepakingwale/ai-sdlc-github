@@ -4,25 +4,29 @@ import { api } from '../api/client';
 import { render, type StackPreset } from '../lib/stackConfig';
 import { CATEGORIES, PRIORITIES, PRIORITY_TONE, PRIORITY_WORD, STAGE_NAMES, type Rule, type RuleCategory, type RulePriority } from '../lib/rules';
 import { Pill } from './bits';
+import OrgPacks from './OrgPacks';
+import OrgProfile from './OrgProfile';
 import TemplatesTab from './TemplatesTab';
 
 const input = 'rounded-lg border border-slate-300 px-2 py-1 text-sm focus:border-brand-500 focus:outline-none';
 const primary = 'rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50';
 
-/** Governance -> Organisation: rules every project inherits, stack presets, and platform-wide templates. Administrators edit; everyone can read. */
+/** Governance -> Organisation: profile, rules every project inherits, rule packs, stack presets, and platform-wide templates. Administrators edit; everyone can read. */
 export default function OrgContext() {
-  const [section, setSection] = useState<'rules' | 'presets' | 'templates'>('rules');
+  const [section, setSection] = useState<'profile' | 'rules' | 'packs' | 'presets' | 'templates'>('rules');
   const rules = useQuery({ queryKey: ['org-rules'], queryFn: () => api.get<{ entries: Rule[]; canEdit: boolean }>('/api/org/rules') });
   const canEdit = rules.data?.canEdit ?? false;
   return (
     <div data-testid="v2-org-context">
       <p className="mb-3 text-sm text-slate-600">Set once, used by every project. {canEdit ? '' : 'Only administrators change these.'} A project can opt out of an organisation rule, with a reason that is recorded.</p>
       <div className="mb-3 flex gap-1" role="tablist">
-        {([['rules', 'Rules'], ['presets', 'Stack presets'], ['templates', 'Templates']] as const).map(([id, label]) => (
+        {([['profile', 'Profile'], ['rules', 'Rules'], ['packs', 'Rule packs'], ['presets', 'Stack presets'], ['templates', 'Templates']] as const).map(([id, label]) => (
           <button key={id} role="tab" aria-selected={section === id} onClick={() => setSection(id)} data-testid={`v2-org-${id}`}
             className={`rounded-full px-3 py-1 text-xs font-medium ${section === id ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{label}</button>
         ))}
       </div>
+      {section === 'profile' && <OrgProfile />}
+      {section === 'packs' && <OrgPacks />}
       {section === 'rules' && <OrgRules entries={rules.data?.entries ?? []} canEdit={canEdit} />}
       {section === 'presets' && <OrgPresets />}
       {section === 'templates' && <TemplatesTab canEdit={canEdit} />}

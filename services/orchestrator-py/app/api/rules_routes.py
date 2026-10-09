@@ -48,7 +48,7 @@ async def _can_author(c: Container, project_id: str, user: UserPublic) -> bool:
 # ------------------------------------------------------------------ the Rules tab
 @router.get("/api/projects/{project_id}/rules/overview")
 async def rules_overview(project_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
-    """Everything the Rules tab shows: the project's rules, the organisation's (with opt-outs), starter packs and the latest compliance check."""
+    """Everything the Rules tab shows: the project's rules, the organisation's (with opt-outs), rule packs and the latest compliance check."""
     entries = await c.canon.list(project_id, user, active_only=False)
     from ..services.rule_packs import KIND_LABEL, resolve_entries
 
@@ -56,16 +56,30 @@ async def rules_overview(project_id: str, user: UserPublic = Depends(current_use
     have = await c.canon.rule_titles(project_id)
     packs = []
     for p in catalog.values():
-        entries = resolve_entries(catalog, p["id"])
-        mine = sum(1 for e in entries if " ".join(e["title"].lower().split()) in have)
+        leaves = resolve_entries(catalog, p["id"])
+        mine = sum(1 for e in leaves if " ".join(e["title"].lower().split()) in have)
         packs.append({"id": p["id"], "name": p["name"], "description": p.get("description", ""), "kind": p["kind"], "kindLabel": KIND_LABEL[p["kind"]],
                       "tags": p["tags"], "includes": [{"id": i, "name": catalog[i]["name"]} for i in p["includes"] if i in catalog], "version": p["version"],
-                      "baseline": p["baseline"], "count": len(entries), "alreadyHave": mine, "source": p.get("source", "builtin"),
-                      "stages": sorted({e["stage"] for e in entries if e.get("stage")})})
+                      "baseline": p["baseline"], "count": len(leaves), "alreadyHave": mine, "source": p.get("source", "builtin"),
+                      "stages": sorted({e["stage"] for e in leaves if e.get("stage")})})
     packs.sort(key=lambda x: (x["kind"] != "bundle", x["kind"], x["name"]))
     compliance = await c.rule_checker.summary(project_id) if getattr(c, "rule_checker", None) else {"rules": {}, "artefacts": {}}
     return {"entries": entries, "orgEntries": await c.canon.inherited(project_id, user), "canAuthor": await _can_author(c, project_id, user),
             "packs": packs, "compliance": compliance}
+
+
+@router.get("/api/projects/{project_id}/rules/packs/{pack_id}")
+async def pack_preview(project_id: str, pack_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    """The rules a pack stands for (a ready-made set shows every rule of the packs it includes), and which of them the project already has."""
+    from ..services.rule_packs import resolve_entries
+
+    await c.authz.assert_project_access(project_id, user)
+    catalog = await c.canon.catalog.all()
+    entries = resolve_entries(catalog, pack_id)
+    have = await c.canon.rule_titles(project_id)
+    return {"id": pack_id, "name": catalog[pack_id]["name"], "rules": [
+        {"title": e["title"], "body": e["body"], "priority": e["priority"], "stage": e["stage"], "category": e["category"], "pack": e["pack"],
+         "packName": catalog[e["pack"]]["name"], "have": " ".join(e["title"].lower().split()) in have} for e in entries]}
 
 
 @router.post("/api/projects/{project_id}/rules/packs/{pack_id}")

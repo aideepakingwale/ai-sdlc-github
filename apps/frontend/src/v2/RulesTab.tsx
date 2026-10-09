@@ -3,11 +3,13 @@ import { useState } from 'react';
 import { api } from '../api/client';
 import {
   CATEGORIES, checkWord, filterRules, hasHints, NO_FILTER, originLabel, PRIORITIES, PRIORITY_TONE, PRIORITY_WORD, STAGE_NAMES,
-  type Compliance, type Pack, type Rule, type RuleCategory, type RuleDraft, type RuleFilter, type RuleHints, type RulePriority,
+  type Compliance, type Rule, type RuleCategory, type RuleDraft, type RuleFilter, type RuleHints, type RulePriority,
 } from '../lib/rules';
+import type { PackView } from '../lib/profile';
 import { Pill } from './bits';
+import PackBrowser from './PackBrowser';
 
-interface Overview { entries: Rule[]; orgEntries: Rule[]; canAuthor: boolean; packs: Pack[]; compliance: Compliance }
+interface Overview { entries: Rule[]; orgEntries: Rule[]; canAuthor: boolean; packs: PackView[]; compliance: Compliance }
 interface Draft { title: string; body: string; category: RuleCategory; priority: RulePriority; stage: number | null }
 const EMPTY: Draft = { title: '', body: '', category: 'rule', priority: 'must', stage: null };
 const input = 'rounded-lg border border-slate-300 px-2 py-1 text-sm focus:border-brand-500 focus:outline-none';
@@ -16,7 +18,7 @@ const primary = 'rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-
 
 /**
  * Project Context -> Rules. The binding rules every agent run is told: the project's own, the organisation's (read-only, with a reasoned
- * opt-out), starter packs, drafting from a document, and what the last check found.
+ * opt-out), rule packs, drafting from a document, and what the last check found.
  */
 export default function RulesTab({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
@@ -27,10 +29,6 @@ export default function RulesTab({ projectId }: { projectId: string }) {
   const q = useQuery({ queryKey: ['rules', projectId], queryFn: () => api.get<Overview>(`/api/projects/${projectId}/rules/overview`) });
   const refresh = () => { void qc.invalidateQueries({ queryKey: ['rules', projectId] }); void qc.invalidateQueries({ queryKey: ['canon', projectId] }); void qc.invalidateQueries({ queryKey: ['context-preview', projectId] }); };
   const fail = (e: unknown) => setNote(e instanceof Error ? e.message : 'That did not work');
-  const apply = useMutation({
-    mutationFn: (id: string) => api.post<{ added: number; skipped: number }>(`/api/projects/${projectId}/rules/packs/${id}`),
-    onSuccess: (r) => { setNote(`Added ${r.added} rule${r.added === 1 ? '' : 's'}${r.skipped ? `, ${r.skipped} already there` : ''}.`); refresh(); }, onError: fail,
-  });
   const patch = useMutation({ mutationFn: (v: { id: string; body: Record<string, unknown> }) => api.patch(`/api/projects/${projectId}/canon/${v.id}`, v.body), onSuccess: () => { setEditing(null); refresh(); }, onError: fail });
   const remove = useMutation({ mutationFn: (id: string) => api.del(`/api/projects/${projectId}/canon/${id}`), onSuccess: refresh, onError: fail });
   const optOut = useMutation({ mutationFn: (v: { id: string; reason: string }) => api.put(`/api/projects/${projectId}/rules/org/${v.id}/opt-out`, { reason: v.reason }), onSuccess: refresh, onError: fail });
@@ -48,26 +46,13 @@ export default function RulesTab({ projectId }: { projectId: string }) {
       {canAuthor && (
         <div className="mb-3 flex flex-wrap gap-2">
           <button type="button" className={panel === 'new' ? primary : btn} onClick={() => setPanel(panel === 'new' ? null : 'new')} data-testid="v2-rules-new">New rule</button>
-          <button type="button" className={panel === 'packs' ? primary : btn} onClick={() => setPanel(panel === 'packs' ? null : 'packs')} data-testid="v2-rules-packs">Starter packs</button>
+          <button type="button" className={panel === 'packs' ? primary : btn} onClick={() => setPanel(panel === 'packs' ? null : 'packs')} data-testid="v2-rules-packs">Rule packs</button>
           <button type="button" className={panel === 'draft' ? primary : btn} onClick={() => setPanel(panel === 'draft' ? null : 'draft')} data-testid="v2-rules-draft">Draft from a document</button>
         </div>
       )}
       {note && <div className="mb-2 text-xs text-slate-600" role="status" data-testid="v2-rules-note">{note}</div>}
       {panel === 'new' && <NewRule projectId={projectId} onDone={() => { setPanel(null); refresh(); }} />}
-      {panel === 'packs' && (
-        <div className="mb-3 grid gap-2 sm:grid-cols-2" data-testid="v2-rule-packs">
-          {packs.map((p) => (
-            <div key={p.id} className="rounded-xl border border-slate-300 bg-white p-3">
-              <div className="flex items-center gap-2"><span className="text-sm font-semibold text-slate-800">{p.name}</span><Pill>{p.count} rules</Pill></div>
-              <p className="mt-1 text-xs text-slate-500">{p.description}</p>
-              <div className="mt-2 flex items-center gap-2">
-                <button type="button" className={primary} disabled={apply.isPending || p.alreadyHave >= p.count} onClick={() => apply.mutate(p.id)} data-testid={`v2-pack-${p.id}`}>{p.alreadyHave >= p.count ? 'Added' : p.alreadyHave ? `Add the other ${p.count - p.alreadyHave}` : 'Add to this project'}</button>
-                {p.alreadyHave > 0 && p.alreadyHave < p.count && <span className="text-[11px] text-slate-400">{p.alreadyHave} already there</span>}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      {panel === 'packs' && <PackBrowser projectId={projectId} packs={packs} canAuthor={canAuthor} onChanged={(m) => { setNote(m); refresh(); }} />}
       {panel === 'draft' && <DraftFromDocument projectId={projectId} onDone={(n) => { setPanel(null); setNote(`Added ${n} drafted rule${n === 1 ? '' : 's'}.`); refresh(); }} />}
 
       {orgEntries.length > 0 && (

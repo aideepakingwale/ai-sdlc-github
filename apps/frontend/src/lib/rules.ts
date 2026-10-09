@@ -44,7 +44,7 @@ export function checkWord(c: RuleCheck | undefined): { text: string; tone: 'gree
   return { text: 'Could not tell', tone: 'slate' };
 }
 
-export const originLabel = (o?: string | null): string => (!o ? '' : o.startsWith('pack:') ? 'From a starter pack' : o.startsWith('memory:') ? 'From team memory' : o === 'draft' ? 'Drafted from a document' : '');
+export const originLabel = (o?: string | null): string => (!o ? '' : o.startsWith('pack:') ? 'From a rule pack' : o.startsWith('memory:') ? 'From team memory' : o === 'draft' ? 'Drafted from a document' : '');
 
 export const hasHints = (h: RuleHints | null): boolean => Boolean(h && (h.duplicates.length || h.conflicts.length || h.stack.length));
 

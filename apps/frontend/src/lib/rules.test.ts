@@ -30,7 +30,7 @@ describe('words', () => {
     expect(checkWord({ complied: 0, violated: 0, unclear: 1 })?.tone).toBe('slate');
   });
   it('names where a rule came from', () => {
-    expect(originLabel('pack:security-baseline')).toBe('From a starter pack');
+    expect(originLabel('pack:security-baseline')).toBe('From a rule pack');
     expect(originLabel('memory:m1')).toBe('From team memory');
     expect(originLabel(null)).toBe('');
   });

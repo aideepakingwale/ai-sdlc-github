@@ -278,3 +278,17 @@ async def test_with_no_profile_the_advice_asks_for_one_and_offers_the_essentials
     db, canon, cfg = setup()
     r = await RuleAdvisor(canon, cfg).recommend("p1", PM, 2)
     assert r["profile"]["empty"] is True and r["due"] is True and r["primary"] is None and [b["id"] for b in r["baseline"]] == ["bundle-engineering-essentials"]
+
+
+async def test_the_rules_overview_lists_the_projects_own_rules_not_a_packs():
+    from app.api import rules_routes
+
+    db, canon, _ = setup()
+    await canon.apply_pack("p1", PM, "security-baseline")
+    own = len(db.canon)
+    container = SimpleNamespace(canon=canon, rule_checker=None, authz=Authz())
+    out = await rules_routes.rules_overview("p1", PM, container)
+    assert len(out["entries"]) == own > 0
+    assert {e["title"] for e in out["entries"]} == {r["title"] for r in db.canon}
+    sec = next(p for p in out["packs"] if p["id"] == "security-baseline")
+    assert sec["alreadyHave"] == sec["count"] == own

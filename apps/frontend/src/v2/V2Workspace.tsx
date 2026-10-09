@@ -124,7 +124,7 @@ export default function V2Workspace() {
             ) : flow.data ? (
               <StageChat
                 key={`${activeProjectId}:${activeStage}`} projectId={activeProjectId} flow={flow.data} selectedSeq={activeStage} onSelectStage={goStage}
-                user={user} onOpenArtefact={(id) => openPane({ type: 'artefact', id })} onOpenPipeline={() => { setModalRaw(null); setView('pipeline'); }}
+                user={user} onOpenArtefact={(id) => openPane({ type: 'artefact', id })} onOpenPipeline={() => { setModalRaw(null); setView('pipeline'); }} onOpenContext={() => setModal('context')}
                 messages={detail.data?.messages ?? []} pendingGate={pendingGate}
                 artefacts={(artefacts.data?.artefacts ?? []).map((a) => ({ id: a.id, phase: a.phase, type: a.type, title: a.title, url: a.url }))}
               />
