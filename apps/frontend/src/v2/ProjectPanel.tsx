@@ -9,9 +9,8 @@ import ProjectFiles from './ProjectFiles';
 import SkillsPanel from '../components/SkillsPanel';
 import ProjectTeam from './ProjectTeam';
 import ProjectMemory from './ProjectMemory';
-import { Icon } from '../components/ui/Icon';
 import type { CodeNode, CodeView as CodeViewData } from '../lib/codeTree';
-import { filterTree, iconFor } from '../lib/codeTree';
+import { allDirs, filterTree } from '../lib/codeTree';
 import { ancestorsOf, auditCategory, auditCsv, buildPathTree, firstFilePath, formatWhen, languageMix, AUDIT_CATEGORIES, type AuditCategory } from './projectPanelLib';
 
 const MIX_COLORS = ['bg-brand-500', 'bg-navy', 'bg-bared-500', 'bg-slate-400', 'bg-brand-300'];
@@ -49,7 +48,7 @@ export default function ProjectPanel({
         ))}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        <div className="mb-4 rounded-lg bg-brand-50 px-3 py-2 text-[13px] text-slate-700" data-testid="v2-explain">{EXPLAIN[tab]}</div>
+        <div className="mb-4 rounded-xl bg-brand-100 px-4 py-3 text-[13px] text-slate-700" data-testid="v2-explain">{EXPLAIN[tab]}</div>
         {tab === 'team' && <ProjectTeam projectId={projectId} flow={flow} canManage={canManageTeam} />}
         {tab === 'artefacts' && <ArtefactsTab projectId={projectId} flow={flow} selectedStage={selectedStage} />}
         {tab === 'files' && <ProjectFiles projectId={projectId} onOpenArtifact={(id) => openPane({ type: 'artefact', id, from: 'files' })} />}
@@ -78,9 +77,9 @@ function ArtefactsTab({ projectId, flow, selectedStage }: { projectId: string; f
   return (
     <div data-testid="v2-artefacts-tab">
       <div className="mb-3 flex items-center justify-between">
-        <div className="inline-flex overflow-hidden rounded-lg border border-slate-300 text-xs font-semibold">
-          <button type="button" aria-pressed={scope === 'all'} onClick={() => setScope('all')} className={`px-3 py-1 ${scope === 'all' ? 'bg-brand-600 text-white' : 'bg-white text-slate-600'}`}>All stages</button>
-          <button type="button" aria-pressed={scope === 'stage'} onClick={() => setScope('stage')} className={`px-3 py-1 ${scope === 'stage' ? 'bg-brand-600 text-white' : 'bg-white text-slate-600'}`} disabled={!stage}>{stage?.name ?? 'This stage'}</button>
+        <div className="inline-flex overflow-hidden rounded-lg border border-slate-300 text-sm">
+          <button type="button" aria-pressed={scope === 'all'} onClick={() => setScope('all')} className={`px-3 py-1 ${scope === 'all' ? 'bg-brand-100 text-brand-700' : 'bg-white text-slate-800'}`}>All stages</button>
+          <button type="button" aria-pressed={scope === 'stage'} onClick={() => setScope('stage')} className={`px-3 py-1 ${scope === 'stage' ? 'bg-brand-100 text-brand-700' : 'bg-white text-slate-800'}`} disabled={!stage}>{stage?.name ?? 'This stage'}</button>
         </div>
         <span className="text-xs text-slate-500">{shown.length} artefact{shown.length === 1 ? '' : 's'}</span>
       </div>
@@ -112,6 +111,11 @@ function ArtefactsTab({ projectId, flow, selectedStage }: { projectId: string; f
 }
 
 /* ---------------------------------------------------------------- codebase */
+/** The filled folder of the design. */
+function FolderGlyph() {
+  return <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" className="shrink-0"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4.2c.4 0 .8.2 1.1.5L11 7h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" fill="#f4b73f" /></svg>;
+}
+
 function TreeNodes({ node, open, toggle, selected, onSelect, searching, lines }: {
   node: CodeNode; open: Set<string>; toggle: (p: string) => void; selected: string | null; onSelect: (p: string) => void; searching: boolean; lines?: Map<string, number>;
 }) {
@@ -119,18 +123,18 @@ function TreeNodes({ node, open, toggle, selected, onSelect, searching, lines }:
     <ul className="text-sm">
       {(node.children ?? []).map((c) => c.type === 'dir' ? (
         <li key={c.path}>
-          <button type="button" onClick={() => toggle(c.path)} className="flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-left hover:bg-slate-100">
-            <Icon name={searching || open.has(c.path) ? 'chevron-down' : 'chevron-right'} size={12} className="text-slate-400" />
-            <Icon name="folder" size={13} className="text-amber-500" />
+          <button type="button" onClick={() => toggle(c.path)} className="flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-left text-[15px] hover:bg-slate-100">
+            <span aria-hidden="true" className="w-3 text-center text-[10px] text-slate-400">{searching || open.has(c.path) ? '▾' : '▸'}</span>
+            <FolderGlyph />
             <span className="truncate">{c.name}</span>
           </button>
-          {(searching || open.has(c.path)) && <div className="ml-4 border-l border-slate-200 pl-1"><TreeNodes node={c} open={open} toggle={toggle} selected={selected} onSelect={onSelect} searching={searching} lines={lines} /></div>}
+          {(searching || open.has(c.path)) && <div className="ml-3 border-l border-slate-200 pl-1"><TreeNodes node={c} open={open} toggle={toggle} selected={selected} onSelect={onSelect} searching={searching} lines={lines} /></div>}
         </li>
       ) : (
         <li key={c.path}>
           <button type="button" onClick={() => onSelect(c.path)} aria-current={selected === c.path} data-file={c.path}
-            className={`flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 pl-6 text-left hover:bg-slate-100 ${selected === c.path ? 'bg-brand-100 text-brand-700' : ''}`}>
-            <span aria-hidden="true">{iconFor(c.path)}</span><span className="min-w-0 flex-1 truncate">{c.name}</span>
+            className={`flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 pl-6 text-left text-[15px] hover:bg-slate-100 ${selected === c.path ? 'bg-brand-100 text-brand-700' : ''}`}>
+            <span aria-hidden="true" className="inline-block h-2.5 w-2.5 shrink-0 rounded-[2px] border border-slate-500" /><span className="min-w-0 flex-1 truncate">{c.name}</span>
             {(lines?.get(c.path) ?? 0) > 0 && <span className="shrink-0 rounded-full bg-slate-100 px-1.5 text-[10px] text-slate-500" title="Lines">{lines!.get(c.path)}</span>}
           </button>
         </li>
@@ -145,9 +149,9 @@ function CodebaseTab({ projectId, flow, canWrite, canManage }: { projectId: stri
   const codeStage = flow?.stages.find((s) => s.template === 6);
   return (
     <div data-testid="v2-codebase-tab">
-      <div className="mb-3 inline-flex overflow-hidden rounded-lg border border-slate-300 text-xs font-semibold">
-        <button type="button" aria-pressed={mode === 'existing'} onClick={() => setMode('existing')} className={`px-3 py-1 ${mode === 'existing' ? 'bg-brand-600 text-white' : 'bg-white text-slate-600'}`}>Existing (uploaded)</button>
-        <button type="button" aria-pressed={mode === 'generated'} onClick={() => setMode('generated')} className={`px-3 py-1 ${mode === 'generated' ? 'bg-brand-600 text-white' : 'bg-white text-slate-600'}`}>Generated ({codeStage ? `stage ${codeStage.phase}` : 'no code stage'})</button>
+      <div className="mb-3 inline-flex overflow-hidden rounded-lg border border-slate-300 text-sm">
+        <button type="button" aria-pressed={mode === 'existing'} onClick={() => setMode('existing')} className={`px-3 py-1 ${mode === 'existing' ? 'bg-brand-100 text-brand-700' : 'bg-white text-slate-800'}`}>Existing (uploaded)</button>
+        <button type="button" aria-pressed={mode === 'generated'} onClick={() => setMode('generated')} className={`px-3 py-1 ${mode === 'generated' ? 'bg-brand-100 text-brand-700' : 'bg-white text-slate-800'}`}>Generated ({codeStage ? `stage ${codeStage.phase}` : 'no code stage'})</button>
       </div>
       {mode === 'existing' ? <ExistingCodebase projectId={projectId} canWrite={canWrite} canManage={canManage} onChanged={() => void qc.invalidateQueries({ queryKey: ['codebase', projectId] })} /> : <GeneratedCodebase projectId={projectId} phase={codeStage?.phase ?? null} />}
     </div>
@@ -188,7 +192,8 @@ function ExistingCodebase({ projectId, canWrite, canManage, onChanged }: { proje
     const first = firstFilePath(tree);
     if (!first) return;
     setSelected(first);
-    setOpen((cur) => new Set([...cur, ...ancestorsOf(first)]));
+    const dirs = allDirs(tree);
+    setOpen((cur) => new Set([...cur, ...(dirs.length <= 40 ? dirs : ancestorsOf(first))]));
   }, [files, tree, selected]);
   const content = useQuery({
     queryKey: ['codebase-file', projectId, sel?.id],
@@ -215,7 +220,7 @@ function ExistingCodebase({ projectId, canWrite, canManage, onChanged }: { proje
   const toggle = (p: string) => setOpen((cur) => { const n = new Set(cur); if (n.has(p)) n.delete(p); else n.add(p); return n; });
   return (
     <div>
-      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <div className="rounded-xl border border-slate-300 bg-slate-100 p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <div className="text-sm font-semibold text-navy" data-testid="v2-codebase-title">{files.length ? (archive?.name || `${files.length.toLocaleString()} files indexed`) : 'No codebase uploaded'}</div>
@@ -247,9 +252,9 @@ function ExistingCodebase({ projectId, canWrite, canManage, onChanged }: { proje
         <div className="mt-3">
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search file names…" aria-label="Search the codebase"
             className="mb-2 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-sm focus:border-brand-500 focus:outline-none" />
-          <SplitPair storageKey="sdlc:v2:codebase-split" def={260} min={160} max={560} label="Resize the file tree"
+          <SplitPair storageKey="sdlc:v2:codebase-split" def={300} min={160} max={560} label="Resize the file tree"
             left={(
-            <div className="max-h-[28rem] overflow-auto rounded-lg border border-slate-200 bg-white p-1.5">
+            <div className="h-[30rem] overflow-auto rounded-xl border border-slate-300 bg-white p-2" data-testid="v2-code-tree">
               {shown ? <TreeNodes node={shown} open={open} toggle={toggle} selected={selected} onSelect={setSelected} searching={Boolean(query.trim())} lines={lines} /> : <div className="p-2 text-xs text-slate-500">No file matches.</div>}
             </div>
             )}
@@ -258,11 +263,11 @@ function ExistingCodebase({ projectId, canWrite, canManage, onChanged }: { proje
               {!sel && <div className="rounded-lg bg-slate-100 p-4 text-sm text-slate-500">Select a file to read it.</div>}
               {sel && (
                 <>
-                  <div className="mb-1.5 flex items-center gap-2">
-                    <span className="min-w-0 flex-1 truncate font-mono text-xs text-slate-600">{sel.path}</span>
-                    <button type="button" onClick={() => void navigator.clipboard?.writeText(content.data?.file.content ?? '')} className="rounded-lg border border-slate-300 px-2 py-0.5 text-xs font-semibold text-slate-600 hover:border-brand-400" data-testid="v2-codebase-copy">Copy</button>
-                    <a href={`/api/projects/${projectId}/codebase/${sel.id}/download`} download={sel.path.split('/').pop()} className="rounded-lg border border-slate-300 px-2 py-0.5 text-xs font-semibold text-slate-600 hover:border-brand-400">Download</a>
+                  <div className="mb-2 flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate font-mono text-xs text-slate-500" title={sel.path}>{sel.path}</span>
+                    <button type="button" onClick={() => void navigator.clipboard?.writeText(content.data?.file.content ?? '')} className="rounded-lg border border-slate-300 px-3 py-1 text-sm text-slate-800 hover:border-brand-400" data-testid="v2-codebase-copy">Copy</button>
                   </div>
+                  <a href={`/api/projects/${projectId}/codebase/${sel.id}/download`} download={sel.path.split('/').pop()} className="mb-3 inline-block rounded-lg border border-slate-300 px-3 py-1 text-sm text-slate-800 hover:border-brand-400">Download</a>
                   {content.isLoading ? <div className="animate-pulse text-sm text-slate-400">Loading…</div> : (
                     <CodeView tone="light" bare source={content.data?.file.content ?? ''} lang={langForExt(sel.path.includes('.') ? sel.path.slice(sel.path.lastIndexOf('.')) : '')} />
                   )}

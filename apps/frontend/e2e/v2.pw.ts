@@ -391,7 +391,7 @@ test.describe('codebase', () => {
     const w1 = (await left.boundingBox())!.width;
     expect(w1).toBeGreaterThan(w0 + 40);
     await page.getByTestId('v2-split-inner').dblclick();
-    expect((await left.boundingBox())!.width).toBeCloseTo(260, -1);
+    expect((await left.boundingBox())!.width).toBeCloseTo(300, -1);
     page.once('dialog', (d) => void d.accept());
     await page.getByTestId('v2-codebase-remove').click();
     await expect(page.getByText('No codebase uploaded')).toBeVisible();

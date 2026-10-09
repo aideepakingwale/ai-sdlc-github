@@ -133,10 +133,6 @@
 .dark [class*="bg-bared-200/"] { background-color: rgb(206 33 15 / 0.18); }
 .dark [class*="bg-amber-50/"] { background-color: rgb(245 158 11 / 0.12); }
 
-/* The workspace's light code panel: soft grey with quiet token colours. In dark mode the viewer keeps its dark theme. */
+/* The workspace's light code panel: soft grey with quiet, mostly monochrome. In dark mode the viewer keeps its dark theme. */
+:root:not(.dark) .code-light span[class*="hljs-"] { color: inherit; }
 :root:not(.dark) .code-light .hljs-comment, :root:not(.dark) .code-light .hljs-quote { color: #8a94a6; font-style: italic; }
-:root:not(.dark) .code-light .hljs-keyword, :root:not(.dark) .code-light .hljs-selector-tag, :root:not(.dark) .code-light .hljs-literal { color: #1f4e9c; }
-:root:not(.dark) .code-light .hljs-string, :root:not(.dark) .code-light .hljs-attr, :root:not(.dark) .code-light .hljs-template-variable { color: #0f7a4a; }
-:root:not(.dark) .code-light .hljs-number, :root:not(.dark) .code-light .hljs-built_in, :root:not(.dark) .code-light .hljs-type { color: #a45a00; }
-:root:not(.dark) .code-light .hljs-title, :root:not(.dark) .code-light .hljs-function, :root:not(.dark) .code-light .hljs-name { color: #6b3fa0; }
-:root:not(.dark) .code-light .hljs-meta, :root:not(.dark) .code-light .hljs-tag { color: #5b6677; }

@@ -178,7 +178,7 @@ export default function CodeView({
   const isHighlighted = lines !== null;
 
   return (
-    <div className={`overflow-hidden rounded-lg border ${tone === 'light' ? 'code-light border-slate-200 bg-slate-100' : 'border-slate-700 bg-slate-900'}`}>
+    <div className={`overflow-hidden rounded-lg border ${tone === 'light' ? 'code-light rounded-xl border-transparent bg-slate-100' : 'border-slate-700 bg-slate-900'}`}>
       {!bare && <div className="flex items-center gap-2 border-b border-slate-700 px-3 py-1.5">
         {filename && <span className="truncate font-mono text-[11px] text-slate-300">{filename}</span>}
         <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
@@ -213,14 +213,14 @@ export default function CodeView({
         </div>
       )}
 
-      <div className={`hljs max-h-[65vh] overflow-auto text-xs leading-relaxed ${tone === 'light' ? '!bg-transparent' : '!bg-slate-900'}`}>
+      <div className={`hljs max-h-[65vh] overflow-auto leading-relaxed ${tone === 'light' ? '!bg-transparent py-2 text-[13px]' : '!bg-slate-900 text-xs'}`}>
         <table className="w-full border-collapse">
           <tbody>
             {rendered.map((html, i) => {
               const bad = badLines.has(i + 1);
               return (
                 <tr key={i} className={bad ? 'bg-red-500/15' : undefined}>
-                  <td className={`w-10 select-none border-r px-2 text-right align-top font-mono text-[10px] ${tone === 'light' ? 'border-slate-200 text-slate-400' : 'border-slate-800 text-slate-600'}`}>
+                  <td className={`w-10 select-none border-r px-2 text-right align-top font-mono ${tone === 'light' ? 'text-xs' : 'text-[10px]'} ${tone === 'light' ? 'border-transparent text-slate-400' : 'border-slate-800 text-slate-600'}`}>
                     {i + 1}
                   </td>
                   <td className={`whitespace-pre px-3 font-mono ${tone === 'light' ? 'text-slate-700' : 'text-slate-100'}`}>
