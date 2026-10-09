@@ -8,6 +8,7 @@ import asyncio
 import re
 
 from ..domain.models import ContextArtifact, estimate_tokens
+from .agent_catalog import role_of
 from ..integrations.llm import LlmClient
 from .prompt_library import render as render_prompt
 
@@ -57,7 +58,7 @@ async def build_context_block(
     async def _summarise(artifact: ContextArtifact) -> None:
         try:
             res = await llm.generate(
-                intent="standard", tag="context_compression", temperature=0.1, max_tokens=512, role="light",
+                intent="standard", tag="context_compression", temperature=0.1, max_tokens=512, role=role_of("context-compressor", "light"),
                 messages=[
                     {"role": "system", "content": render_prompt("context.compression.system")},
                     {"role": "user", "content": f"{artifact.type}: {artifact.title}\n\n{(artifact.content or '')[:16_000]}"},

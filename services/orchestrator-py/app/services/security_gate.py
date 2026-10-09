@@ -11,6 +11,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from ..domain.errors import SdlcError
+from .agent_catalog import role_of
 from .prompt_library import render as render_prompt
 
 log = logging.getLogger("security-gate")
@@ -79,7 +80,7 @@ async def run_review(deps: Any, project_id: str, *, instruction: str, tech_stack
                            instruction=instruction, tech_stack=tech_stack, mock_kind="security_review")
     prefix = f"Focus the review on: {focus}\n\n" if focus else ""
     report, res = await deps.llm.generate_json(
-        intent="architecture", tag=f"skill:{tag}", temperature=0.1, max_tokens=6000, role="reason",
+        intent="architecture", tag=f"skill:{tag}", temperature=0.1, max_tokens=6000, role=role_of("security-reviewer", "reason"),
         schema=SecurityReport, max_attempts=2,
         messages=[{"role": "system", "content": system},
                   {"role": "user", "content": f"{prefix}Artifacts under review ({len(labels)}): {'; '.join(labels)}\n\n" + "\n\n".join(parts)}],

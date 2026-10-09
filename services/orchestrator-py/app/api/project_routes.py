@@ -1682,13 +1682,13 @@ async def preview_canon(
 
 # ------------------------------------------------------------------ Specialist agents and what each artefact was made from
 @router.get("/api/agents")
-async def list_specialist_agents(user: UserPublic = Depends(current_user)) -> dict:
-    """The specialist agents: what each writes, the context it reads and the model role it runs on."""
-    from ..agents import specialists
-    return {"agents": [
-        {"id": a.id, "name": a.name, "template": a.template, "kind": a.kind, "role": a.role, "fields": list(a.fields),
-         "artifacts": list(a.artifacts), "needs": list(a.needs), "after": list(a.after), "instructions": a.instructions}
-        for a in specialists.REGISTRY]}
+async def list_agents(user: UserPublic = Depends(current_user)) -> dict:
+    """Every agent definition (the `agents/**/*.md` files): what it does, the model role it runs on, what it reads, and its instructions."""
+    from ..services import agent_catalog
+    keys = ("id", "name", "version", "category", "runtime", "status", "description", "role", "prompts", "entrypoint", "stage", "kind",
+            "fields", "artifacts", "upstream", "after", "canon", "stack", "attachments", "steering", "path", "body", "notes")
+    agents = [{k: a.get(k) for k in keys if a.get(k) is not None} for a in agent_catalog.catalog()]
+    return {"agents": agents, "counts": {r: sum(1 for a in agents if a["runtime"] == r) for r in ("specialist", "native", "proposed")}}
 
 
 @router.get("/api/projects/{project_id}/artefacts/{artefact_id}/run")

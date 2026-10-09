@@ -2,7 +2,7 @@
 
 Each artefact of a stage is written by its own **specialist agent** with its own instructions, its own (smaller) context window and
 the model role that suits the work, instead of every artefact being generated from one stage-wide prompt. There are **29 specialists**
-across stages 1-6 (`app/agents/specialists.py`). Browse them at `GET /api/agents`.
+across stages 1-6, each defined in its own file under `services/orchestrator-py/agents/generators/`.
 
 ## How a run works
 
@@ -36,74 +36,20 @@ user prompt, every context item with its size, and prompt and completion tokens.
 
 ## The agents
 
-**Stage 1 · Requirements**
+The full inventory (29 artefact specialists, 17 pipeline / review / repair / code / writer agents that are called by services, and 3
+proposed) with each agent's file, model role, what it reads and why it is independent is in
+[`services/orchestrator-py/agents/README.md`](../services/orchestrator-py/agents/README.md). Browse it in the app under
+**Governance → Agents**, or at `GET /api/agents`.
 
-| Agent | Kind | Model | Writes | Reads |
-|---|---|---|---|---|
-| Backlog agent | structured | generate | epics | the brief only |
-| PRD writer | document | generate | prdMarkdown | the brief only |
-| Readiness agent | list | light | definitionOfReady, definitionOfDone, jiraProjectKey | the brief only |
-
-**Stage 2 · Solution architecture**
-
-| Agent | Kind | Model | Writes | Reads |
-|---|---|---|---|---|
-| Architecture analysis agent | structured | reason | architecturePrinciples, components, designPatterns, qualityAttributes | PRD, EPIC, FEATURE, USER_STORY |
-| HLD writer | document | generate | hldNarrative | PRD, EPIC, USER_STORY, this stage: architecturePrinciples, this stage: components, this stage: designPatterns, this stage: qualityAttributes |
-| Cloud topology agent | diagram | generate | deploymentArchitecture | this stage: components |
-| C4 model agent | code | generate | structurizrDsl | this stage: components |
-| Architecture diagram agent | diagram | light | mermaidArchitecture | this stage: components |
-| Decision records agent | structured | reason | adrs | this stage: components, this stage: designPatterns, this stage: qualityAttributes |
-
-**Stage 3 · Technical design**
-
-| Agent | Kind | Model | Writes | Reads |
-|---|---|---|---|---|
-| Detailed design agent | structured | reason | components, errorTaxonomy, resilience | HLD, ADR, STRUCTURIZR_DSL, PRD |
-| LLD writer | document | generate | lldMarkdown | HLD, ADR, USER_STORY, this stage: components, this stage: errorTaxonomy, this stage: resilience |
-| Component diagram agent | diagram | generate | componentDiagram | this stage: components |
-| UML diagram agent | diagram | light | plantumlDiagrams | this stage: components |
-| Sequence diagram agent | diagram | light | mermaidSequence | USER_STORY, this stage: components, this stage: errorTaxonomy |
-| API contract agent | code | generate | openapiYaml | PRD, USER_STORY, HLD, this stage: components, this stage: errorTaxonomy |
-| Data model agent | code | generate | dbmlSchema | PRD, USER_STORY, HLD, this stage: components |
-| Infrastructure-as-code agent | code | generate | cdkStack | HLD, ADR, this stage: components |
-
-**Stage 4 · Test engineering**
-
-| Agent | Kind | Model | Writes | Reads |
-|---|---|---|---|---|
-| Test planning agent | structured | reason | testLevels, riskAreas, entryCriteria, exitCriteria, defectSlas | PRD, USER_STORY, LLD, OPENAPI |
-| Test strategy writer | document | generate | testStrategyMarkdown | PRD, LLD, this stage: testLevels, this stage: riskAreas, this stage: entryCriteria, this stage: exitCriteria, this stage: defectSlas |
-| Test case agent | structured | generate | xrayTests | USER_STORY, OPENAPI, this stage: testLevels, this stage: riskAreas |
-| Performance test agent | code | generate | k6Script | OPENAPI, PRD |
-| API test agent | code | generate | postmanCollection | OPENAPI |
-| Traceability agent | document | light | rtmMarkdown | EPIC, FEATURE, USER_STORY, this stage: xrayTests |
-
-**Stage 5 · CI/CD & observability**
-
-| Agent | Kind | Model | Writes | Reads |
-|---|---|---|---|---|
-| Release and operations agent | structured | reason | pipelineStages, securityGates, observabilitySlos, rolloutStrategy, rollback | HLD, LLD, TEST_STRATEGY, ADR |
-| CI pipeline agent | code | generate | workflowYaml | LLD, TEST_STRATEGY, CDK, this stage: pipelineStages, this stage: securityGates |
-| Container agent | code | generate | dockerfiles | LLD, CDK |
-| Dashboard agent | code | generate | grafanaDashboardJson | this stage: observabilitySlos |
-
-**Stage 6 · Implementation**
-
-| Agent | Kind | Model | Writes | Reads |
-|---|---|---|---|---|
-| Engineering notes agent | list | light | designNotes, codingStandards, securityNotes | LLD, ADR |
-| Pull request agent | list | light | branch, commitMessage, prTitle, prBody, checklist | USER_STORY, LLD |
-
-## Other agents that already run independently
-
-Clarification, plan proposal, validation (quality score), fact-check, security review, diagram repair and the text-to-diagram
-converter each have their own prompt and call. Stages 7 and 8 (custom stages) still write their deliverables through the data-driven
-custom runner.
+Each agent is its own markdown file under `services/orchestrator-py/agents/`. For a specialist the file body is the instruction sent to
+the model; the engine (`app/agents/phase_agents.py::_generate_with_specialists`) and `app/agents/specialists.py` hold no agent text.
+For services that make their own call (clarifier, validator, fact checker, security reviewer, planner and so on) the file documents the
+agent and sets its model role, which the call site reads with `role_of("<id>", default)`.
 
 ## Not yet
 
-* Custom-stage deliverables (stages 7 and 8) are not split into specialists.
+* Custom-stage deliverables (stages 7 and 8) are written by one custom runner, not split into specialists (`writers/custom-stage-writer.md`).
 * The code files of the implementation stage use the stage-wide prompt; the two-step code generation already batches them.
-* Instructions live in code (`specialists.py`), not in the prompt library, so they do not yet appear under Governance.
-* "Same inputs as before" replay (re-using the stored prompt exactly) is not offered; Regenerate rebuilds the context from current inputs.
+* Three agents are proposed only: memory distiller, impact analyst, review summariser.
+* Prompt text of native agents still lives in `prompts/` (referenced from the agent file), and one prompt (attachment section picker) is inline in `chat.py`.
+* "Same inputs as before" replay is not offered; Regenerate rebuilds the context from current inputs.

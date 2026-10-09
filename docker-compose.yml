@@ -195,6 +195,7 @@ services:
       PROMPTS_RELOAD: ${PROMPTS_RELOAD:-false}
       SKILLS_DIR: /app/skills
       STEERING_DIR: /app/steering
+      AGENTS_DIR: /app/agents
     volumes:
       - contentstore:/data/content-store
       # Prompt/skill packs mounted from the repo so prompt engineers edit the
@@ -202,6 +203,7 @@ services:
       - ./services/orchestrator-py/prompts:/app/prompts
       - ./services/orchestrator-py/skills:/app/skills
       - ./services/orchestrator-py/steering:/app/steering
+      - ./services/orchestrator-py/agents:/app/agents
     depends_on:
       migrate:
         condition: service_completed_successfully

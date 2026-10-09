@@ -20,6 +20,7 @@ WORKDIR /app
 COPY services/orchestrator-py/pyproject.toml ./
 COPY services/orchestrator-py/app ./app
 COPY services/orchestrator-py/skills ./skills
+COPY services/orchestrator-py/agents ./agents
 COPY services/orchestrator-py/prompts ./prompts
 COPY services/orchestrator-py/steering ./steering
 RUN pip install .

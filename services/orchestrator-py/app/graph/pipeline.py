@@ -18,6 +18,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
 from ..agents.phase_agents import TEMPLATE_TOOLS, AgentDeps, PhaseAgentResult, run_phase_agent
+from ..services.agent_catalog import role_of
 from ..agents.schemas import FactCheck
 from ..domain.models import AgentState, PlanStep, get_phase
 from ..services.context import attached_digest
@@ -179,7 +180,7 @@ async def _fact_check(gs: GraphState, config: RunnableConfig) -> dict[str, Any]:
         )[:8_000]
         data, _ = await deps.llm.generate_json(
             intent="standard", tag="fact_check_node", temperature=0, max_tokens=1024, schema=FactCheck,
-            role="light",
+            role=role_of("fact-checker", "light"),
             messages=[
                 {"role": "system", "content": render_prompt("fact_check.system")},
                 {

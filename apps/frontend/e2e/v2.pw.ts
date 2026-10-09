@@ -268,6 +268,23 @@ test.describe('portfolio and pipeline chips', () => {
   });
 });
 
+test.describe('agents', () => {
+  test('Governance lists every agent with the file it lives in and its instructions', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    await page.getByTestId('v2-nav-governance').click();
+    await page.getByTestId('v2-gov-agents').click();
+    const cat = page.getByTestId('v2-agent-catalog');
+    await expect(cat).toBeVisible();
+    await expect(cat.getByRole('button', { name: 'Specialist (29)', exact: true })).toBeVisible();
+    await cat.getByRole('button', { name: 'Proposed (3)', exact: true }).click();
+    await expect(page.getByTestId('v2-agent-row')).toHaveCount(3);
+    await cat.getByRole('button', { name: 'Specialist (29)', exact: true }).click();
+    await page.getByTestId('v2-agent-row').filter({ hasText: 'prd' }).first().click();
+    await expect(cat).toContainText('agents/generators/stage-1-requirements/prd.md');
+    await expect(cat).toContainText('Product Requirements Document');
+  });
+});
+
 test.describe('pipeline and configuration pages', () => {
   test('the pipeline page lists every stage and opens one', async ({ page }) => {
     await login(page, '/?ui=v2');

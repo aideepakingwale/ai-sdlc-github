@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import AgentCatalog from './AgentCatalog';
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 
@@ -42,7 +43,7 @@ const CATEGORY_CHIP: Record<string, string> = {
 };
 
 export default function GovernancePanel({ onClose, page = false }: { onClose: () => void; page?: boolean }) {
-  const [tab, setTab] = useState<'guardrails' | 'prompts' | 'skills'>('guardrails');
+  const [tab, setTab] = useState<'guardrails' | 'prompts' | 'skills' | 'agents'>('guardrails');
   const [openPrompt, setOpenPrompt] = useState<string | null>(null);
 
   const guardrails = useQuery({
@@ -104,6 +105,15 @@ export default function GovernancePanel({ onClose, page = false }: { onClose: ()
             }`}
           >
             Skill packs {skills.data ? `(${skills.data.count})` : ''}
+          </button>
+          <button
+            onClick={() => setTab('agents')}
+            data-testid="v2-gov-agents"
+            className={`rounded-lg px-3 py-1 text-xs font-semibold ${
+              tab === 'agents' ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-500'
+            }`}
+          >
+            Agents
           </button>
         </div>
 
@@ -178,6 +188,8 @@ export default function GovernancePanel({ onClose, page = false }: { onClose: ()
               ))}
             </div>
           )}
+
+          {tab === 'agents' && <AgentCatalog />}
 
           {tab === 'skills' && skills.data && (
             <div className="space-y-1.5">

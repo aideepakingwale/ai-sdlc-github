@@ -85,20 +85,24 @@ async def test_generate_json_passes_the_role_through():
     assert data.ok and c.models == ["bedrock/haiku"]
 
 
-def test_every_light_call_site_is_marked():
-    """The judging / summarising calls must carry role='light' (planner proposal: role='plan')."""
+def test_every_light_call_site_takes_its_role_from_its_agent_definition():
+    """The judging / summarising calls run on the model role their agent file declares (light), the planner on 'plan'."""
     import pathlib
+
+    from app.services.agent_catalog import role_of
     root = pathlib.Path(pa.__file__).parents[1]
     expect = {
-        "graph/pipeline.py": 'tag="fact_check_node"', "services/context.py": 'tag="context_compression"',
-        "services/chat.py": 'tag="clarify"', "agents/phase_agents.py": "validation_stage",
+        "graph/pipeline.py": ("fact-checker", 'tag="fact_check_node"'), "services/context.py": ("context-compressor", 'tag="context_compression"'),
+        "services/chat.py": ("clarifier", 'tag="clarify"'), "agents/phase_agents.py": ("quality-validator", "validation_stage"),
     }
-    for rel, anchor in expect.items():
+    for rel, (agent, anchor) in expect.items():
+        assert role_of(agent, "?") == "light", f"{agent} should be a light-model agent"
         text = (root / rel).read_text()
         i = text.index(anchor)
-        assert 'role="light"' in text[i - 200:i + 400], f"{rel}: {anchor} is not routed to the light model"
-    assert 'role="light"' in (root / "services/chat.py").read_text().split('tag="project_traits"')[1][:200]
-    assert 'role="plan"' in (root / "services/chat.py").read_text().split("schema=StagePlanIntel")[1][:100]
+        assert f'role_of("{agent}", "light")' in text[i - 200:i + 400], f"{rel}: {anchor} does not take its role from {agent}"
+    chat = (root / "services/chat.py").read_text()
+    assert role_of("trait-classifier", "?") == "light" and 'role_of("trait-classifier", "light")' in chat.split('tag="project_traits"')[1][:200]
+    assert role_of("stage-planner", "?") == "plan" and 'role_of("stage-planner", "plan")' in chat.split("schema=StagePlanIntel")[1][:100]
 
 
 def test_defaults_are_safe_and_workers_increased():

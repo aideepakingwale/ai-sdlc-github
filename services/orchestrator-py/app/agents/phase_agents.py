@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Callable, Literal, Union, get_args, get_origi
 from pydantic import BaseModel, Field, TypeAdapter, create_model
 
 from ..config import Settings
+from ..services.agent_catalog import role_of
 from ..domain.errors import SdlcError
 from ..domain.models import AgentState, ArtifactRef, ContextArtifact, PhaseStatus, get_phase
 from ..integrations.llm import LlmClient, LlmResult
@@ -1327,7 +1328,7 @@ async def _validate_output(
             intent="standard", tag=f"validation_stage{state.current_phase}",
             temperature=0, max_tokens=1024, schema=ValidationVerdict,
             model=state.model_overrides.get("validate") or None,  # per-step model override (D-68)
-            role="light",
+            role=role_of("quality-validator", "light"),
             messages=[
                 {"role": "system", "content": render_prompt("validate.system")},
                 {"role": "user", "content": render_prompt(

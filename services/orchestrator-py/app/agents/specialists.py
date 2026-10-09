@@ -1,4 +1,10 @@
-"""Specialist agents: one focused agent per artefact (or small family of artefacts) of a stage.
+"""The specialist engine's view of the agent definitions in `services/orchestrator-py/agents/**/*.md`.
+
+Each definition file is one agent: its instructions (the file body), the model role, the context it reads and the output fields it
+owns. This module turns them into `Specialist` objects, validates them against the stage output schemas at boot, groups them into
+waves and builds each agent's prompt. It holds no agent text of its own.
+
+Specialist agents: one focused agent per artefact (or small family of artefacts) of a stage.
 
 Instead of every artefact being written from the whole stage's prompt and context, each specialist has
   * its own instructions (what a good PRD / OpenAPI contract / sequence diagram is),
@@ -20,6 +26,7 @@ from ..domain.models import AgentState, ContextArtifact, get_phase
 from ..services.artifact_formats import norm_type
 from ..services.prompt_library import render as render_prompt
 from ..services.steering import resolve_steering
+from ..services import agent_catalog
 from .prompts import render_stack
 
 REASON, GENERATE, LIGHT = "reason", "generate", "light"
@@ -52,140 +59,35 @@ class Specialist:
     steering: bool = False             # expert steering for the stage persona
 
 
-def _s(**kw: Any) -> Specialist:
-    return Specialist(**kw)
+def _from_definition(a: dict[str, Any]) -> Specialist:
+    return Specialist(
+        id=a["id"], name=a["name"], template=int(a["stage"]), kind=a["kind"], fields=tuple(a["fields"]), artifacts=tuple(a["artifacts"]),
+        role=a["role"], instructions=a["body"], needs=tuple(a.get("upstream") or ()), after=tuple(a.get("after") or ()),
+        canon=bool(a.get("canon", True)), stack=bool(a.get("stack", False)), attachments=bool(a.get("attachments", False)),
+        steering=bool(a.get("steering", False)))
 
 
-REGISTRY: tuple[Specialist, ...] = (
-    # ---- Stage 1 - Requirements
-    _s(id="backlog", name="Backlog agent", template=1, kind="structured", fields=("epics",), artifacts=("EPIC", "FEATURE", "USER_STORY"),
-       role=GENERATE, attachments=True, instructions=(
-           "You write the product backlog: epics, each with features, each with INVEST user stories ('As a ..., I want ..., so that ...'), "
-           "Gherkin acceptance criteria (Given/When/Then, including at least one failure path) and sub-tasks. Every story traces to the brief. "
-           "Size stories to be deliverable in a sprint; do not write design or implementation detail.")),
-    _s(id="prd", name="PRD writer", template=1, kind="document", fields=("prdMarkdown",), artifacts=("PRD",),
-       role=GENERATE, attachments=True, instructions=(
-           "You write the Product Requirements Document in Markdown: problem and goals, users and personas, scope and non-goals, functional and "
-           "non-functional requirements (numbered, testable), assumptions, risks, success metrics, open questions. Requirements describe WHAT, not HOW.")),
-    _s(id="readiness", name="Readiness agent", template=1, kind="list", fields=("definitionOfReady", "definitionOfDone", "jiraProjectKey"), artifacts=(),
-       role=LIGHT, instructions=(
-           "You write the team's Definition of Ready and Definition of Done as short, checkable bullet points suited to this project, "
-           "and suggest a Jira project key (2-6 capital letters) if the brief implies one, otherwise leave it empty.")),
-    # ---- Stage 2 - Solution architecture
-    _s(id="architecture_analysis", name="Architecture analysis agent", template=2, kind="structured",
-       fields=("architecturePrinciples", "components", "designPatterns", "qualityAttributes"), artifacts=(),
-       role=REASON, needs=("PRD", "EPIC", "FEATURE", "USER_STORY"), stack=True, attachments=True, steering=True, instructions=(
-           "You are a solution architect. From the requirements, decide the architecture principles, the logical components and their responsibilities "
-           "and interfaces, the design patterns and why, and the measurable quality attributes (with targets). Prefer fewer, well-bounded components. "
-           "Honour the technology stack decision.")),
-    _s(id="hld", name="HLD writer", template=2, kind="document", fields=("hldNarrative",), artifacts=("HLD",), role=GENERATE,
-       needs=("PRD", "EPIC", "USER_STORY"), after=("architecturePrinciples", "components", "designPatterns", "qualityAttributes"), stack=True, attachments=True,
-       steering=True, instructions=(
-           "You write the High-Level Design document in Markdown from the architecture analysis: context, principles, components and responsibilities, "
-           "key flows, data and integration points, deployment view, quality attributes, risks and trade-offs. It must agree with the components given.")),
-    _s(id="cloud_topology", name="Cloud topology agent", template=2, kind="diagram", fields=("deploymentArchitecture",),
-       artifacts=("ARCH_DIAGRAM", "DRAWIO", "CLOUDCRAFT_JSON"), role=GENERATE, after=("components",), stack=True, instructions=(
-           "You describe the deployment topology as a structured graph: clusters (accounts, VPCs, subnets), nodes (cloud services) and edges (data flows) "
-           "with short labels. Use real service names for the chosen stack. Every component given appears as at least one node.")),
-    _s(id="c4_model", name="C4 model agent", template=2, kind="code", fields=("structurizrDsl",), artifacts=("STRUCTURIZR_DSL",), role=GENERATE,
-       after=("components",), instructions=(
-           "You write a valid Structurizr DSL workspace: the system context, containers and components from the components given, with relationships and "
-           "technology tags, plus system-context and container views. Output only the DSL.")),
-    _s(id="architecture_diagram", name="Architecture diagram agent", template=2, kind="diagram", fields=("mermaidArchitecture",), artifacts=("HLD_DIAGRAM",),
-       role=LIGHT, after=("components",), instructions=(
-           "You draw the architecture as ONE valid Mermaid flowchart (graph LR or TB) of the components given and their relationships. "
-           "Keep labels short, avoid special characters in node ids, no ASCII art. Output only the Mermaid source.")),
-    _s(id="adr", name="Decision records agent", template=2, kind="structured", fields=("adrs",), artifacts=("ADR",), role=REASON,
-       after=("components", "designPatterns", "qualityAttributes"), stack=True, steering=True, instructions=(
-           "You write Architecture Decision Records for the significant decisions in the design: title, context, decision, consequences "
-           "(positive and negative) and the alternatives rejected. One decision per record; cover technology, integration and data decisions.")),
-    # ---- Stage 3 - Technical design
-    _s(id="detailed_design", name="Detailed design agent", template=3, kind="structured", fields=("components", "errorTaxonomy", "resilience"),
-       artifacts=(), role=REASON, needs=("HLD", "ADR", "STRUCTURIZR_DSL", "PRD"), stack=True, attachments=True, steering=True, instructions=(
-           "You are a technical architect. Turn the high-level design into low-level components (classes/modules, responsibilities, interfaces, "
-           "data they own), an error taxonomy (code, meaning, retryable, HTTP status) and a resilience strategy (timeouts, retries, circuit breakers, "
-           "idempotency, back-pressure).")),
-    _s(id="lld", name="LLD writer", template=3, kind="document", fields=("lldMarkdown",), artifacts=("LLD",), role=GENERATE,
-       needs=("HLD", "ADR", "USER_STORY"), after=("components", "errorTaxonomy", "resilience"), stack=True, attachments=True, steering=True, instructions=(
-           "You write the Low-Level Design document in Markdown from the detailed design: component designs, key algorithms and flows, data handling, "
-           "error handling, resilience, configuration, security and observability. It must agree with the components and error codes given.")),
-    _s(id="component_diagram", name="Component diagram agent", template=3, kind="diagram", fields=("componentDiagram",), artifacts=("COMPONENT_DIAGRAM", "DRAWIO"),
-       role=GENERATE, after=("components",), instructions=(
-           "You describe the component structure as a structured graph (clusters, nodes, labelled edges) of the low-level components given.")),
-    _s(id="uml_diagrams", name="UML diagram agent", template=3, kind="diagram", fields=("plantumlDiagrams",), artifacts=("PLANTUML",), role=LIGHT,
-       after=("components",), instructions=(
-           "You write one or more valid PlantUML diagrams (class and component views) of the components given. Each diagram is a separate, complete "
-           "@startuml ... @enduml block. No ASCII art.")),
-    _s(id="sequence_diagram", name="Sequence diagram agent", template=3, kind="diagram", fields=("mermaidSequence",), artifacts=("LLD_DIAGRAM",), role=LIGHT,
-       needs=("USER_STORY",), after=("components", "errorTaxonomy"), instructions=(
-           "You draw the main request flow, including one failure path, as ONE valid Mermaid sequenceDiagram using the components given. "
-           "Output only the Mermaid source.")),
-    _s(id="api_contract", name="API contract agent", template=3, kind="code", fields=("openapiYaml",), artifacts=("OPENAPI",), role=GENERATE,
-       needs=("PRD", "USER_STORY", "HLD"), after=("components", "errorTaxonomy"), stack=True, instructions=(
-           "You write a complete, valid OpenAPI 3.0 contract in YAML: paths, operations, request/response schemas, auth, pagination, idempotency keys where "
-           "relevant, and the error responses from the error taxonomy. Output only YAML.")),
-    _s(id="data_model", name="Data model agent", template=3, kind="code", fields=("dbmlSchema",), artifacts=("DBML",), role=GENERATE,
-       needs=("PRD", "USER_STORY", "HLD"), after=("components",), stack=True, instructions=(
-           "You write the database schema in DBML: tables, columns with types, keys, indexes, relationships and notes for retention and PII. "
-           "Output only DBML.")),
-    _s(id="infrastructure", name="Infrastructure-as-code agent", template=3, kind="code", fields=("cdkStack",), artifacts=("CDK",), role=GENERATE,
-       needs=("HLD", "ADR"), after=("components",), stack=True, instructions=(
-           "You write the infrastructure as code (AWS CDK in the project's language) for the deployment architecture: least-privilege IAM, encryption, "
-           "tagging, no hard-coded secrets. Output only code.")),
-    # ---- Stage 4 - Test engineering
-    _s(id="test_planning", name="Test planning agent", template=4, kind="structured",
-       fields=("testLevels", "riskAreas", "entryCriteria", "exitCriteria", "defectSlas"), artifacts=(), role=REASON,
-       needs=("PRD", "USER_STORY", "LLD", "OPENAPI"), attachments=True, instructions=(
-           "You are a QA lead. Define the test levels (scope, tools, owners, coverage targets), the risk areas with likelihood, impact and mitigation, "
-           "entry and exit criteria, and defect severity SLAs, grounded in the requirements and design.")),
-    _s(id="test_strategy", name="Test strategy writer", template=4, kind="document", fields=("testStrategyMarkdown",), artifacts=("TEST_STRATEGY",),
-       role=GENERATE, needs=("PRD", "LLD"), after=("testLevels", "riskAreas", "entryCriteria", "exitCriteria", "defectSlas"), attachments=True,
-       instructions=("You write the test strategy document in Markdown from the test plan: objectives, scope, approach per level, environments and data, "
-                     "automation, risks, entry/exit criteria and reporting. It must agree with the levels and risks given.")),
-    _s(id="test_cases", name="Test case agent", template=4, kind="structured", fields=("xrayTests",), artifacts=("XRAY_TESTS",), role=GENERATE,
-       needs=("USER_STORY", "OPENAPI"), after=("testLevels", "riskAreas"), instructions=(
-           "You write Xray test cases: each has a title, the story it verifies, priority and numbered steps with expected results. Cover the happy path, "
-           "boundaries and the failure paths of every story; no duplicates.")),
-    _s(id="performance_script", name="Performance test agent", template=4, kind="code", fields=("k6Script",), artifacts=("K6_SCRIPT",), role=GENERATE,
-       needs=("OPENAPI", "PRD"), instructions=(
-           "You write a k6 load test: realistic stages, thresholds for latency and error rate taken from the non-functional requirements, and checks. "
-           "Output only JavaScript.")),
-    _s(id="api_tests", name="API test agent", template=4, kind="code", fields=("postmanCollection",), artifacts=("POSTMAN_COLLECTION",), role=GENERATE,
-       needs=("OPENAPI",), instructions=(
-           "You write a Postman collection (v2.1 JSON) that exercises every operation of the OpenAPI contract, with assertions on status, schema and "
-           "key fields, plus negative cases. Output only JSON.")),
-    _s(id="traceability", name="Traceability agent", template=4, kind="document", fields=("rtmMarkdown",), artifacts=("RTM",), role=LIGHT,
-       needs=("EPIC", "FEATURE", "USER_STORY"), after=("xrayTests",), instructions=(
-           "You write the requirements traceability matrix as a Markdown table linking each story to its test cases, and list stories with no test. "
-           "Use only the story and test identifiers you are given.")),
-    # ---- Stage 5 - CI/CD & observability
-    _s(id="release_operations", name="Release and operations agent", template=5, kind="structured",
-       fields=("pipelineStages", "securityGates", "observabilitySlos", "rolloutStrategy", "rollback"), artifacts=("PIPELINE_DESIGN",), role=REASON,
-       needs=("HLD", "LLD", "TEST_STRATEGY", "ADR"), stack=True, steering=True, instructions=(
-           "You are a DevOps lead. Define the pipeline stages with their gates, the security gates, the SLOs to observe (indicator, target, alert), the "
-           "rollout strategy (canary / blue-green) and the rollback procedure.")),
-    _s(id="ci_pipeline", name="CI pipeline agent", template=5, kind="code", fields=("workflowYaml",), artifacts=("GITHUB_ACTIONS",), role=GENERATE,
-       needs=("LLD", "TEST_STRATEGY", "CDK"), after=("pipelineStages", "securityGates"), stack=True, instructions=(
-           "You write the GitHub Actions workflow implementing the pipeline stages and security gates given: checkout, lint, build, test with coverage, "
-           "dependency and image scanning, deploy with approvals. Pin action versions; no secrets in plain text. Output only YAML.")),
-    _s(id="containers", name="Container agent", template=5, kind="code", fields=("dockerfiles",), artifacts=("DOCKERFILE",), role=GENERATE,
-       needs=("LLD", "CDK"), stack=True, instructions=(
-           "You write production Dockerfiles for the deployable components: multi-stage builds, a minimal non-root runtime image, a health check, no secrets "
-           "in layers.")),
-    _s(id="observability_dashboard", name="Dashboard agent", template=5, kind="code", fields=("grafanaDashboardJson",), artifacts=("GRAFANA_DASHBOARD",),
-       role=GENERATE, after=("observabilitySlos",), instructions=(
-           "You write a Grafana dashboard (JSON) with panels for the SLOs given plus the golden signals (latency, traffic, errors, saturation). "
-           "Output only JSON.")),
-    # ---- Stage 6 - Implementation
-    _s(id="engineering_notes", name="Engineering notes agent", template=6, kind="list", fields=("designNotes", "codingStandards", "securityNotes"),
-       artifacts=(), role=LIGHT, needs=("LLD", "ADR"), stack=True, instructions=(
-           "You summarise how the implementation follows the design: short design notes, the coding standards in force and the security notes a reviewer "
-           "should check.")),
-    _s(id="pull_request", name="Pull request agent", template=6, kind="list", fields=("branch", "commitMessage", "prTitle", "prBody", "checklist"),
-       artifacts=("PULL_REQUEST",), role=LIGHT, needs=("USER_STORY", "LLD"), instructions=(
-           "You write the branch name, a conventional commit message, a pull request title and body (what changed and why, how it was tested, risks) "
-           "and a short review checklist.")),
-)
+def _validate(specs: tuple[Specialist, ...]) -> None:
+    """Fail fast at boot when a definition does not fit the stage's output schema."""
+    from .schemas import PHASE_SCHEMAS
+    for template in {s.template for s in specs}:
+        fields = list(PHASE_SCHEMAS[template].model_fields)
+        owned: dict[str, str] = {}
+        for s in (x for x in specs if x.template == template):
+            for f in s.fields:
+                if f not in fields:
+                    raise ValueError(f"agent '{s.id}': stage {template} has no output field '{f}'")
+                if f in owned:
+                    raise ValueError(f"agents '{owned[f]}' and '{s.id}' both write stage {template} field '{f}'")
+                owned[f] = s.id
+            for f in s.after:
+                if f not in fields:
+                    raise ValueError(f"agent '{s.id}': 'after' names unknown field '{f}'")
+
+
+REGISTRY: tuple[Specialist, ...] = tuple(
+    _from_definition(a) for a in agent_catalog.catalog() if a["runtime"] == "specialist" and a["status"] == "active")
+_validate(REGISTRY)
 
 BY_TEMPLATE: dict[int, list[Specialist]] = {}
 for _sp in REGISTRY:
