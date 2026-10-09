@@ -241,3 +241,10 @@ async def test_technical_architect_decisions_win_over_earlier_identification():
     await adv.after_stage("p1", seq=3, template=3, documents=[("LLD", "## Technology stack decision\n**Stack:** Java 21 + Spring Boot | PostgreSQL 16\n- Messaging and events: SQS\n")], decider=True)
     got = {e["layer"]: e["technology"] for e in (await svc.get("p1"))["stack"]["layers"]}
     assert got["messaging"] == "SQS"
+
+
+def test_the_structure_planner_is_told_to_lay_out_one_folder_per_application_layer():
+    from app.services.prompt_library import render
+
+    text = render("code.structure.system", persona="Lead", stage_name="Implementation", stack_block="STACK")
+    assert "one top-level folder per application or service" in text and "infra/" in text

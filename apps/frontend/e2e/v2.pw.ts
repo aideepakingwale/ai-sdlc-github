@@ -278,7 +278,7 @@ test.describe('agents', () => {
     await expect(cat.getByRole('button', { name: 'Specialist (29)', exact: true })).toBeVisible();
     await cat.getByRole('button', { name: 'Proposed (3)', exact: true }).click();
     await expect(page.getByTestId('v2-agent-row')).toHaveCount(3);
-    await cat.getByRole('button', { name: 'All (50)', exact: true }).click();
+    await cat.getByRole('button', { name: 'All (53)', exact: true }).click();
     await page.getByTestId('v2-agent-row').filter({ hasText: 'prd' }).first().click();
     await expect(cat).toContainText('agents/generators/stage-1-requirements/prd.md');
     await expect(cat).toContainText('Product Requirements Document');
@@ -484,6 +484,91 @@ test.describe('project config and the stack by layer', () => {
     await page.getByTestId('v2-ptab-files').click();
     await page.getByTestId('v2-files-tab').getByRole('button', { name: /project/ }).first().click();
     await expect(page.getByTestId('v2-files-tab')).toContainText('projectconfig.json');
+  });
+});
+
+test.describe('rules and templates', () => {
+  test('starter pack, a new rule with hints, draft from a document, a template drop, and what the agents see', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-nav-context').click();
+    // Rules: add a starter pack, then once more (nothing is added twice)
+    await page.getByTestId('v2-context-tab-rules').click();
+    await page.getByTestId('v2-rules-packs').click();
+    await page.getByTestId('v2-pack-security-baseline').click();
+    await expect(page.getByTestId('v2-rules-note')).toContainText('Added 7 rules');
+    await expect(page.getByTestId('v2-rule').first()).toContainText('Must');
+    await expect(page.getByTestId('v2-pack-security-baseline')).toHaveText('Added');
+    // a new rule that repeats one is flagged before it is saved
+    await page.getByTestId('v2-rules-new').click();
+    await page.getByTestId('v2-rule-title').fill('No secrets in code or documents');
+    await page.getByTestId('v2-rule-body').fill('Never put passwords, tokens, keys or connection strings in code, committed configuration, diagrams or documents.');
+    await page.getByTestId('v2-rule-save').click();
+    await expect(page.getByTestId('v2-rule-hints')).toContainText('Very close to the existing rule');
+    await page.getByTestId('v2-rule-save-anyway').click();
+    await expect(page.getByTestId('v2-rule')).toHaveCount(8);
+    // search narrows the list
+    await page.getByLabel('Search rules').fill('encrypt');
+    await expect(page.getByTestId('v2-rule')).toHaveCount(1);
+    await page.getByLabel('Search rules').fill('');
+    // draft rules from a pasted document (the offline mock falls back to the wording of the text)
+    await page.getByTestId('v2-rules-draft').click();
+    await page.getByTestId('v2-rule-draft-text').fill('All services must log a correlation id on every request. Teams should avoid shared databases between services. Release notes are written by hand every Friday afternoon.');
+    await page.getByTestId('v2-rule-draft-go').click();
+    await expect(page.getByTestId('v2-rule-drafts').locator('li')).toHaveCount(2);
+    await page.getByTestId('v2-rule-draft-add').click();
+    await expect(page.getByTestId('v2-rules-note')).toContainText('Added 2 drafted rules');
+    // Templates: drop a file, the type and format are worked out
+    await page.getByTestId('v2-context-tab-templates').click();
+    await page.getByTestId('v2-template-file').setInputFiles({ name: 'High-Level-Design.md', mimeType: 'text/markdown', buffer: Buffer.from('# {{service}} High-Level Design\n\n## Context\n\nWhat this is.\n\n## Solution architecture\n\nHow it works.\n') });
+    await expect(page.getByTestId('v2-template-confirm')).toContainText('HLD');
+    await expect(page.getByTestId('v2-template-type')).toHaveValue('HLD');
+    await page.getByTestId('v2-template-publish').click();
+    await expect(page.getByTestId('v2-template')).toContainText('HLD → markdown');
+    // What agents see: the rules and the template for the stage that writes the HLD
+    await page.getByTestId('v2-context-tab-see').click();
+    await page.getByTestId('v2-see-stage-2').click();
+    await expect(page.getByTestId('v2-see-rules')).toContainText('Encrypt data in transit and at rest');
+    await expect(page.getByTestId('v2-see-templates')).toContainText('High-Level Design');
+    await expect(page.getByTestId('v2-see-stack')).toContainText('technology');
+    void id;
+  });
+});
+
+test.describe('organisation rules and presets', () => {
+  test('an organisation rule reaches a project, which can opt out with a reason; a preset pins its layers', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { name } = await newProject(page);
+    await page.reload();
+    // an administrator adds the organisation rule in Governance
+    await page.getByTestId('v2-nav-governance').click();
+    await page.getByTestId('v2-gov-org').click();
+    const title = `Org rule ${Date.now()}`;
+    await page.getByTestId('v2-org-rule-title').fill(title);
+    await page.getByTestId('v2-org-rule-body').fill('Every service exposes a health endpoint.');
+    await page.getByTestId('v2-org-rule-add').click();
+    await expect(page.getByTestId('v2-org-context')).toContainText(title);
+    await page.getByTestId('v2-org-presets').click();
+    await expect(page.getByTestId('v2-org-presets-list')).toContainText('AWS serverless, Python');
+    // the project inherits it, and can opt out with a reason
+    await openProject(page, name);
+    await page.getByTestId('v2-nav-context').click();
+    await page.getByTestId('v2-context-tab-rules').click();
+    await expect(page.getByTestId('v2-org-rules')).toContainText(title);
+    page.once('dialog', (d) => void d.accept('Legacy service, covered by a waiver'));
+    await page.getByTestId('v2-org-rules').getByRole('button', { name: /Opt out/ }).first().click();
+    await expect(page.getByTestId('v2-org-rules')).toContainText('Not followed here: Legacy service, covered by a waiver');
+    // a preset pins a set of layers on the stack
+    await page.getByTestId('v2-context-tab-stack').click();
+    page.once('dialog', (d) => void d.accept());
+    await page.locator('#stack-preset').selectOption({ label: 'AWS serverless, Python' });
+    await expect(page.getByTestId('v2-stack-summary')).toContainText('Python 3.12');
+    await expect(page.getByTestId('v2-stack-entry-hosting')).toContainText('Pinned');
+    // tidy: remove the organisation rule so other runs do not inherit it
+    const rules = (await (await page.request.get('/api/org/rules')).json()) as { entries: Array<{ id: string; title: string }> };
+    for (const r of rules.entries.filter((x) => x.title === title)) await page.request.delete(`/api/org/rules/${r.id}`);
   });
 });
 

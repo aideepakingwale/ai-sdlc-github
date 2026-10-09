@@ -4,6 +4,7 @@ import ArtifactViewer from '../components/ArtifactViewer';
 import ContextPanel from '../components/ContextPanel';
 import { Icon } from '../components/ui/Icon';
 import ArtefactRun from './ArtefactRun';
+import ArtefactRules from './ArtefactRules';
 import ProjectPanel from './ProjectPanel';
 import { PROJECT_TOOLS } from './Sidebar';
 import Splitter from './Splitter';
@@ -60,6 +61,7 @@ export default function PreviewPane({
           <div className="flex h-full min-h-0 flex-col">
             <div className="min-h-0 flex-1"><ArtifactViewer key={pane.id} embedded projectId={projectId} artefactId={pane.id} onClose={closePane} canRepair={canRepair} /></div>
             <ArtefactRun key={`run-${pane.id}`} projectId={projectId} artefactId={pane.id} />
+            <ArtefactRules key={`rules-${pane.id}`} projectId={projectId} artefactId={pane.id} />
           </div>
         )}
         {pane.type === 'context' && <div className="h-full overflow-y-auto p-4"><ContextPanel projectId={projectId} seq={pane.seq} refreshKey="pane" defaultOpen /></div>}

@@ -116,7 +116,7 @@ function EntryRow({ e, canEdit, onEdit, onConfirm, onRemove }: { e: StackEntry; 
   return (
     <div className="mt-1 flex flex-wrap items-center gap-2 pl-0" data-testid={`v2-stack-entry-${e.id}`}>
       {e.component && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600">{e.component}</span>}
-      <span className={`text-sm ${e.status === 'open' ? 'italic text-slate-400' : 'font-medium text-slate-900'}`}>{e.status === 'open' ? 'Left open for the Technical Architect' : render(e)}</span>
+      <span className={`text-sm ${e.status === 'open' ? 'italic text-slate-400' : 'font-medium text-slate-900'}`}>{e.status === 'open' ? 'To be decided' : render(e)}</span>
       <Pill tone={STATUS_TONE[e.status]} title={[sourceLabel(e), e.evidence && `“${e.evidence}”`, e.rationale].filter(Boolean).join(' · ')}>{STATUS_WORD[e.status]}</Pill>
       <span className="text-[11px] text-slate-400">{sourceLabel(e)}</span>
       {e.notes && <span className="text-[11px] text-slate-500">· {e.notes}</span>}

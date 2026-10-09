@@ -1,6 +1,6 @@
-# Project config, layered stack, rules and templates (final design)
+# Project config, layered stack, rules and templates
 
-Agreed with the project owner. This replaces the single-string technology stack and reworks the Canon / Formwork screens.
+Built as agreed. Replaces the single-string technology stack and reworks the Canon / Formwork screens.
 
 ## 1. `projectconfig.json`
 
@@ -78,3 +78,17 @@ Migration `0045`: `org_canon`, `org_canon_optout`, `canon_checks`, `org_stack_pr
 ## 3. Phasing
 1. Config + layered stack + advisor + prompts + screen. 2. Rules and Templates UX. 3. Code generation proposes one folder per application layer
 (`apps/web`, `services/api`, `infra/`) when several layers exist; a full per-component polyglot generator is out of scope for now.
+
+## 4. What was built
+
+* `app/services/project_config.py` (merge rules, summary, file mirror, presets), `stack_advisor.py` (LLM advisor, keyword extractor,
+  Technical Architect layer lines, codebase detector), `rule_packs.py` + `packs/` (starter rule packs and stack presets), `rule_assist.py`
+  (draft from a document, hints), `rule_checks.py` (compliance), `canon.py` (organisation rules, opt-outs, packs, from memory),
+  `formworks.py` (suggest, usage, versions). Routes: `api/config_routes.py`, `api/rules_routes.py`.
+* Agents: `stack-advisor`, `rule-drafter`, `rule-checker` (see `agents/README.md`).
+* Screens: Project Context (`v2/ProjectContextPage.tsx`: Stack, Rules, Templates, What agents see), Governance -> Organisation
+  (`v2/OrgContext.tsx`), a "Make it a rule" button in Memory, a Rules chip on each artefact, `projectconfig.json` in the Files tab.
+* Migrations `0044` (project_config) and `0045` (org_canon, org_canon_optout, canon_checks, org_stack_presets, project_canon.origin).
+* Settings: `CANON_CHECK_ENABLED` (default on) turns the compliance check off; `PACKS_DIR` overrides where starter packs are read.
+
+Stage 3 and later prompts get the stack by layer; the code stage is told the same block (full per-layer code generation is phase 3 below).

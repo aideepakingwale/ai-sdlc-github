@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import AgentCatalog from './AgentCatalog';
+import OrgContext from '../v2/OrgContext';
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 
@@ -43,7 +44,7 @@ const CATEGORY_CHIP: Record<string, string> = {
 };
 
 export default function GovernancePanel({ onClose, page = false }: { onClose: () => void; page?: boolean }) {
-  const [tab, setTab] = useState<'guardrails' | 'prompts' | 'skills' | 'agents'>('guardrails');
+  const [tab, setTab] = useState<'guardrails' | 'prompts' | 'skills' | 'agents' | 'org'>('guardrails');
   const [openPrompt, setOpenPrompt] = useState<string | null>(null);
 
   const guardrails = useQuery({
@@ -114,6 +115,15 @@ export default function GovernancePanel({ onClose, page = false }: { onClose: ()
             }`}
           >
             Agents
+          </button>
+          <button
+            onClick={() => setTab('org')}
+            data-testid="v2-gov-org"
+            className={`rounded-lg px-3 py-1 text-xs font-semibold ${
+              tab === 'org' ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-500'
+            }`}
+          >
+            Organisation
           </button>
         </div>
 
@@ -190,6 +200,8 @@ export default function GovernancePanel({ onClose, page = false }: { onClose: ()
           )}
 
           {tab === 'agents' && <AgentCatalog />}
+
+          {tab === 'org' && <OrgContext />}
 
           {tab === 'skills' && skills.data && (
             <div className="space-y-1.5">

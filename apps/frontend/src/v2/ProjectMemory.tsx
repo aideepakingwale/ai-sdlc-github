@@ -30,6 +30,7 @@ export default function ProjectMemory({ projectId, flow }: { projectId: string; 
     mutationFn: (v: { id: string; body: Record<string, unknown> }) => api.patch(`/api/projects/${projectId}/memory/${v.id}`, v.body),
     onSuccess: refresh, onError: fail,
   });
+  const toRule = useMutation({ mutationFn: (id: string) => api.post(`/api/projects/${projectId}/rules/from-memory/${id}`), onSuccess: () => { refresh(); void qc.invalidateQueries({ queryKey: ['rules', projectId] }); }, onError: fail });
   const promote = useMutation({ mutationFn: (id: string) => api.post(`/api/projects/${projectId}/memory/${id}/promote`), onSuccess: refresh, onError: fail });
   const remove = useMutation({ mutationFn: (id: string) => api.del(`/api/projects/${projectId}/memory/${id}`), onSuccess: refresh, onError: fail });
   const create = useMutation({
@@ -42,7 +43,7 @@ export default function ProjectMemory({ projectId, flow }: { projectId: string; 
   const card = (m: MemoryEntry) => (
     <MemoryCard key={m.id} m={m} flow={flow} canChange={m.scope === 'user' || canCurate} canPromote={canCurate && m.scope === 'project' && m.status === 'active'}
       onStatus={(status) => patch.mutate({ id: m.id, body: { status } })}
-      onSave={(body) => patch.mutate({ id: m.id, body })} onPromote={() => promote.mutate(m.id)} onDelete={() => remove.mutate(m.id)} />
+      onSave={(body) => patch.mutate({ id: m.id, body })} onPromote={() => promote.mutate(m.id)} onMakeRule={() => toRule.mutate(m.id)} onDelete={() => remove.mutate(m.id)} />
   );
   return (
     <div data-testid="v2-memory-tab">
@@ -92,9 +93,9 @@ export default function ProjectMemory({ projectId, flow }: { projectId: string; 
   );
 }
 
-function MemoryCard({ m, flow, canChange, canPromote, onStatus, onSave, onPromote, onDelete }: {
+function MemoryCard({ m, flow, canChange, canPromote, onStatus, onSave, onPromote, onMakeRule, onDelete }: {
   m: MemoryEntry; flow: ProjectFlow | undefined; canChange: boolean; canPromote: boolean;
-  onStatus: (s: string) => void; onSave: (b: Record<string, unknown>) => void; onPromote: () => void; onDelete: () => void;
+  onStatus: (s: string) => void; onSave: (b: Record<string, unknown>) => void; onPromote: () => void; onMakeRule: () => void; onDelete: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(m.title);
@@ -132,6 +133,7 @@ function MemoryCard({ m, flow, canChange, canPromote, onStatus, onSave, onPromot
               <button type="button" className={`${btn} border border-slate-300 text-slate-600`} onClick={() => setEditing(true)}>Edit</button>
               {m.status === 'active' && <button type="button" className={`${btn} border border-slate-300 text-slate-600`} onClick={() => onStatus('archived')}>Archive</button>}
               {m.status === 'archived' && <button type="button" className={`${btn} border border-slate-300 text-slate-600`} onClick={() => onStatus('active')}>Restore</button>}
+              {canPromote && m.kind !== 'working_style' && <button type="button" className={`${btn} border border-brand-300 text-brand-700`} onClick={onMakeRule} title="Turn this into a binding rule in Project Context → Rules" data-testid="v2-memory-make-rule">Make it a rule</button>}
               {canPromote && <button type="button" className={`${btn} border border-brand-300 text-brand-700`} onClick={onPromote} title="Give this to every project in the organisation">Share with all projects</button>}
               <button type="button" className={`${btn} ml-auto text-bared-600`} onClick={onDelete} aria-label="Delete memory"><Icon name="trash" size={13} /></button>
             </div>

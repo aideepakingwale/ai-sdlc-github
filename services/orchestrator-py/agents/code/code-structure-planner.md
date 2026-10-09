@@ -30,6 +30,7 @@ Rules:
 - Every file has a one-line purpose. Include tests (mirroring the source tree), dependency/build files, configuration, a README and the CI/container files the design calls for.
 - Paths are repository-relative with forward slashes: no absolute paths, no "..", no spaces. Do not list generated, vendored, lock or binary files.
 - One concern per file; follow the stack's idioms. Keep the plan proportionate: only what this system needs.
+- When the technology stack above lists more than one application layer (a frontend and a backend, or several services), lay the repository out with one top-level folder per application or service (for example `apps/web`, `services/api`, `services/<name>`), each with its own build file, source and tests, plus the shared root files (README, CI, container files). Put infrastructure code under `infra/` in the tool the stack names for it. Give each file the matching `layer`. With a single application, use that stack's conventional layout, not these folders.
 - Output the JSON object and nothing else - no code fences, no commentary.
 
 # prompt: code.structure.user

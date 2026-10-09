@@ -140,7 +140,7 @@ export default function Sidebar({
           <Heading>Configure</Heading>
           <Item onClick={() => onModal('context')} testid="v2-nav-context">
             <Icon name="book" size={16} className="text-slate-500" />
-            <span><span className="block text-sm font-medium text-navy">Project Context</span><span className="block text-xs text-slate-500">Canon and templates</span></span>
+            <span><span className="block text-sm font-medium text-navy">Project Context</span><span className="block text-xs text-slate-500">Stack, rules and templates</span></span>
           </Item>
           <Item onClick={() => onModal('quality')} testid="v2-nav-quality">
             <Icon name="chart" size={16} className="text-slate-500" />

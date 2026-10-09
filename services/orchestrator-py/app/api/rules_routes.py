@@ -131,6 +131,14 @@ async def suggest_formwork(project_id: str, body: SuggestBody, user: UserPublic 
     return suggest_mapping(body.name, body.template)
 
 
+@router.post("/api/formworks/suggest")
+async def suggest_platform_formwork(body: SuggestBody, user: UserPublic = Depends(current_user)) -> dict:
+    """The same for the platform-wide library (administrators)."""
+    if user.role != "SUPER_ADMIN":
+        raise SdlcError("FORBIDDEN", "Only an administrator can publish platform-wide templates")
+    return suggest_mapping(body.name, body.template)
+
+
 # ------------------------------------------------------------------ organisation (administrators)
 @router.get("/api/org/rules")
 async def org_rules(user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:

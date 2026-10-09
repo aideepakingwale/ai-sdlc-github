@@ -186,3 +186,12 @@ Useful selectors: `v2-workspace`, `v2-sidebar`, `v2-project-switcher`,
 - Headings use a serif display face (`font-display`, Source Serif 4 then Georgia). The app's content-security policy
   blocks external fonts, so Georgia is what renders unless the font is installed.
 - The Quality chip on the Artefacts card comes from the stage's quality-score finding; individual artefacts have no score.
+
+
+## Project Context
+
+Sidebar -> Project Context opens four tabs (`v2/ProjectContextPage.tsx`): **Stack** (the stack by layer, `projectconfig.json`), **Rules** (the
+binding "Canon": starter packs, drafting from a document, organisation rules with opt-out, compliance), **Templates** (the "Formwork": drop a
+file, type and format detected) and **What agents see** (the exact text per stage). Governance -> **Organisation** holds organisation rules,
+stack presets and platform templates for administrators. See [project-config.md](project-config.md). Test hooks: `v2-stack-tab`,
+`v2-rules-tab`, `v2-templates-tab`, `v2-see-tab`, `v2-org-context`.
