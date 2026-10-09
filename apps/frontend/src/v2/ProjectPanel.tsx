@@ -4,6 +4,7 @@ import { api } from '../api/client';
 import type { ProjectFlow } from '../api/flow';
 import type { Artefact, AuditEvent } from '../api/types';
 import CodeExplorer from '../components/CodeExplorer';
+import CodeAssistant from '../components/CodeAssistant';
 import CodeView, { langForExt } from '../components/CodeView';
 import ProjectFiles from './ProjectFiles';
 import SkillsPanel from '../components/SkillsPanel';
@@ -117,27 +118,39 @@ function FolderGlyph() {
   return <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" className="shrink-0"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4.2c.4 0 .8.2 1.1.5L11 7h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" fill="#f4b73f" /></svg>;
 }
 
-function TreeNodes({ node, open, toggle, selected, onSelect, searching, lines }: {
+function TreeNodes({ node, open, toggle, selected, onSelect, searching, lines, checked, onCheck }: {
   node: CodeNode; open: Set<string>; toggle: (p: string) => void; selected: string | null; onSelect: (p: string) => void; searching: boolean; lines?: Map<string, number>;
+  checked?: Set<string>; onCheck?: (p: string) => void;
 }) {
+  const tick = (p: string) => onCheck && (
+    <input type="checkbox" checked={checked?.has(p) ?? false} onChange={() => onCheck(p)} onClick={(e) => e.stopPropagation()} aria-label={`Select ${p} for the code assistant`} data-check={p}
+      className="mr-0.5 h-3 w-3 shrink-0 cursor-pointer accent-brand-600" title="Select for the code assistant" />
+  );
   return (
     <ul className="text-sm">
       {(node.children ?? []).map((c) => c.type === 'dir' ? (
         <li key={c.path}>
-          <button type="button" onClick={() => toggle(c.path)} className="flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-left text-[15px] hover:bg-slate-100">
-            <span aria-hidden="true" className="w-3 text-center text-[10px] text-slate-400">{searching || open.has(c.path) ? '▾' : '▸'}</span>
-            <FolderGlyph />
-            <span className="truncate">{c.name}</span>
-          </button>
-          {(searching || open.has(c.path)) && <div className="ml-3 border-l border-slate-200 pl-1"><TreeNodes node={c} open={open} toggle={toggle} selected={selected} onSelect={onSelect} searching={searching} lines={lines} /></div>}
+          <div className="flex items-center gap-1 rounded px-1.5 hover:bg-slate-100">
+            {tick(c.path)}
+            <button type="button" onClick={() => toggle(c.path)} className="flex min-w-0 flex-1 items-center gap-1.5 py-0.5 text-left text-[15px]">
+              <span aria-hidden="true" className="w-3 text-center text-[10px] text-slate-400">{searching || open.has(c.path) ? '▾' : '▸'}</span>
+              <FolderGlyph />
+              <span className="truncate">{c.name}</span>
+            </button>
+          </div>
+          {(searching || open.has(c.path)) && <div className="ml-3 border-l border-slate-200 pl-1"><TreeNodes node={c} open={open} toggle={toggle} selected={selected} onSelect={onSelect} searching={searching} lines={lines} checked={checked} onCheck={onCheck} /></div>}
         </li>
       ) : (
         <li key={c.path}>
-          <button type="button" onClick={() => onSelect(c.path)} aria-current={selected === c.path} data-file={c.path}
-            className={`flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 pl-6 text-left text-[15px] hover:bg-slate-100 ${selected === c.path ? 'bg-brand-100 text-brand-700' : ''}`}>
-            <span aria-hidden="true" className="inline-block h-2.5 w-2.5 shrink-0 rounded-[2px] border border-slate-500" /><MiddleText text={c.name} title={c.path} className="flex-1" />
-            {(lines?.get(c.path) ?? 0) > 0 && <span className="shrink-0 rounded-full bg-slate-100 px-1.5 text-[10px] text-slate-500" title="Lines">{lines!.get(c.path)}</span>}
-          </button>
+          <div className={`flex items-center gap-1 rounded px-1.5 hover:bg-slate-100 ${selected === c.path ? 'bg-brand-100 text-brand-700' : ''}`}>
+            {onCheck ? <span className="w-3 shrink-0" /> : null}
+            {tick(c.path)}
+            <button type="button" onClick={() => onSelect(c.path)} aria-current={selected === c.path} data-file={c.path}
+              className={`flex min-w-0 flex-1 items-center gap-1.5 py-0.5 text-left text-[15px] ${onCheck ? '' : 'pl-5'}`}>
+              <span aria-hidden="true" className="inline-block h-2.5 w-2.5 shrink-0 rounded-[2px] border border-slate-500" /><MiddleText text={c.name} title={c.path} className="flex-1" />
+              {(lines?.get(c.path) ?? 0) > 0 && <span className="shrink-0 rounded-full bg-slate-100 px-1.5 text-[10px] text-slate-500" title="Lines">{lines!.get(c.path)}</span>}
+            </button>
+          </div>
         </li>
       ))}
     </ul>
@@ -154,12 +167,12 @@ function CodebaseTab({ projectId, flow, canWrite, canManage }: { projectId: stri
         <button type="button" aria-pressed={mode === 'existing'} onClick={() => setMode('existing')} className={`px-3 py-1 ${mode === 'existing' ? 'bg-brand-100 text-brand-700' : 'bg-white text-slate-800'}`}>Existing (uploaded)</button>
         <button type="button" aria-pressed={mode === 'generated'} onClick={() => setMode('generated')} className={`px-3 py-1 ${mode === 'generated' ? 'bg-brand-100 text-brand-700' : 'bg-white text-slate-800'}`}>Generated ({codeStage ? `stage ${codeStage.phase}` : 'no code stage'})</button>
       </div>
-      {mode === 'existing' ? <ExistingCodebase projectId={projectId} canWrite={canWrite} canManage={canManage} onChanged={() => void qc.invalidateQueries({ queryKey: ['codebase', projectId] })} /> : <GeneratedCodebase projectId={projectId} phase={codeStage?.phase ?? null} />}
+      {mode === 'existing' ? <ExistingCodebase projectId={projectId} canWrite={canWrite} canManage={canManage} onChanged={() => void qc.invalidateQueries({ queryKey: ['codebase', projectId] })} /> : <GeneratedCodebase projectId={projectId} phase={codeStage?.phase ?? null} canWrite={canWrite} />}
     </div>
   );
 }
 
-function GeneratedCodebase({ projectId, phase }: { projectId: string; phase: number | null }) {
+function GeneratedCodebase({ projectId, phase, canWrite }: { projectId: string; phase: number | null; canWrite: boolean }) {
   const v = useQuery({
     queryKey: ['code', projectId, phase],
     queryFn: () => api.get<CodeViewData>(`/api/projects/${projectId}/phase/${phase}/code`),
@@ -168,7 +181,7 @@ function GeneratedCodebase({ projectId, phase }: { projectId: string; phase: num
   });
   if (phase == null) return <div className="rounded-lg bg-slate-100 p-4 text-sm text-slate-500">This project has no code-writing stage.</div>;
   if (!v.data || !v.data.enabled || v.data.status === 'none') return <div className="rounded-lg bg-slate-100 p-4 text-sm text-slate-500">The code stage has not proposed a project structure yet. Once it does, the directories and files appear here.</div>;
-  return <CodeExplorer projectId={projectId} phase={phase} />;
+  return <CodeExplorer projectId={projectId} phase={phase} assist={{ canEdit: canWrite }} />;
 }
 
 function ExistingCodebase({ projectId, canWrite, canManage, onChanged }: { projectId: string; canWrite: boolean; canManage: boolean; onChanged: () => void }) {
@@ -177,6 +190,10 @@ function ExistingCodebase({ projectId, canWrite, canManage, onChanged }: { proje
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
   const [open, setOpen] = useState<Set<string>>(new Set());
+  const [checkedList, setCheckedList] = useState<string[]>([]);
+  const checked = useMemo(() => new Set(checkedList), [checkedList]);
+  const tickPath = (p: string) => setCheckedList((c) => (c.includes(p) ? c.filter((x) => x !== p) : [...c, p]));
+  const qc = useQueryClient();
   const list = useQuery({
     queryKey: ['codebase', projectId],
     queryFn: () => api.get<{ files: Array<{ id: string; path: string; lines?: number }>; archive: { name: string; uploadedBy: string; uploadedAt: string } | null }>(`/api/projects/${projectId}/codebase`),
@@ -256,7 +273,7 @@ function ExistingCodebase({ projectId, canWrite, canManage, onChanged }: { proje
           <SplitPair storageKey="sdlc:v2:codebase-split" def={300} min={160} max={900} label="Resize the file tree"
             left={(
             <div className="h-[30rem] overflow-auto rounded-xl border border-slate-300 bg-white p-2" data-testid="v2-code-tree">
-              {shown ? <TreeNodes node={shown} open={open} toggle={toggle} selected={selected} onSelect={setSelected} searching={Boolean(query.trim())} lines={lines} /> : <div className="p-2 text-xs text-slate-500">No file matches.</div>}
+              {shown ? <TreeNodes node={shown} open={open} toggle={toggle} selected={selected} onSelect={setSelected} searching={Boolean(query.trim())} lines={lines} checked={checked} onCheck={canWrite ? tickPath : undefined} /> : <div className="p-2 text-xs text-slate-500">No file matches.</div>}
             </div>
             )}
             right={(
@@ -276,6 +293,9 @@ function ExistingCodebase({ projectId, canWrite, canManage, onChanged }: { proje
               )}
             </div>
             )} />
+          <CodeAssistant projectId={projectId} scope="uploaded" checked={checkedList} onUncheck={tickPath} onClearChecked={() => setCheckedList([])}
+            openFile={selected} onOpenFile={setSelected} canEdit={canWrite}
+            onFilesChanged={() => { void qc.invalidateQueries({ queryKey: ['codebase', projectId] }); void qc.invalidateQueries({ queryKey: ['codebase-file', projectId] }); }} />
         </div>
       )}
     </div>

@@ -36,7 +36,7 @@ user prompt, every context item with its size, and prompt and completion tokens.
 
 ## The agents
 
-The full inventory (29 artefact specialists, 17 pipeline / review / repair / code / writer agents that are called by services, and 3
+The full inventory (29 artefact specialists, 18 pipeline / review / repair / code / writer agents that are called by services, and 3
 proposed) with each agent's file, model role, what it reads and why it is independent is in
 [`services/orchestrator-py/agents/README.md`](../services/orchestrator-py/agents/README.md). Browse it in the app under
 **Governance → Agents**, or at `GET /api/agents`.

@@ -278,7 +278,7 @@ test.describe('agents', () => {
     await expect(cat.getByRole('button', { name: 'Specialist (29)', exact: true })).toBeVisible();
     await cat.getByRole('button', { name: 'Proposed (3)', exact: true }).click();
     await expect(page.getByTestId('v2-agent-row')).toHaveCount(3);
-    await cat.getByRole('button', { name: 'All (49)', exact: true }).click();
+    await cat.getByRole('button', { name: 'All (50)', exact: true }).click();
     await page.getByTestId('v2-agent-row').filter({ hasText: 'prd' }).first().click();
     await expect(cat).toContainText('agents/generators/stage-1-requirements/prd.md');
     await expect(cat).toContainText('Product Requirements Document');
@@ -383,7 +383,7 @@ test.describe('codebase', () => {
     await expect(page.getByTestId('v2-codebase-sub')).toContainText('3 files indexed · uploaded');
     await expect(page.getByTestId('v2-codebase-copy')).toBeVisible();
     // a long path is shortened in the middle and the whole path is on hover
-    const pathEl = page.getByTestId('v2-codebase-tab').locator('[data-full="src/main/App.java"]');
+    const pathEl = page.getByTestId('v2-splitpair').locator('[data-full="src/main/App.java"]');
     await expect(pathEl).toHaveAttribute('title', 'src/main/App.java');
     await expect(page.getByTestId('v2-codebase-tab')).toContainText('class App');
     const left = page.getByTestId('v2-split-left');
@@ -404,6 +404,46 @@ test.describe('codebase', () => {
     page.once('dialog', (d) => void d.accept());
     await page.getByTestId('v2-codebase-remove').click();
     await expect(page.getByText('No codebase uploaded')).toBeVisible();
+  });
+});
+
+test.describe('code assistant', () => {
+  test('select a file, ask for a change, review the diff, apply it, then undo', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    const up = await page.request.post(`/api/projects/${id}/codebase`, { multipart: { file: { name: 'app.zip', mimeType: 'application/zip', buffer: makeZip({ 'app/service.py': 'def total(items):\n    return sum(items)\n', 'app/util.py': 'X = 1\n' }) } } });
+    expect(up.ok()).toBeTruthy();
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-open-project-panel').click();
+    await page.getByTestId('v2-ptab-codebase').click();
+    const box = page.getByTestId('code-assistant');
+    await expect(box).toBeVisible();
+    // tick one file: the request is limited to it
+    await page.locator('[data-check="app/service.py"]').check();
+    await expect(page.getByTestId('assistant-targets')).toContainText('app/service.py');
+    await expect(page.getByTestId('assistant-send')).toBeDisabled();
+    await page.getByTestId('assistant-input').fill('Make total ignore None values');
+    await page.getByTestId('assistant-send').click();
+    // it works in steps, then summarises, and the change arrives as a diff nothing has applied yet
+    await expect(page.getByTestId('assistant-step').first()).toBeVisible();
+    await expect(page.getByTestId('assistant-summary')).toBeVisible({ timeout: 30_000 });
+    const changes = page.getByTestId('assistant-changes');
+    await expect(changes).toContainText('1 file changed');
+    await changes.getByRole('button', { name: /app\/service\.py/ }).click();
+    await expect(page.getByTestId('diff-view')).toContainText('+# DevMind: Make total ignore None values');
+    const fileOnServer = async () => {
+      const list = (await (await page.request.get(`/api/projects/${id}/codebase`)).json()) as { files: Array<{ id: string; path: string }> };
+      const f = list.files.find((x) => x.path === 'app/service.py')!;
+      return ((await (await page.request.get(`/api/projects/${id}/codebase/${f.id}`)).json()) as { file: { content: string } }).file.content;
+    };
+    expect(await fileOnServer()).not.toContain('DevMind');
+    await page.getByTestId('assistant-apply').click();
+    await expect(page.getByTestId('assistant-applied')).toBeVisible();
+    expect(await fileOnServer()).toContain('# DevMind: Make total ignore None values');
+    await page.getByTestId('assistant-undo').click();
+    await expect(page.getByTestId('assistant-applied')).toBeHidden();
+    expect(await fileOnServer()).not.toContain('DevMind');
   });
 });
 

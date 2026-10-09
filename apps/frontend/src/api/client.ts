@@ -55,8 +55,8 @@ export const api = {
 
 /** Shared SSE reader — invokes onEvent per StreamEvent frame. POST by default; pass
  *  method 'GET' for reconnect/progress streams (no body). */
-async function streamSse(
-  url: string, body: unknown, onEvent: (e: StreamEvent) => void, signal?: AbortSignal,
+async function streamSse<E = StreamEvent>(
+  url: string, body: unknown, onEvent: (e: E) => void, signal?: AbortSignal,
   method: 'GET' | 'POST' = 'POST',
 ): Promise<void> {
   const sendBody = method === 'POST' && body !== undefined;
@@ -68,7 +68,7 @@ async function streamSse(
   });
   if (!res.ok || !res.body) {
     const errBody = (await res.json().catch(() => null)) as { error?: { code?: string; message?: string } } | null;
-    onEvent({ type: 'error', code: errBody?.error?.code ?? 'HTTP_ERROR', message: errBody?.error?.message ?? `Request failed (${res.status})` });
+    onEvent({ type: 'error', code: errBody?.error?.code ?? 'HTTP_ERROR', message: errBody?.error?.message ?? `Request failed (${res.status})` } as E);
     return;
   }
   const reader = res.body.getReader();
@@ -83,7 +83,7 @@ async function streamSse(
     for (const frame of frames) {
       const data = frame.split('\n').filter((l) => l.startsWith('data: ')).map((l) => l.slice(6)).join('');
       if (!data) continue;
-      try { onEvent(JSON.parse(data) as StreamEvent); } catch { /* ignore malformed frame */ }
+      try { onEvent(JSON.parse(data) as E); } catch { /* ignore malformed frame */ }
     }
   }
 }
@@ -111,4 +111,12 @@ export function streamChat(
   signal?: AbortSignal,
 ): Promise<void> {
   return streamSse('/api/chat', body, onEvent, signal);
+}
+
+/** POST a code-assistant request (SSE): its steps, proposed changes and summary arrive as events. */
+export function streamCodeEdit<E>(
+  projectId: string, body: { scope: string; prompt: string; targets: string[]; sessionId?: string | null },
+  onEvent: (e: E) => void, signal?: AbortSignal,
+): Promise<void> {
+  return streamSse<E>(`/api/projects/${projectId}/code-edit`, body, onEvent, signal);
 }

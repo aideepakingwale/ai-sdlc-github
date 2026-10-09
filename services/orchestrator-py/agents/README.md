@@ -9,7 +9,7 @@ agents/
   pipeline/               work around a stage: clarify, plan, classify, read, compress   runtime: native
   review/                 independent checkers: quality, facts, security                 runtime: native
   repair/                 narrow fixers with a hard success test                         runtime: native
-  code/                   the two-step code generator                                   runtime: native
+  code/                   the two-step code generator, the code assistant            runtime: native
   writers/                custom-stage, layout-document and long-document writers        runtime: native
   proposed/               agents we intend to build                                      runtime: proposed
 ```
@@ -98,10 +98,11 @@ test, or (d) should be reviewed or regenerated on its own.
 | [engineering-notes](generators/stage-6-implementation/engineering-notes.md) | list | light | designNotes, codingStandards, securityNotes | LLD, ADR |
 | [pull-request](generators/stage-6-implementation/pull-request.md) | list | light | branch, commitMessage, prTitle, prBody, checklist | USER_STORY, LLD |
 
-### Pipeline, review, repair, code and writer agents (17)
+### Pipeline, review, repair, code and writer agents (18)
 
 | Agent | Category | Model | Called from | Why independent |
 |---|---|---|---|---|
+| [code-editor](code/code-editor.md) | generator | generate | `app/services/code_edit.py::CodeEditService` | Edits the files a person selected from a plain-language request: reads, searches, edits and checks in a loop and returns a diff for review. |
 | [code-implementer](code/code-implementer.md) | generator | stage | `app/agents/code_generation.py` | Writes a batch of source files for the approved structure. |
 | [code-structure-planner](code/code-structure-planner.md) | generator | stage | `app/agents/code_generation.py` | Proposes the project's directory and file structure for the implementation stage, for approval before any code is written. |
 | [attachment-section-picker](pipeline/attachment-section-picker.md) | utility | light | `app/services/chat.py::_pick_sections` | When an attached document is too large for the prompt, chooses the sections that matter for this stage. |
