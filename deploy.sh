@@ -198,6 +198,17 @@ else
   JWT_NEW="$JWT_CUR"   # keep an operator-set secret across re-runs
 fi
 
+# Key that encrypts the per-project Git / Jira / Confluence tokens saved on the Connections screen. Generated once and KEPT across
+# re-runs: changing it would make every saved token unreadable. Back it up with the rest of .env.
+grep -q '^CONNECTIONS_KEY=' .env || echo 'CONNECTIONS_KEY=' >> .env
+CK_CUR="$(grep -E '^CONNECTIONS_KEY=' .env | cut -d= -f2- || true)"
+if [[ -z "$CK_CUR" ]]; then
+  CK_NEW="$(openssl rand -hex 32)"
+  sed -i -e "s|^CONNECTIONS_KEY=.*|CONNECTIONS_KEY=${CK_NEW}|" .env
+  log "Generated a CONNECTIONS_KEY (encrypts saved project tokens; keep it)."
+fi
+grep -q '^CONNECTIONS_ALLOW_PRIVATE_HOSTS=' .env || echo 'CONNECTIONS_ALLOW_PRIVATE_HOSTS=false' >> .env
+
 # Values common to both providers. NOTE: this script NEVER writes API keys.
 sed -i \
   -e "s|^GENERATION_MODE=.*|GENERATION_MODE=llm|" \
