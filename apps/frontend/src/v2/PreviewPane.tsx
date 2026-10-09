@@ -11,9 +11,9 @@ import { PANE_W, useV2 } from './store';
 
 /** The right-hand pane: project tools, one artefact, or the context behind a stage. */
 export default function PreviewPane({
-  projectId, flow, selectedStage, canManageTeam, canWrite, canRepair,
+  projectId, flow, selectedStage, canManageTeam, canWrite, canRepair, onOpenStage,
 }: {
-  projectId: string; flow: ProjectFlow | undefined; selectedStage: number | null; canManageTeam: boolean; canWrite: boolean; canRepair: boolean;
+  projectId: string; flow: ProjectFlow | undefined; selectedStage: number | null; canManageTeam: boolean; canWrite: boolean; canRepair: boolean; onOpenStage?: (seq: number) => void;
 }) {
   const pane = useV2((s) => s.pane);
   const openPane = useV2((s) => s.openPane);
@@ -55,7 +55,7 @@ export default function PreviewPane({
         <button type="button" onClick={closePane} aria-label="Close the panel" className="rounded p-1 text-slate-500 hover:bg-slate-100" data-testid="v2-pane-close"><Icon name="x" size={16} /></button>
       </div>
       <div className="min-h-0 flex-1">
-        {pane.type === 'project' && <ProjectPanel projectId={projectId} flow={flow} selectedStage={selectedStage} canManageTeam={canManageTeam} canWrite={canWrite} />}
+        {pane.type === 'project' && <ProjectPanel projectId={projectId} flow={flow} selectedStage={selectedStage} canManageTeam={canManageTeam} canWrite={canWrite} onOpenStage={onOpenStage} />}
         {pane.type === 'artefact' && (
           <div className="flex h-full min-h-0 flex-col">
             <div className="min-h-0 flex-1"><ArtifactViewer key={pane.id} embedded projectId={projectId} artefactId={pane.id} onClose={closePane} canRepair={canRepair} /></div>

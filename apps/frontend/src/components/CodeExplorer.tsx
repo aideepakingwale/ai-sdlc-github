@@ -2,7 +2,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import CodeView from './CodeView';
-import CodeAssistant from './CodeAssistant';
 import MiddleText from '../v2/MiddleText';
 import SplitPair from '../v2/SplitPair';
 import { Badge } from './ui/Badge';
@@ -19,7 +18,7 @@ import {
  * a collapsible file explorer over the directory structure with each file's purpose, the file's content once
  * written, and the whole codebase as a .zip. Approval itself happens at the stage gate (its reviewers).
  */
-export default function CodeExplorer({ projectId, phase, assist }: { projectId: string; phase: number; assist?: { canEdit: boolean } }) {
+export default function CodeExplorer({ projectId, phase }: { projectId: string; phase: number }) {
   const qc = useQueryClient();
   const q = useQuery({
     queryKey: ['code', projectId, phase],
@@ -31,8 +30,6 @@ export default function CodeExplorer({ projectId, phase, assist }: { projectId: 
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
   const [showPlan, setShowPlan] = useState(true);
-  const [checkedList, setCheckedList] = useState<string[]>([]);
-  const tickPath = (p: string) => setCheckedList((c) => (c.includes(p) ? c.filter((x) => x !== p) : [...c, p]));
 
   const tree = v?.tree ?? null;
   const shown = useMemo(() => (tree ? filterTree(tree, query) : null), [tree, query]);
@@ -119,7 +116,7 @@ export default function CodeExplorer({ projectId, phase, assist }: { projectId: 
             <button type="button" className="rounded px-1.5 py-1 text-[11px] text-slate-500 hover:bg-slate-100" onClick={() => setOpen(new Set())} title="Collapse all folders">Collapse</button>
           </div>
           <div role="tree" aria-label="Directory structure" className="max-h-[520px] overflow-auto pr-1 text-xs">
-            {shown && (shown.children ?? []).map((n) => <Row key={n.path} node={n} depth={0} isOpen={isOpen} toggle={toggle} selected={selected} onSelect={setSelected} checked={assist ? checkedList : undefined} onCheck={assist ? tickPath : undefined} />)}
+            {shown && (shown.children ?? []).map((n) => <Row key={n.path} node={n} depth={0} isOpen={isOpen} toggle={toggle} selected={selected} onSelect={setSelected} />)}
             {shown && (shown.children ?? []).length === 0 && <div className="py-4 text-center text-slate-400">No file matches.</div>}
           </div>
           </div>
@@ -129,57 +126,37 @@ export default function CodeExplorer({ projectId, phase, assist }: { projectId: 
           {sel ? <FileDetail projectId={projectId} file={sel} /> : <div className="py-10 text-center text-xs text-slate-400">Select a file.</div>}
           </div>
         )} />
-      {assist && counts.generated > 0 && (
-        <div className="px-4 pb-4">
-          <CodeAssistant projectId={projectId} scope="generated" checked={checkedList} onUncheck={tickPath} onClearChecked={() => setCheckedList([])}
-            openFile={sel?.generated ? sel.path : null} onOpenFile={setSelected} canEdit={assist.canEdit}
-            blockedReason={v.status === 'committed' ? 'The code is approved and committed. Request changes on the stage first, then edit it here.' : undefined}
-            onFilesChanged={() => { void qc.invalidateQueries({ queryKey: ['code', projectId, phase] }); void qc.invalidateQueries({ queryKey: ['code-file', projectId] }); }} />
-        </div>
-      )}
     </section>
   );
 }
 
-function Row({ node, depth, isOpen, toggle, selected, onSelect, checked, onCheck }: {
+function Row({ node, depth, isOpen, toggle, selected, onSelect }: {
   node: CodeNode; depth: number; isOpen: (p: string) => boolean; toggle: (p: string) => void; selected: string | null; onSelect: (p: string) => void;
-  checked?: string[]; onCheck?: (p: string) => void;
 }) {
   const pad = { paddingLeft: 6 + depth * 14 };
-  // A box to select the folder or written file for the code assistant (outside the row button: a button cannot hold a control).
-  const tick = onCheck ? (
-    node.type === 'dir' || node.generated
-      ? <input type="checkbox" checked={checked?.includes(node.path) ?? false} onChange={() => onCheck(node.path)}
-          aria-label={`Select ${node.path} for the code assistant`} data-check={node.path} className="mr-1 h-3 w-3 shrink-0 cursor-pointer accent-brand-600" title="Select for the code assistant" />
-      : <span className="mr-1 w-3 shrink-0" />
-  ) : null;
   if (node.type === 'dir') {
     const open = isOpen(node.path);
     const c = countFiles(node);
     return (
       <div role="treeitem" aria-expanded={open}>
-        <div className="flex items-center rounded hover:bg-slate-50" style={pad}>
-          {tick}
-          <button type="button" onClick={() => toggle(node.path)} data-dir={node.path} className="flex min-w-0 flex-1 items-center gap-1.5 py-0.5 pr-1 text-left" title={node.purpose || node.path}>
-            <span className="w-3 text-slate-400">{open ? '▾' : '▸'}</span><span>{open ? '📂' : '📁'}</span>
-            <MiddleText text={node.name} title={node.path} className="flex-1 font-semibold text-slate-700" />
-            <span className="ml-auto shrink-0 text-[10px] text-slate-400">{c.generated}/{c.files}</span>
-          </button>
-        </div>
-        {open && <div role="group">{(node.children ?? []).map((n) => <Row key={n.path} node={n} depth={depth + 1} isOpen={isOpen} toggle={toggle} selected={selected} onSelect={onSelect} checked={checked} onCheck={onCheck} />)}</div>}
+        <button type="button" onClick={() => toggle(node.path)} style={pad} data-dir={node.path}
+          className="flex w-full items-center gap-1.5 rounded py-0.5 pr-1 text-left hover:bg-slate-50" title={node.purpose || node.path}>
+          <span className="w-3 text-slate-400">{open ? '▾' : '▸'}</span><span>{open ? '📂' : '📁'}</span>
+          <MiddleText text={node.name} title={node.path} className="flex-1 font-semibold text-slate-700" />
+          <span className="ml-auto shrink-0 text-[10px] text-slate-400">{c.generated}/{c.files}</span>
+        </button>
+        {open && <div role="group">{(node.children ?? []).map((n) => <Row key={n.path} node={n} depth={depth + 1} isOpen={isOpen} toggle={toggle} selected={selected} onSelect={onSelect} />)}</div>}
       </div>
     );
   }
   const active = selected === node.path;
   return (
-    <div role="treeitem" aria-selected={active} className={`flex items-center rounded ${active ? 'bg-brand-50 ring-1 ring-brand-200' : 'hover:bg-slate-50'}`} style={pad}>
-      {tick}
-      <button type="button" data-file={node.path} onClick={() => onSelect(node.path)} className="flex min-w-0 flex-1 items-center gap-1.5 py-0.5 pr-1 text-left" title={node.purpose}>
-        <span className="w-3" /><span>{iconFor(node.path)}</span>
-        <span className="min-w-0 flex-1"><MiddleText text={node.name} title={node.path} className="text-slate-800" /><span className="block truncate text-[10px] text-slate-400">{node.purpose}</span></span>
-        <span className={`shrink-0 text-[11px] ${node.generated ? 'text-emerald-500' : 'text-slate-300'}`} title={node.generated ? 'Written' : 'Planned — not written yet'}>{node.generated ? '✓' : '○'}</span>
-      </button>
-    </div>
+    <button type="button" role="treeitem" aria-selected={active} data-file={node.path} onClick={() => onSelect(node.path)} style={pad}
+      className={`flex w-full items-center gap-1.5 rounded py-0.5 pr-1 text-left ${active ? 'bg-brand-50 ring-1 ring-brand-200' : 'hover:bg-slate-50'}`} title={node.purpose}>
+      <span className="w-3" /><span>{iconFor(node.path)}</span>
+      <span className="min-w-0 flex-1"><MiddleText text={node.name} title={node.path} className="text-slate-800" /><span className="block truncate text-[10px] text-slate-400">{node.purpose}</span></span>
+      <span className={`shrink-0 text-[11px] ${node.generated ? 'text-emerald-500' : 'text-slate-300'}`} title={node.generated ? 'Written' : 'Planned — not written yet'}>{node.generated ? '✓' : '○'}</span>
+    </button>
   );
 }
 

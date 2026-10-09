@@ -108,7 +108,7 @@ export default function CodeAssistant({ projectId, scope, checked, onUncheck, on
 
   return (
     <section className="mt-4 rounded-xl border border-slate-300 bg-white" data-testid="code-assistant" aria-label="Code assistant">
-      <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2 rounded-t-xl border-b border-slate-200 bg-slate-100 px-3 py-2">
         <span className="text-sm font-semibold text-navy">Code assistant</span>
         <span className="text-xs text-slate-500">Edits {scope === 'generated' ? 'the generated code' : 'the uploaded codebase'}. You review a diff; nothing changes until you apply it.</span>
         <span className="ml-auto flex items-center gap-2">

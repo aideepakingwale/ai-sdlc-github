@@ -3,19 +3,20 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
 import type { ProjectFlow } from '../api/flow';
 import type { Artefact, AuditEvent } from '../api/types';
-import CodeExplorer from '../components/CodeExplorer';
+import GeneratedCode from './GeneratedCode';
 import CodeAssistant from '../components/CodeAssistant';
 import CodeView, { langForExt } from '../components/CodeView';
 import ProjectFiles from './ProjectFiles';
 import SkillsPanel from '../components/SkillsPanel';
 import ProjectTeam from './ProjectTeam';
 import ProjectMemory from './ProjectMemory';
-import type { CodeNode, CodeView as CodeViewData } from '../lib/codeTree';
+import type { CodeView as CodeViewData } from '../lib/codeTree';
 import { allDirs, filterTree } from '../lib/codeTree';
 import { ancestorsOf, auditCategory, auditCsv, buildPathTree, firstFilePath, formatWhen, languageMix, AUDIT_CATEGORIES, type AuditCategory } from './projectPanelLib';
 
 const MIX_COLORS = ['bg-brand-500', 'bg-navy', 'bg-bared-500', 'bg-slate-400', 'bg-brand-300'];
 import MiddleText from './MiddleText';
+import { TreeNodes } from './CodeTree';
 import { Pill, StageDot, stageTone } from './bits';
 import SplitPair from './SplitPair';
 import { PROJECT_TOOLS } from './Sidebar';
@@ -32,9 +33,9 @@ const EXPLAIN: Record<ProjectTab, React.ReactNode> = {
 };
 
 export default function ProjectPanel({
-  projectId, flow, selectedStage, canManageTeam, canWrite,
+  projectId, flow, selectedStage, canManageTeam, canWrite, onOpenStage,
 }: {
-  projectId: string; flow: ProjectFlow | undefined; selectedStage: number | null; canManageTeam: boolean; canWrite: boolean;
+  projectId: string; flow: ProjectFlow | undefined; selectedStage: number | null; canManageTeam: boolean; canWrite: boolean; onOpenStage?: (seq: number) => void;
 }) {
   const pane = useV2((s) => s.pane);
   const openPane = useV2((s) => s.openPane);
@@ -54,7 +55,7 @@ export default function ProjectPanel({
         {tab === 'team' && <ProjectTeam projectId={projectId} flow={flow} canManage={canManageTeam} />}
         {tab === 'artefacts' && <ArtefactsTab projectId={projectId} flow={flow} selectedStage={selectedStage} />}
         {tab === 'files' && <ProjectFiles projectId={projectId} onOpenArtifact={(id) => openPane({ type: 'artefact', id, from: 'files' })} />}
-        {tab === 'codebase' && <CodebaseTab projectId={projectId} flow={flow} canWrite={canWrite} canManage={canManageTeam} />}
+        {tab === 'codebase' && <CodebaseTab projectId={projectId} flow={flow} canWrite={canWrite} canManage={canManageTeam} onOpenStage={onOpenStage} />}
         {tab === 'memory' && <ProjectMemory projectId={projectId} flow={flow} />}
         {tab === 'audit' && <AuditTab projectId={projectId} flow={flow} />}
         {tab === 'skills' && <SkillsTab projectId={projectId} selectedStage={selectedStage} stageName={flow?.stages.find((x) => x.phase === selectedStage)?.name} />}
@@ -113,51 +114,7 @@ function ArtefactsTab({ projectId, flow, selectedStage }: { projectId: string; f
 }
 
 /* ---------------------------------------------------------------- codebase */
-/** The filled folder of the design. */
-function FolderGlyph() {
-  return <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" className="shrink-0"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4.2c.4 0 .8.2 1.1.5L11 7h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" fill="#f4b73f" /></svg>;
-}
-
-function TreeNodes({ node, open, toggle, selected, onSelect, searching, lines, checked, onCheck }: {
-  node: CodeNode; open: Set<string>; toggle: (p: string) => void; selected: string | null; onSelect: (p: string) => void; searching: boolean; lines?: Map<string, number>;
-  checked?: Set<string>; onCheck?: (p: string) => void;
-}) {
-  const tick = (p: string) => onCheck && (
-    <input type="checkbox" checked={checked?.has(p) ?? false} onChange={() => onCheck(p)} onClick={(e) => e.stopPropagation()} aria-label={`Select ${p} for the code assistant`} data-check={p}
-      className="mr-0.5 h-3 w-3 shrink-0 cursor-pointer accent-brand-600" title="Select for the code assistant" />
-  );
-  return (
-    <ul className="text-sm">
-      {(node.children ?? []).map((c) => c.type === 'dir' ? (
-        <li key={c.path}>
-          <div className="flex items-center gap-1 rounded px-1.5 hover:bg-slate-100">
-            {tick(c.path)}
-            <button type="button" onClick={() => toggle(c.path)} className="flex min-w-0 flex-1 items-center gap-1.5 py-0.5 text-left text-[15px]">
-              <span aria-hidden="true" className="w-3 text-center text-[10px] text-slate-400">{searching || open.has(c.path) ? '▾' : '▸'}</span>
-              <FolderGlyph />
-              <span className="truncate">{c.name}</span>
-            </button>
-          </div>
-          {(searching || open.has(c.path)) && <div className="ml-3 border-l border-slate-200 pl-1"><TreeNodes node={c} open={open} toggle={toggle} selected={selected} onSelect={onSelect} searching={searching} lines={lines} checked={checked} onCheck={onCheck} /></div>}
-        </li>
-      ) : (
-        <li key={c.path}>
-          <div className={`flex items-center gap-1 rounded px-1.5 hover:bg-slate-100 ${selected === c.path ? 'bg-brand-100 text-brand-700' : ''}`}>
-            {onCheck ? <span className="w-3 shrink-0" /> : null}
-            {tick(c.path)}
-            <button type="button" onClick={() => onSelect(c.path)} aria-current={selected === c.path} data-file={c.path}
-              className={`flex min-w-0 flex-1 items-center gap-1.5 py-0.5 text-left text-[15px] ${onCheck ? '' : 'pl-5'}`}>
-              <span aria-hidden="true" className="inline-block h-2.5 w-2.5 shrink-0 rounded-[2px] border border-slate-500" /><MiddleText text={c.name} title={c.path} className="flex-1" />
-              {(lines?.get(c.path) ?? 0) > 0 && <span className="shrink-0 rounded-full bg-slate-100 px-1.5 text-[10px] text-slate-500" title="Lines">{lines!.get(c.path)}</span>}
-            </button>
-          </div>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function CodebaseTab({ projectId, flow, canWrite, canManage }: { projectId: string; flow: ProjectFlow | undefined; canWrite: boolean; canManage: boolean }) {
+function CodebaseTab({ projectId, flow, canWrite, canManage, onOpenStage }: { projectId: string; flow: ProjectFlow | undefined; canWrite: boolean; canManage: boolean; onOpenStage?: (seq: number) => void }) {
   const qc = useQueryClient();
   const [mode, setMode] = useState<'existing' | 'generated'>('existing');
   const codeStage = flow?.stages.find((s) => s.template === 6);
@@ -167,12 +124,12 @@ function CodebaseTab({ projectId, flow, canWrite, canManage }: { projectId: stri
         <button type="button" aria-pressed={mode === 'existing'} onClick={() => setMode('existing')} className={`px-3 py-1 ${mode === 'existing' ? 'bg-brand-100 text-brand-700' : 'bg-white text-slate-800'}`}>Existing (uploaded)</button>
         <button type="button" aria-pressed={mode === 'generated'} onClick={() => setMode('generated')} className={`px-3 py-1 ${mode === 'generated' ? 'bg-brand-100 text-brand-700' : 'bg-white text-slate-800'}`}>Generated ({codeStage ? `stage ${codeStage.phase}` : 'no code stage'})</button>
       </div>
-      {mode === 'existing' ? <ExistingCodebase projectId={projectId} canWrite={canWrite} canManage={canManage} onChanged={() => void qc.invalidateQueries({ queryKey: ['codebase', projectId] })} /> : <GeneratedCodebase projectId={projectId} phase={codeStage?.phase ?? null} canWrite={canWrite} />}
+      {mode === 'existing' ? <ExistingCodebase projectId={projectId} canWrite={canWrite} canManage={canManage} onChanged={() => void qc.invalidateQueries({ queryKey: ['codebase', projectId] })} /> : <GeneratedCodebase projectId={projectId} phase={codeStage?.phase ?? null} canWrite={canWrite} onOpenStage={onOpenStage} />}
     </div>
   );
 }
 
-function GeneratedCodebase({ projectId, phase, canWrite }: { projectId: string; phase: number | null; canWrite: boolean }) {
+function GeneratedCodebase({ projectId, phase, canWrite, onOpenStage }: { projectId: string; phase: number | null; canWrite: boolean; onOpenStage?: (seq: number) => void }) {
   const v = useQuery({
     queryKey: ['code', projectId, phase],
     queryFn: () => api.get<CodeViewData>(`/api/projects/${projectId}/phase/${phase}/code`),
@@ -180,8 +137,15 @@ function GeneratedCodebase({ projectId, phase, canWrite }: { projectId: string; 
     refetchInterval: 5_000,
   });
   if (phase == null) return <div className="rounded-lg bg-slate-100 p-4 text-sm text-slate-500">This project has no code-writing stage.</div>;
-  if (!v.data || !v.data.enabled || v.data.status === 'none') return <div className="rounded-lg bg-slate-100 p-4 text-sm text-slate-500">The code stage has not proposed a project structure yet. Once it does, the directories and files appear here.</div>;
-  return <CodeExplorer projectId={projectId} phase={phase} assist={{ canEdit: canWrite }} />;
+  if (!v.data || !v.data.enabled || v.data.status === 'none') {
+    return (
+      <>
+        <div className="mb-2.5 flex items-center gap-2"><Pill>Stage {phase} · Not started</Pill>{onOpenStage && <button type="button" onClick={() => onOpenStage(phase)} className="ml-auto rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:border-brand-400">Open stage {phase}</button>}</div>
+        <p className="text-sm text-slate-500">Stage {phase} has not run yet. Its proposed project structure and code appear here.</p>
+      </>
+    );
+  }
+  return <GeneratedCode projectId={projectId} phase={phase} canWrite={canWrite} onOpenStage={onOpenStage} />;
 }
 
 function ExistingCodebase({ projectId, canWrite, canManage, onChanged }: { projectId: string; canWrite: boolean; canManage: boolean; onChanged: () => void }) {

@@ -137,7 +137,7 @@ export default function V2Workspace() {
           {activeProjectId && (
             <PreviewPane projectId={activeProjectId} flow={flow.data} selectedStage={activeStage}
               canManageTeam={detail.data?.me?.canManageTeam ?? false} canWrite={canManage || Boolean(detail.data?.me?.membershipRole)}
-              canRepair={Boolean(stage?.canRetrigger)} />
+              canRepair={Boolean(stage?.canRetrigger)} onOpenStage={goStage} />
           )}
         </div>
       </div>

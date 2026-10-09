@@ -103,7 +103,7 @@ Each tab opens with a one-paragraph explainer (`EXPLAIN` in `v2/ProjectPanel.tsx
 | Team | people with role and stage, remove, and an "Add a member" form (`v2/ProjectTeam.tsx`) |
 | Artefacts | everything generated, grouped by stage; All stages / this stage; click opens the artefact preview |
 | Files | storage chip and path, filter, phase folders with file sizes (`v2/ProjectFiles.tsx`) |
-| Codebase | Existing: upload a `.zip` (language mix bar, Remove for managers and admins), search the tree, read a file, download. Generated: `CodeExplorer` for the code stage. Both carry the [code assistant](code-assistant.md) |
+| Codebase | Existing: upload a `.zip` (language mix bar, Remove for managers and admins), search the tree, read a file, download. Generated: `v2/GeneratedCode.tsx` (stage chip, Open stage, Download .zip, the tree with planned / written tags, the code in the same light viewer; a planned file shows its purpose, kind and layer). Both carry the [code assistant](code-assistant.md) |
 | Audit | live (5 s) events; filters Gate / Generation / Security / Guardrail / Human and by stage; expandable JSON; the artefact names and formats the user selected; CSV export |
 | Skills | connected services as dots, then the stage's skills (`SkillsPanel`), knowledge-base search, active tools |
 
