@@ -99,11 +99,29 @@ PHASE_JSON_SHAPES: dict[int, str] = {
 }
 
 
-def render_stack(tech_stack: str, *, owner: bool, source: str = "") -> str:
-    """The technology-stack + platform block. A decided stack pins everything to it;
-    an undecided one tells the Technical Architect (``owner``) to decide and every
-    other stage to stay technology-neutral until it has."""
+def render_stack(tech_stack: str, *, owner: bool, source: str = "", layers: list[dict] | None = None, stage: int | None = None) -> str:
+    """The technology-stack + platform block. A decided stack pins everything to it; an undecided one tells the
+    Technical Architect (``owner``) to decide and every other stage to stay technology-neutral until it has.
+
+    When the project config's ``layers`` are given the block is by layer and only carries the layers ``stage`` needs
+    (see services/project_config.py); without them the one-line stack is used, as before."""
     stack = (tech_stack or "").strip()
+    if layers is not None:
+        from ..services.project_config import render_layers
+
+        decided, undecided = render_layers(layers, stage)
+        if owner:
+            current = decided or (f"- {stack}" if stack else "none yet")
+            if undecided:
+                current += f"\nStill undecided: {undecided}"
+            head = render("phase.system.stack_decide", current=current)
+            return head + "\n\n" + render("phase.system.platform")
+        if decided:
+            head = render("phase.system.stack_layers", layers=decided,
+                          undecided=f"Not decided yet: {undecided}. Stay technology-neutral on those." if undecided else "")
+            return head + "\n\n" + render("phase.system.platform")
+        if not stack:
+            return render("phase.system.stack_undecided") + "\n\n" + render("phase.system.platform")
     if owner and source != "user":
         # The Technical Architect decides, and may revise its own earlier decision
         # (never a stack a manager set by hand).
@@ -124,6 +142,7 @@ def build_phase_prompt(
     amend_comments: str | None,
     tech_stack: str = "",
     tech_stack_source: str = "",
+    stack_layers: list[dict] | None = None,
     project_profile: str = "",
     has_codebase: bool = False,
     canon_block: str = "",
@@ -157,7 +176,7 @@ def build_phase_prompt(
         # (not the phase number), so it also applies to reordered and custom stages.
         resolve_steering(phase_def.agent_persona),
         render("phase.system.produces", produces=", ".join(phase_def.produces)),
-        render_stack(tech_stack, owner=phase_def.id == 3, source=tech_stack_source),
+        render_stack(tech_stack, owner=phase_def.id == 3, source=tech_stack_source, layers=stack_layers, stage=phase_def.id),
         # Project profile (#4): name, stack and integration targets, so every
         # stage generates against the same project configuration.
         (f"## Project profile\n{project_profile}" if project_profile else ""),

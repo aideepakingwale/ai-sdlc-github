@@ -169,7 +169,7 @@ def build_prompt(
     if spec.steering:
         head.append(resolve_steering(persona))
     if spec.stack:
-        head.append(render_stack(state.tech_stack, owner=False, source=state.tech_stack_source))
+        head.append(render_stack(state.tech_stack, owner=False, source=state.tech_stack_source, layers=state.stack_layers, stage=state.stage_template))
         items.append({"layer": "project", "label": f"Technology stack: {state.tech_stack or 'undecided'}", "chars": len(state.tech_stack or "")})
     if state.project_profile:
         head.append(f"## Project profile\n{state.project_profile}")

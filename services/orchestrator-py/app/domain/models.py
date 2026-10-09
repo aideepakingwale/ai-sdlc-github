@@ -145,6 +145,8 @@ class AgentState(BaseModel):
     model_role: str = ""
     tech_stack_source: str = ""  # "" undecided | "ta" decided by the Technical Architect | "user"
     tech_stack: str = ""  # "" = not decided yet (the Technical Architect stage decides)
+    # The stack by layer, from projectconfig.json (None = not loaded: prompts use the one-line tech_stack).
+    stack_layers: list[dict[str, Any]] | None = None
     # Compact project profile (name, stack, integrations) threaded into every
     # stage so the whole run stays in sync with the project configuration (#4).
     project_profile: str = ""

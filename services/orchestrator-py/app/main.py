@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 
 from .agents.phase_agents import AgentDeps
-from .api import auth_routes, chat_routes, project_routes
+from .api import auth_routes, chat_routes, config_routes, project_routes
 from .api.deps import Container
 from .auth.keycloak import KeycloakAuth
 from .config import get_settings
@@ -124,11 +124,17 @@ async def lifespan(app: FastAPI):
     canon = CanonService(db, authz, audit)                      # D-38
     formworks = FormworkService(db, authz, audit, content, canon)
     memory = MemoryService(db, authz, audit)
+    from .services.project_config import ProjectConfigService
+    from .services.stack_advisor import StackAdvisor
+    project_config = ProjectConfigService(db, content, authz, audit, canon)   # projectconfig.json
+    stack_advisor = StackAdvisor(llm, project_config, db)
     agent_deps = AgentDeps(
         llm=llm, mcp=mcp, db=db, audit=audit, rag=rag, content=content, monitor=monitor,
         settings=settings, telemetry=telemetry, canon=canon, formworks=formworks, memory=memory,
+        project_config=project_config, stack_advisor=stack_advisor,
     )
     workflow = WorkflowService(db, dynamo, audit)
+    stack_advisor.workflow = workflow
     # Deferred external publication (D-67): external writes are queued during
     # generation and replayed by this service only after the gate is approved.
     publisher = PublishService(db, content, mcp, audit) if settings.PUBLISH_ON_APPROVAL else None
@@ -172,6 +178,7 @@ async def lifespan(app: FastAPI):
     container.code_gen = code_gen
     container.canon, container.formworks = canon, formworks
     container.memory = memory
+    container.project_config, container.stack_advisor = project_config, stack_advisor
     from .services.code_edit import CodeEditService
     container.code_edit = CodeEditService(db, content, rag, audit, authz, llm, chat, workflow, dynamo, canon=canon, memory=memory)
     container.connections = connections
@@ -278,3 +285,4 @@ async def readyz(request: Request) -> JSONResponse:
 app.include_router(auth_routes.router)
 app.include_router(chat_routes.router)
 app.include_router(project_routes.router)
+app.include_router(config_routes.router)

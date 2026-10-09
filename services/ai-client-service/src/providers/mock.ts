@@ -95,6 +95,8 @@ function render(kind: string, topic: string, seed: string, userText: string, all
   switch (kind) {
     case 'code_edit':
       return codeEditStep(all, userText);
+    case 'stack_advisor':
+      return JSON.stringify({ layers: [], notes: '' });
     case 'plan':
       return JSON.stringify({
         steps: [

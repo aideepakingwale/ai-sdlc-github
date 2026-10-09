@@ -165,6 +165,8 @@ async def create_project(
         name=body.name, created_by=user.id, tech_stack=tech_stack,
         integrations=body.integrations.model_dump(),
     )
+    if getattr(container, "project_config", None) is not None:
+        await container.project_config.ensure(project["id"])      # projectconfig.json: empty until the platform or a person fills it
     if body.workflow is not None:
         await container.workflow.save(project["id"], body.workflow, user)
     container.audit.record(
@@ -220,7 +222,10 @@ async def set_tech_stack(
     from ..services.stack import SOURCE_USER
     from ..services.tech_catalog import compose_stack
     stack = compose_stack(body.language, body.languageVersion, body.frameworks, fallback="")
-    await container.db.set_project_stack(project_id, stack, SOURCE_USER if stack else "")
+    if getattr(container, "project_config", None) is not None:
+        await container.project_config.set_backend_text(project_id, stack, source=SOURCE_USER, actor=user.email)
+    else:
+        await container.db.set_project_stack(project_id, stack, SOURCE_USER if stack else "")
     container.audit.record(
         project_id=project_id, phase=1, agent_role="Orchestrator", event="project.stack_set",
         human_reviewer=user.email, detail={"techStack": stack or None},
@@ -1498,6 +1503,8 @@ async def upload_codebase(
         raise SdlcError("VALIDATION_FAILED", "multipart field 'file' (a .zip archive) is required")
     payload = await upload.read()
     result = await container.codebase.ingest_zip(project_id, user.id, payload)
+    if getattr(container, "stack_advisor", None) is not None:
+        await container.stack_advisor.from_codebase(project_id)      # layers an uploaded codebase shows (manifests, Terraform, workflows)
     try:
         await container.db.set_codebase_archive(project_id, upload.filename or "codebase.zip", user.email)
     except Exception:  # noqa: BLE001 - the label is cosmetic; never fail an upload over it

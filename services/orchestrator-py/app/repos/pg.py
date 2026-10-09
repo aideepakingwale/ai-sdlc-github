@@ -194,6 +194,25 @@ class Database:
         assert self.pool
         return await self.pool.fetchrow("SELECT * FROM projects WHERE id=$1", project_id)
 
+    # ------------------------------------------------------------ project config (projectconfig.json)
+    async def get_project_config(self, project_id: str) -> dict | None:
+        assert self.pool
+        r = await self.pool.fetchrow("SELECT config, version FROM project_config WHERE project_id=$1", project_id)
+        if not r:
+            return None
+        cfg = r["config"]
+        if isinstance(cfg, str):
+            cfg = json.loads(cfg)
+        return {"config": cfg, "version": r["version"]}
+
+    async def save_project_config(self, project_id: str, config: dict, version: int, updated_by: str | None) -> None:
+        assert self.pool
+        await self.pool.execute(
+            """INSERT INTO project_config (project_id, config, version, updated_by) VALUES ($1,$2,$3,$4)
+               ON CONFLICT (project_id) DO UPDATE SET config=EXCLUDED.config, version=EXCLUDED.version,
+                 updated_by=EXCLUDED.updated_by, updated_at=now()""",
+            project_id, config, version, updated_by)
+
     async def set_project_stack(self, project_id: str, tech_stack: str, source: str) -> None:
         """Record the project's decided technology stack and who decided it."""
         assert self.pool

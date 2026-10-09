@@ -42,6 +42,8 @@ class Container:
     memory: Any = None   # MemoryService: confirmed project / organisation / personal memory
     formworks: Any = None
     code_gen: Any = None  # two-step code generation: structure approval, explorer view, zip
+    project_config: Any = None  # projectconfig.json: the stack by layer
+    stack_advisor: Any = None   # identifies the stack from a stage's documents
     code_edit: Any = None  # prompt-based code assistant: agentic edits shown as a diff, applied by a person
     gen_jobs: Any = None  # durable background stage generation (D-97 L2)
     extras: dict[str, Any] = field(default_factory=dict)

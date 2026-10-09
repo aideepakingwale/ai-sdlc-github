@@ -842,6 +842,8 @@ class AgentDeps:
     canon: Any = None      # CanonService (D-38) — binding project rules
     formworks: Any = None  # FormworkService (D-38) — output templates
     memory: Any = None     # MemoryService — confirmed team memory, its own prompt layer
+    project_config: Any = None  # ProjectConfigService — projectconfig.json (the stack by layer)
+    stack_advisor: Any = None   # StackAdvisor — identifies the stack from a stage's documents
 
 
 @dataclass
@@ -1109,7 +1111,7 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
         rag_block=deps.rag.render_block(snippets),
         user_input=state.user_input,
         amend_comments=amend_comments,
-        tech_stack=state.tech_stack, tech_stack_source=state.tech_stack_source,
+        tech_stack=state.tech_stack, tech_stack_source=state.tech_stack_source, stack_layers=state.stack_layers,
         project_profile=state.project_profile,
         has_codebase=state.has_codebase,
         canon_block=canon_block,
@@ -2013,20 +2015,26 @@ async def _run_phase2(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
 
 # ---------------------------------------------------------------- Phase 3: TA
 async def _capture_stack(deps: AgentDeps, state: AgentState, emit: Emit, *, texts: list[str]) -> None:
-    """Persist the stack the Technical Architect stage decided, so every later stage
-    (tests, pipeline, code) targets it. Reads the design's "Technology stack decision"
-    section; falls back to inferring it from the design text. Never raises and never
-    overwrites a stack a manager set by hand."""
+    """Persist the stack the Technical Architect stage decided, so every later stage (tests, pipeline, code) targets it. Reads the design's
+    "Technology stack decision" section (the `**Stack:**` line and one line per layer); falls back to inferring the language from the
+    design text. Goes through projectconfig.json: a layer a person pinned is never overwritten. Never raises."""
     try:
-        project = await deps.db.get_project(state.project_id) or {}
-        if stack_of(project) and stack_source(project) == "user":
-            return
         decided = decide_from_text(*texts)
         if decided is None:
             emit({"type": "node", "node": "agent",
                   "label": "No technology stack could be determined from this design - reviewers can set it on the project"})
             return
-        stored = await record_decision(deps.db, project | {"id": state.project_id}, decided, source="ta")
+        cfg = getattr(deps, "project_config", None)
+        if cfg is None:
+            project = await deps.db.get_project(state.project_id) or {}
+            if stack_of(project) and stack_source(project) == "user":
+                return
+            stored = await record_decision(deps.db, project | {"id": state.project_id}, decided, source="ta")
+        else:
+            from ..services.project_config import legacy_entries
+            await cfg.apply_found(state.project_id, [dict(e) for e in legacy_entries(decided.compose(), "ta")], stage=state.current_phase,
+                                  source="ta", decider=True, actor="Technical Architect")
+            stored = (await cfg.get(state.project_id))["stack"]["summary"]
         if stored:
             emit({"type": "node", "node": "agent", "label": f"Technology stack decided: {stored}"})
             deps.audit.record(project_id=state.project_id, phase=state.current_phase, agent_role="Technical Architect",
@@ -2458,7 +2466,7 @@ async def _run_custom(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         "phase.custom.system", persona=persona, stage_name=state.stage_name or "Custom stage",
         outputs=", ".join(outputs), tools=", ".join(tools) or "(none)",
         stack_block=render_stack(state.tech_stack, owner=is_stack_owner(persona=persona),
-                                 source=state.tech_stack_source),
+                                 source=state.tech_stack_source, layers=state.stack_layers, stage=state.stage_template),
     )
     # An optional PM-chosen library prompt layers extra, stage-specific instruction.
     if state.custom_prompt_id:
@@ -2581,7 +2589,7 @@ async def _run_custom_format(deps: AgentDeps, state: AgentState, emit: Emit) -> 
         render_prompt("phase.system.persona", persona=persona, phase_id=phase.id, phase_name=phase.name),
         resolve_steering(persona),
         render_stack(state.tech_stack, owner=is_stack_owner(template=phase.id, persona=persona),
-                     source=state.tech_stack_source),
+                     source=state.tech_stack_source, layers=state.stack_layers, stage=phase.id),
         (f"## Project profile\n{state.project_profile}" if state.project_profile else ""),
         render_prompt("phase.system.craft"),
         "## Governing output format (MANDATORY — overrides every default)\n"
@@ -2764,7 +2772,7 @@ async def _generate_layout_doc(
          if phase else f"You are the {persona} agent for the '{state.stage_name}' stage."),
         resolve_steering(persona),
         render_stack(state.tech_stack, owner=is_stack_owner(template=state.stage_template, persona=persona),
-                     source=state.tech_stack_source),
+                     source=state.tech_stack_source, layers=state.stack_layers, stage=state.stage_template),
         (f"## Project profile\n{state.project_profile}" if state.project_profile else ""),
         render_prompt("phase.system.craft"),
         render_prompt("artifact.layout.system", artifact_type=type_, layout_name=layout["name"]),

@@ -225,6 +225,7 @@ class ChatService:
                 stage_reviewer=stage["reviewerRole"], requested_by=user.id,
                 user_input=message, context_window=window, amend_comments=amend,
                 tech_stack=stack_of(project), tech_stack_source=stack_source(project),
+                stack_layers=await self._stack_layers(project["id"]),
                 model_role=stage.get("modelRole") or "",
                 **await self._resolve_formats(project["id"], seq, self._formats_of(sp_row), emit),
                 project_profile=self._project_profile(project),
@@ -248,6 +249,7 @@ class ChatService:
                 # Persist the deferred external-write plan for this stage (D-67).
                 await self._persist_publish_plan(project["id"], seq, phase_result)
                 if final_state.gate_status == "PENDING_REVIEW":
+                    await self._identify_stack(project["id"], seq, stage, phase_result, emit)
                     await self._security_gate(project["id"], seq, stage, project, emit)
                     await self._dynamo.put_phase_state(
                         project_id=project["id"], phase=seq,
@@ -466,7 +468,8 @@ class ChatService:
                 "phase.custom.system", persona=persona, stage_name=stage["name"],
                 outputs=", ".join(produces or ["DELIVERABLE"]),
                 tools=", ".join(stage.get("tools") or []) or "(none)",
-                stack_block=render_stack(stack_of(project), owner=is_stack_owner(persona=persona), source=stack_source(project)),
+                stack_block=render_stack(stack_of(project), owner=is_stack_owner(persona=persona), source=stack_source(project),
+                                         layers=await self._stack_layers(project["id"]), stage=7),
             )
             if stage.get("promptId"):
                 try:
@@ -480,6 +483,7 @@ class ChatService:
                 phase=stage["template"], context_block=context_block, rag_block=rag_block,
                 user_input=user_input, amend_comments=None,
                 tech_stack=stack_of(project), tech_stack_source=stack_source(project),
+                stack_layers=await self._stack_layers(project["id"]),
                 project_profile=self._project_profile(project),
                 has_codebase=(await self._db.count_codebase_files(project["id"])) > 0,
                 canon_block=canon_block, formwork_block=formwork_block, user_context_block=extra_context,
@@ -730,7 +734,11 @@ class ChatService:
             chosen = answered_stack(answers) if (
                 not stack_of(project) and is_stack_owner(template=stage.get("template"), persona=stage.get("persona") or "")) else ""
             if chosen:
-                await self._db.set_project_stack(project_id, chosen, SOURCE_USER)
+                cfg = getattr(self._deps, "project_config", None)
+                if cfg is not None:
+                    await cfg.set_backend_text(project_id, chosen, source=SOURCE_USER, actor=user.email)
+                else:
+                    await self._db.set_project_stack(project_id, chosen, SOURCE_USER)
                 self._audit.record(project_id=project_id, phase=phase, agent_role="Orchestrator",
                                    event="project.stack_decided", human_reviewer=user.email,
                                    detail={"techStack": chosen, "via": "clarification"})
@@ -1761,6 +1769,21 @@ class ChatService:
                 "Keep what the reviewers did not ask to change, apply the requested changes, and keep the document's structure and numbering stable.\n\n"
                 + "\n\n".join(parts))
 
+    async def _stack_layers(self, project_id: str) -> list[dict[str, Any]] | None:
+        """The project's stack by layer (projectconfig.json); None when the config service is not wired (tests)."""
+        svc = getattr(self._deps, "project_config", None)
+        return await svc.layers(project_id) if svc is not None else None
+
+    async def _identify_stack(self, project_id: str, seq: int, stage: dict, phase_result: Any, emit: Emit) -> None:
+        """After stages 1, 2 and 3 generate: identify the stack their documents settle, into projectconfig.json, before the next stage runs."""
+        advisor = getattr(self._deps, "stack_advisor", None)
+        template = int(stage.get("template") or 0)
+        decider = is_stack_owner(template=template, persona=stage.get("persona") or "")
+        if advisor is None or not (template in (1, 2, 3) or decider):
+            return
+        docs = [(a.title, a.content or a.summary or "") for a in (phase_result.new_artifacts or [])]
+        await advisor.after_stage(project_id, seq=seq, template=template if template <= 6 else 3, documents=docs, decider=decider, emit=emit)
+
     async def _security_gate(self, project_id: str, phase: int, stage: dict, project: dict, emit: Emit) -> None:
         """Gate-time security review: when a stage's output reaches human review, review the project's artifacts and
         record the findings beside the validation verdict. Best-effort - a failed review never blocks the gate."""
@@ -2030,6 +2053,7 @@ class ChatService:
             user_input=prompt_overlay or f"Generate {', '.join(stage.get('outputs') or [])} for '{stage['name']}'.",
             context_window=list(context), amend_comments=None,
             tech_stack=stack_of(project), tech_stack_source=stack_source(project),
+            stack_layers=await self._stack_layers(project_id),
             model_role=stage.get("modelRole") or "",
             **await self._resolve_formats(project_id, phase, overlay["artifactFormats"], emit),
             project_profile=self._project_profile(project),
@@ -2062,6 +2086,7 @@ class ChatService:
             # Persist the deferred external-write plan for this stage (D-67).
             await self._persist_publish_plan(project_id, phase, phase_result)
             if final_state.gate_status == "PENDING_REVIEW":
+                await self._identify_stack(project_id, phase, stage, phase_result, emit)
                 await self._security_gate(project_id, phase, stage, project, emit)
                 await self._dynamo.put_phase_state(project_id=project_id, phase=phase, status="PENDING_REVIEW", reviewer_role=stage["reviewerRole"])
                 emit({"type": "gate", "phase": phase, "status": "PENDING_REVIEW", "reviewerRole": stage["reviewerRole"]})

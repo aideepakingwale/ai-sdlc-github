@@ -43,7 +43,58 @@ DEFAULT_TECH_CATALOG: dict[str, Any] = {
     ],
 }
 
+# The layers a project's stack is described in. `options` feed the screen's suggestions; `aliases` are extra spellings the deterministic
+# extractor recognises. Override the whole catalog (languages and layers) with TECH_CATALOG_PATH.
+DEFAULT_LAYERS: list[dict[str, Any]] = [
+    {"id": "frontend", "label": "Frontend", "hint": "What users see: web, mobile or desktop UI",
+     "options": ["React", "Next.js", "Angular", "Vue", "Svelte", "Flutter", "React Native", "Thymeleaf"],
+     "aliases": ["reactjs", "react.js", "nextjs", "angularjs", "vue.js", "vuejs"]},
+    {"id": "backend", "label": "Backend / API", "hint": "Language, runtime and framework of the services",
+     "options": [], "aliases": []},
+    {"id": "database", "label": "Database", "hint": "Primary system of record",
+     "options": ["PostgreSQL", "MySQL", "Oracle", "SQL Server", "MongoDB", "DynamoDB", "Aurora", "Cassandra", "Cosmos DB"],
+     "aliases": ["postgres", "mssql", "sql server", "mariadb"]},
+    {"id": "cache", "label": "Cache", "hint": "In-memory or distributed cache",
+     "options": ["Redis", "Memcached", "ElastiCache", "Hazelcast"], "aliases": []},
+    {"id": "messaging", "label": "Messaging and events", "hint": "Queues, topics, streaming",
+     "options": ["Kafka", "RabbitMQ", "SQS", "SNS", "EventBridge", "Azure Service Bus", "ActiveMQ", "IBM MQ"],
+     "aliases": ["amazon sqs", "amazon sns", "service bus"]},
+    {"id": "search", "label": "Search", "hint": "Full-text and analytics search",
+     "options": ["OpenSearch", "Elasticsearch", "Solr"], "aliases": []},
+    {"id": "hosting", "label": "Hosting", "hint": "Where it runs: cloud, on-premises or hybrid",
+     "options": ["AWS", "Azure", "GCP", "On-premises", "Hybrid", "OpenShift"],
+     "aliases": ["amazon web services", "google cloud", "on-prem", "on prem", "onprem", "private cloud", "data centre", "data center"]},
+    {"id": "compute", "label": "Compute", "hint": "How the code is run",
+     "options": ["Serverless (Lambda)", "Containers (ECS)", "Kubernetes (EKS)", "Virtual machines", "Bare metal"],
+     "aliases": ["lambda", "serverless", "kubernetes", "eks", "ecs", "fargate", "docker swarm"]},
+    {"id": "iac", "label": "Infrastructure as code", "hint": "How infrastructure is defined",
+     "options": ["Terraform", "AWS CDK", "CloudFormation", "Pulumi", "Ansible", "Bicep"], "aliases": ["cdk"]},
+    {"id": "cicd", "label": "CI/CD", "hint": "Build and deployment pipeline",
+     "options": ["GitHub Actions", "GitLab CI", "Jenkins", "Azure DevOps", "CircleCI", "ArgoCD"], "aliases": ["github action"]},
+    {"id": "observability", "label": "Observability", "hint": "Logs, metrics, traces, alerting",
+     "options": ["CloudWatch", "Datadog", "Prometheus and Grafana", "ELK", "OpenTelemetry", "Splunk"], "aliases": ["prometheus", "grafana"]},
+    {"id": "identity", "label": "Identity and access", "hint": "Authentication and single sign-on",
+     "options": ["Keycloak", "Okta", "Auth0", "Cognito", "Entra ID", "OIDC", "SAML"], "aliases": ["azure ad", "active directory", "oauth"]},
+]
+
 _cache: dict[str, Any] = {}
+
+
+def get_layers() -> list[dict[str, Any]]:
+    """The stack layers: from the override catalog when it defines `layers`, else the built-in list."""
+    data = get_tech_catalog()
+    layers = data.get("layers")
+    if isinstance(layers, list) and layers and all(isinstance(x, dict) and x.get("id") for x in layers):
+        return layers
+    return DEFAULT_LAYERS
+
+
+def layer_ids() -> list[str]:
+    return [str(x["id"]) for x in get_layers()]
+
+
+def layer_label(layer_id: str) -> str:
+    return next((str(x.get("label") or layer_id) for x in get_layers() if x["id"] == layer_id), layer_id)
 
 
 def get_tech_catalog() -> dict[str, Any]:

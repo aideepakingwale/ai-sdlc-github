@@ -83,7 +83,7 @@ async def propose(deps: Any, state: AgentState, emit: Any, previous: dict[str, A
         user_input = f"{user_input}\n\n{state.extra_context}"
     system = _system_prefix(state, persona) + render_prompt(
         "code.structure.system", persona=persona, stage_name=state.stage_name or "Implementation & Delivery",
-        stack_block=render_stack(state.tech_stack, owner=False, source=state.tech_stack_source))
+        stack_block=render_stack(state.tech_stack, owner=False, source=state.tech_stack_source, layers=state.stack_layers, stage=6))
     user = render_prompt("code.structure.user", user_input=user_input, context_block=context_block or "(none)", feedback_block=feedback)
     data, result = await deps.llm.generate_json(
         intent="generation", tag=f"stage{state.current_phase}_code_structure", temperature=0.2,
@@ -183,7 +183,7 @@ async def implement(deps: Any, state: AgentState, emit: Any, plan: dict[str, Any
     conventions = "\n".join(f"- {c}" for c in structure.get("conventions", [])) or "- Follow the stack's idiomatic conventions."
     system = _system_prefix(state, persona) + render_prompt(
         "code.implement.system", persona=persona, stage_name=state.stage_name or "Implementation & Delivery",
-        stack_block=render_stack(state.tech_stack, owner=False, source=state.tech_stack_source), conventions=conventions)
+        stack_block=render_stack(state.tech_stack, owner=False, source=state.tech_stack_source, layers=state.stack_layers, stage=6), conventions=conventions)
 
     platform = {p.lower(): (p, c) for p, c in _platform_files(deps, state).items()}
     written: dict[str, str] = {}
