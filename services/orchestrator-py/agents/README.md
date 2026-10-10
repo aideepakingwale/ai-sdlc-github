@@ -10,7 +10,7 @@ agents/
   review/                 independent checkers: quality, facts, security                 runtime: native
   repair/                 narrow fixers with a hard success test                         runtime: native
   code/                   the two-step code generator, the code assistant            runtime: native
-  writers/                custom-stage, layout-document and long-document writers        runtime: native
+  writers/                custom-stage, layout-document, long-document and custom-agent writers       runtime: native
   proposed/               agents we intend to build                                      runtime: proposed
 ```
 
@@ -118,10 +118,12 @@ test, or (d) should be reviewed or regenerated on its own.
 | [text-diagram-converter](repair/text-diagram-converter.md) | utility | generate | `app/services/text_diagrams.py::convert_text_diagrams` | Redraws ASCII-art drawings found inside documents as Mermaid diagrams. |
 | [rule-checker](review/rule-checker.md) | reviewer | light | `app/services/rule_checks.py::RuleChecker` | After a stage generates, compares its documents with the must-rules and records, per rule, whether they were followed. |
 | [fact-checker](review/fact-checker.md) | reviewer | light | `app/graph/pipeline.py::fact_check_node` | Checks the stage's summary response against the approved context, the attached documents and the non-functional requirements. |
+| [agent-auditor](review/agent-auditor.md) | reviewer | reason | `app/services/agent_audit.py::AgentAuditor` | Reads a custom agent or skill before it can be approved and reports capability, ambiguity, contradiction and security problems that rules alone cannot see. |
 | [quality-validator](review/quality-validator.md) | reviewer | light | `app/agents/phase_agents.py::_validate_output` | Scores the generated output against the stage's quality bar and the brief, and names the artefacts that need rework. |
 | [security-reviewer](review/security-reviewer.md) | reviewer | reason | `app/services/security_gate.py::run_review` | Reviews the stage's artefacts for security weaknesses and rates the overall risk; critical findings can block approval. |
 | [custom-stage-writer](writers/custom-stage-writer.md) | generator | stage | `app/agents/phase_agents.py::_run_custom` | Writes the deliverables of a custom stage (for example Deployment & Release, Maintenance) defined by the workflow designer. |
 | [layout-document-writer](writers/layout-document-writer.md) | generator | stage | `app/agents/phase_agents.py::_generate_layout_doc` | Writes one artefact in the layout of an attached document the reviewer chose for it. |
+| [custom-agent-runner](writers/custom-agent-runner.md) | generator | stage | `app/services/agent_runtime.py::AgentRuntime` | Runs a custom agent or skill built in the Agent builder: the person's instructions inside the platform's fixed guardrails, with only the inputs it declared and its declared outputs. |
 | [long-document-writer](writers/long-document-writer.md) | generator | generate | `app/agents/phase_agents.py::_generate_markdown_in_parts` | Writes a Markdown document too long for one response in parts, from an outline. |
 
 ### Proposed (3)

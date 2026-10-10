@@ -1,18 +1,21 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client';
+import { useApp } from '../store';
+import AgentsTab from './agents/AgentsTab';
 import AgentsSeeTab from './AgentsSeeTab';
 import ProfileTab from './ProfileTab';
 import RulesTab from './RulesTab';
 import StackTab from './StackTab';
 import TemplatesTab from './TemplatesTab';
 
-type Tab = 'stack' | 'profile' | 'rules' | 'templates' | 'see';
+type Tab = 'stack' | 'profile' | 'rules' | 'templates' | 'agents' | 'see';
 const TABS: Array<{ id: Tab; label: string; hint: string }> = [
   { id: 'stack', label: 'Stack', hint: 'The technologies, by layer' },
   { id: 'profile', label: 'Profile', hint: 'Industry, regulations and what the system does' },
   { id: 'rules', label: 'Rules', hint: 'What every agent must follow' },
   { id: 'templates', label: 'Templates', hint: 'The layout each kind of document follows' },
+  { id: 'agents', label: 'Agents and skills', hint: 'Build your own agents and skills, and use the ones the organisation shares' },
   { id: 'see', label: 'What agents see', hint: 'The exact text added to each stage' },
 ];
 
@@ -22,10 +25,12 @@ const TABS: Array<{ id: Tab; label: string; hint: string }> = [
  */
 export default function ProjectContextPage({ projectId, onClose }: { projectId: string; onClose: () => void }) {
   const [tab, setTab] = useState<Tab>('stack');
+  const [building, setBuilding] = useState(false);
+  const { user } = useApp();
   const rules = useQuery({ queryKey: ['rules', projectId], queryFn: () => api.get<{ canAuthor: boolean }>(`/api/projects/${projectId}/rules/overview`) });
   return (
     <div className="h-full overflow-y-auto bg-slate-50 p-6" data-testid="v2-context-page">
-      <div className="mx-auto w-full max-w-5xl">
+      <div className={`mx-auto w-full ${building ? 'max-w-[1400px]' : 'max-w-5xl'}`}>
         <h1 className="font-display text-xl font-bold text-navy">Project Context</h1>
         <p className="mb-3 text-sm text-slate-500">What every agent run is told about this project: its stack, its profile (industry and regulations), its rules (the binding “Canon”) and its output templates (“Formwork”).</p>
         <div role="tablist" aria-label="Project context" className="mb-4 flex gap-1 border-b border-slate-200">
@@ -38,6 +43,7 @@ export default function ProjectContextPage({ projectId, onClose }: { projectId: 
         {tab === 'profile' && <ProfileTab projectId={projectId} />}
         {tab === 'rules' && <RulesTab projectId={projectId} />}
         {tab === 'templates' && <TemplatesTab projectId={projectId} canEdit={rules.data?.canAuthor ?? false} />}
+        {tab === 'agents' && <AgentsTab projectId={projectId} userId={user?.id ?? ''} onBuilder={setBuilding} />}
         {tab === 'see' && <AgentsSeeTab projectId={projectId} />}
       </div>
     </div>

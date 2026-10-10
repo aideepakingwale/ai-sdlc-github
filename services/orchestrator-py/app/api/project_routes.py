@@ -1762,10 +1762,17 @@ async def preview_canon(
             "chars": len(canon_block) + len(formwork_block)}
 
 
+def _only_super_admin(user: UserPublic, what: str) -> None:
+    if user.role != "SUPER_ADMIN":
+        raise SdlcError("FORBIDDEN", f"Only a super-admin can see {what}. Open agents and skills you can copy are under Project Context.")
+
+
 # ------------------------------------------------------------------ Specialist agents and what each artefact was made from
 @router.get("/api/agents")
 async def list_agents(user: UserPublic = Depends(current_user)) -> dict:
-    """Every agent definition (the `agents/**/*.md` files): what it does, the model role it runs on, what it reads, and its instructions."""
+    """Every agent definition (the `agents/**/*.md` files): what it does, the model role it runs on, what it reads, and its instructions.
+    Core definitions are internal: only a super-admin sees them (a project builds on the open library instead)."""
+    _only_super_admin(user, "core agent definitions")
     from ..services import agent_catalog
     keys = ("id", "name", "version", "category", "runtime", "status", "description", "role", "uses", "tools", "entrypoint", "stage", "kind",
             "fields", "artifacts", "upstream", "after", "canon", "stack", "attachments", "steering", "path", "body", "notes")
@@ -1923,17 +1930,19 @@ async def governance_guardrails(_user: UserPublic = Depends(current_user)) -> di
 
 
 @router.get("/api/governance/prompts")
-async def governance_prompts(_user: UserPublic = Depends(current_user)) -> dict:
+async def governance_prompts(user: UserPublic = Depends(current_user)) -> dict:
     """Read-only prompt library: every prompt the platform sends to an LLM,
-    with id, version and description. No inline prompts exist outside it."""
+    with id, version and description. No inline prompts exist outside it. Core definitions: super-admin only."""
+    _only_super_admin(user, "the core prompt library")
     return prompt_library.inventory()
 
 
 @router.get("/api/governance/skills")
-async def governance_skills(_user: UserPublic = Depends(current_user)) -> dict:
+async def governance_skills(user: UserPublic = Depends(current_user)) -> dict:
     """Read-only skill packs (D-37): every skill is a markdown file — the
     frontmatter (identity, RBAC roles, tier, execution wiring) plus the
-    markdown instruction body, exactly as loaded at boot."""
+    markdown instruction body, exactly as loaded at boot. Core definitions: super-admin only."""
+    _only_super_admin(user, "core skill definitions")
     from ..services.skills import SKILL_PACKS
 
     return {

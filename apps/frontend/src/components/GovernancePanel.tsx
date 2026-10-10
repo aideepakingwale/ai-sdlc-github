@@ -3,6 +3,8 @@ import AgentCatalog from './AgentCatalog';
 import OrgContext from '../v2/OrgContext';
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
+import { useApp } from '../store';
+import AgentLibraryTab from '../v2/agents/AgentLibraryTab';
 
 /**
  * Responsible AI governance panel: read-only transparency over the
@@ -44,7 +46,10 @@ const CATEGORY_CHIP: Record<string, string> = {
 };
 
 export default function GovernancePanel({ onClose, page = false }: { onClose: () => void; page?: boolean }) {
-  const [tab, setTab] = useState<'guardrails' | 'prompts' | 'skills' | 'agents' | 'org'>('guardrails');
+  const { user } = useApp();
+  const isAdmin = user?.role === 'SUPER_ADMIN';
+  const [building, setBuilding] = useState(false);
+  const [tab, setTab] = useState<'guardrails' | 'prompts' | 'skills' | 'agents' | 'library' | 'org'>('guardrails');
   const [openPrompt, setOpenPrompt] = useState<string | null>(null);
 
   const guardrails = useQuery({
@@ -53,10 +58,12 @@ export default function GovernancePanel({ onClose, page = false }: { onClose: ()
   });
   const prompts = useQuery({
     queryKey: ['governance', 'prompts'],
+    enabled: isAdmin,
     queryFn: () => api.get<PromptInventory>('/api/governance/prompts'),
   });
   const skills = useQuery({
     queryKey: ['governance', 'skills'],
+    enabled: isAdmin,
     queryFn: () => api.get<SkillInventory>('/api/governance/skills'),
   });
 
@@ -69,7 +76,7 @@ export default function GovernancePanel({ onClose, page = false }: { onClose: ()
   return (
     <div className={page ? 'h-full overflow-y-auto bg-slate-50 p-6' : 'fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4'} onClick={page ? undefined : onClose}>
       <div
-        className={page ? 'mx-auto flex w-full max-w-5xl flex-col' : 'flex max-h-[92vh] w-full max-w-4xl flex-col rounded-2xl bg-white shadow-2xl'}
+        className={page ? `mx-auto flex w-full ${building ? 'max-w-[1400px]' : 'max-w-5xl'} flex-col` : 'flex max-h-[92vh] w-full max-w-4xl flex-col rounded-2xl bg-white shadow-2xl'}
         onClick={(e) => e.stopPropagation()}
       >
         <div className={page ? 'flex items-center justify-between px-1 pb-3' : 'flex items-center justify-between border-b border-slate-200 px-5 py-3'}>
@@ -91,6 +98,8 @@ export default function GovernancePanel({ onClose, page = false }: { onClose: ()
           >
             Guardrails {guardrails.data ? `(${guardrails.data.rules.length})` : ''}
           </button>
+          {isAdmin && (
+            <>
           <button
             onClick={() => setTab('prompts')}
             className={`rounded-lg px-3 py-1 text-xs font-semibold ${
@@ -116,6 +125,17 @@ export default function GovernancePanel({ onClose, page = false }: { onClose: ()
           >
             Agents
           </button>
+          <button
+            onClick={() => setTab('library')}
+            data-testid="v2-gov-library"
+            className={`rounded-lg px-3 py-1 text-xs font-semibold ${
+              tab === 'library' ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-500'
+            }`}
+          >
+            Agent library
+          </button>
+            </>
+          )}
           <button
             onClick={() => setTab('org')}
             data-testid="v2-gov-org"
@@ -171,7 +191,7 @@ export default function GovernancePanel({ onClose, page = false }: { onClose: ()
             </div>
           )}
 
-          {tab === 'prompts' && prompts.data && (
+          {isAdmin && tab === 'prompts' && prompts.data && (
             <div className="space-y-1.5">
               <div className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
                 Every prompt the platform sends to an LLM lives in this library — phase agents,
@@ -199,11 +219,13 @@ export default function GovernancePanel({ onClose, page = false }: { onClose: ()
             </div>
           )}
 
-          {tab === 'agents' && <AgentCatalog />}
+          {isAdmin && tab === 'agents' && <AgentCatalog />}
+
+          {isAdmin && tab === 'library' && <AgentLibraryTab userId={user?.id ?? ''} onBuilder={setBuilding} />}
 
           {tab === 'org' && <OrgContext />}
 
-          {tab === 'skills' && skills.data && (
+          {isAdmin && tab === 'skills' && skills.data && (
             <div className="space-y-1.5">
               <div className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
                 Every skill is a <b>markdown file</b> (skills/*.md): frontmatter declares identity,

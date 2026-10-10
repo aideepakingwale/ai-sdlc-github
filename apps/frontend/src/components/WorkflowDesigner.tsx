@@ -1,3 +1,4 @@
+import StageAgents from '../v2/agents/StageAgents';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
@@ -675,6 +676,15 @@ export default function WorkflowDesigner({ projectId, onClose, page = false }: {
                       onChange={(e) => update(selectedIdx, { agentNotes: e.target.value })}
                       placeholder="Extra instructions or context the agent should apply for this stage…"
                     />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-semibold uppercase text-slate-400">
+                      Custom agents and skills <span className="normal-case text-slate-300">(approved ones only)</span>
+                    </label>
+                    <div className="mt-1 rounded-lg border border-slate-200 p-2">
+                      <StageAgents key={selected.key} projectId={projectId} stageKey={selected.key} />
+                    </div>
                   </div>
 
                   {selected.template === 7 && (

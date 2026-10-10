@@ -530,3 +530,15 @@ async def test_the_stage_hook_adds_custom_agent_artefacts_after_the_stages_own_a
     assert failed.new_artifacts == [] and "did not complete" in failed.summary
     same = fresh()
     assert (await pa._with_custom_agents(SimpleNamespace(agent_runtime=None), state, lambda e: None, same)) is same
+
+
+async def test_core_definitions_are_for_super_admins_only_in_every_route_that_lists_them():
+    from app.api import project_routes as pr
+
+    assert (await pr.list_agents(user=SUPER))["agents"]
+    assert (await pr.governance_skills(user=SUPER))["skills"] and (await pr.governance_prompts(user=SUPER))["prompts"]
+    for fn in (pr.list_agents, pr.governance_skills, pr.governance_prompts):
+        with pytest.raises(SdlcError, match="super-admin"):
+            await fn(user=PM)
+        with pytest.raises(SdlcError, match="super-admin"):
+            await fn(user=AUTHOR)

@@ -190,9 +190,9 @@ Useful selectors: `v2-workspace`, `v2-sidebar`, `v2-project-switcher`,
 
 ## Project Context
 
-Sidebar -> Project Context opens five tabs (`v2/ProjectContextPage.tsx`): **Stack** (the stack by layer, `projectconfig.json`), **Profile** (industry,
+Sidebar -> Project Context opens six tabs (`v2/ProjectContextPage.tsx`): **Stack** (the stack by layer, `projectconfig.json`), **Profile** (industry,
 regulations, domains; confirm what was found in documents), **Rules** (the
 binding "Canon": recommended and browsable rule packs, drafting from a document, organisation rules with opt-out, compliance), **Templates** (the "Formwork": drop a
-file, type and format detected) and **What agents see** (the exact text per stage). Governance -> **Organisation** holds the default profile, organisation rules, rule packs,
+file, type and format detected), **Agents and skills** (build your own, see [custom-agents.md](custom-agents.md)) and **What agents see** (the exact text per stage). Governance -> **Organisation** holds the default profile, organisation rules, rule packs,
 stack presets and platform templates for administrators. See [project-config.md](project-config.md). Test hooks: `v2-stack-tab`,
 `v2-profile-tab`, `v2-rules-tab`, `v2-pack-recommended`, `v2-advice` (the card on stages 2 and 3), `v2-templates-tab`, `v2-see-tab`, `v2-org-context`.
