@@ -7,7 +7,7 @@ import { StageDot } from './bits';
 import { useV2, type ProjectTab } from './store';
 
 export type V2View = 'dashboard' | 'pipeline' | 'stage';
-export type V2Modal = 'explorer' | 'context' | 'quality' | 'governance' | 'observability' | 'models' | 'designer' | 'connections';
+export type V2Modal = 'explorer' | 'context' | 'minddesigner' | 'quality' | 'governance' | 'observability' | 'models' | 'designer' | 'connections';
 
 export const PROJECT_TOOLS: Array<{ tab: ProjectTab; label: string; hint: string; icon: IconName }> = [
   { tab: 'team', label: 'Team', hint: 'Who is on this project and which stage each person covers', icon: 'users' },
@@ -140,7 +140,11 @@ export default function Sidebar({
           <Heading>Configure</Heading>
           <Item onClick={() => onModal('context')} testid="v2-nav-context">
             <Icon name="book" size={16} className="text-slate-500" />
-            <span><span className="block text-sm font-medium text-navy">Project Context</span><span className="block text-xs text-slate-500">Stack, rules and templates</span></span>
+            <span><span className="block text-sm font-medium text-navy">Project Mindset</span><span className="block text-xs text-slate-500">Technology, rules and formats</span></span>
+          </Item>
+          <Item onClick={() => onModal('minddesigner')} testid="v2-nav-minddesigner">
+            <Icon name="sparkles" size={16} className="text-slate-500" />
+            <span><span className="block text-sm font-medium text-navy">MindDesigner</span><span className="block text-xs text-slate-500">Your own agents and skills</span></span>
           </Item>
           <Item onClick={() => onModal('quality')} testid="v2-nav-quality">
             <Icon name="chart" size={16} className="text-slate-500" />

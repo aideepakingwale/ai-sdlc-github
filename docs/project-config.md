@@ -51,17 +51,17 @@ is told to stay neutral on them.
 
 ### Screen and API
 
-Project Context -> **Stack** tab: layers grouped as the catalog, a chip for pinned / from stage 2 / open, edit, confirm (identified -> pinned),
+Project Mindset -> **Technology** tab: layers grouped as the catalog, a chip for pinned / from stage 2 / open, edit, confirm (identified -> pinned),
 "leave open", remove, "Re-check from documents", organisation presets, and the conflict list.
 `GET /api/projects/{id}/config`, `PUT /api/projects/{id}/config/stack` (`{upsert, remove}`), `POST .../config/stack/advise`,
 `POST .../config/stack/preset/{id}`, `GET .../config/file`. Every change is audited (`project.config_updated`).
 
 ## 2. Rules and Templates
 
-"Canon" becomes **Rules** and "Formwork" becomes **Templates** (the old names stay as subtitles). One Project Context page with four tabs:
-Stack, **Profile**, Rules, Templates, **What agents see**.
+"Canon" becomes **Rules** and "Formwork" becomes **Templates** (the old names stay as subtitles). One Project Mindset page with five tabs:
+Technology, **Domain and compliance**, Rules, Document formats, **Agent briefing**.
 
-* **What agents see**: per stage, the exact stack, rules and template text injected, with a token estimate.
+* **Agent briefing**: per stage, the exact stack, rules and template text injected, with a token estimate.
 * **Rule packs**: a library of 72 samples (`services/orchestrator-py/packs/rules/*.yaml`) in four kinds: *practices* (security, APIs, testing,
   observability, resilience, cloud, supply chain, data governance, microservices, architecture records, performance, front end), *regulations*
   (GDPR, CCPA/CPRA, PCI DSS 4, HIPAA, SOX ITGC, SOC 2, ISO 27001, DORA, NIS2, PSD2, GxP/Part 11, FedRAMP/NIST 800-53, FERPA/COPPA, IEC 62443,
@@ -87,7 +87,7 @@ Stack, **Profile**, Rules, Templates, **What agents see**.
   Stored in `projectconfig.json` under `profile`; the organisation default is in `org_profile`.
 * **Advice at stages 2 and 3**: when a project reaches solution architecture or technical design, an advice card names the packs that fit its
   profile, and only those it does not already have (by rule title). Scoring: industry 3, regulation 2, domain 1; a ready-made set needs a
-  score of 3; the essentials bundle is advised when nothing else is. "Add these rules" applies them, "Review" opens Project Context,
+  score of 3; the essentials bundle is advised when nothing else is. "Add these rules" applies them, "Review" opens Project Mindset,
   "Not for this stage" dismisses the advice for that stage. The profile never adds rules by itself.
 * **Organisation rules and stack presets** (admins, in Governance): projects inherit them, read-only, with a reasoned per-project opt-out.
 * **Draft rules from a document**: paste or upload a standards document, the assistant proposes rules, a person accepts, edits or drops each.
@@ -112,7 +112,7 @@ Migration `0046`: `org_packs` (organisation packs and hidden samples), `org_prof
   (draft from a document, hints), `rule_checks.py` (compliance), `canon.py` (organisation rules, opt-outs, packs, from memory),
   `formworks.py` (suggest, usage, versions). Routes: `api/config_routes.py`, `api/rules_routes.py`.
 * Agents: `stack-advisor`, `rule-drafter`, `rule-checker` (see `agents/README.md`).
-* Screens: Project Context (`v2/ProjectContextPage.tsx`: Stack, Profile, Rules, Templates, What agents see), Governance -> Organisation
+* Screens: Project Mindset (`v2/ProjectContextPage.tsx`: Technology, Domain and compliance, Rules, Document formats, Agent briefing), Governance -> Organisation
   (`v2/OrgContext.tsx`), a "Make it a rule" button in Memory, a Rules chip on each artefact, `projectconfig.json` in the Files tab.
 * Migrations `0044` (project_config), `0045` (org_canon, org_canon_optout, canon_checks, org_stack_presets, project_canon.origin) and `0046` (org_packs, org_profile).
 * API: `GET/PUT /api/projects/{id}/profile`, `GET /rules/recommendations?stage=`, `POST /rules/recommendations/dismiss`, `POST /rules/packs-apply`, `GET /rules/packs/{id}`; `GET/PUT /api/org/profile`; `/api/org/packs` (list, save, import, export, hide, delete or restore).

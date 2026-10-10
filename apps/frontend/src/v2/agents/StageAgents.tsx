@@ -70,7 +70,7 @@ export default function StageAgents({ projectId, stageKey }: { projectId: string
               <button key={a.defId} type="button" draggable data-pal={encodePalette({ kind: 'stageagent', value: a.defId })} title={a.description} onClick={() => add(a.defId)} data-testid="v2-stage-agent-chip"
                 onDragStart={(e) => { e.dataTransfer.setData('text/plain', encodePalette({ kind: 'stageagent', value: a.defId })); e.dataTransfer.effectAllowed = 'copy'; }}
                 className="cursor-grab rounded-full border border-slate-300 bg-white px-2.5 py-0.5 font-semibold text-slate-700 hover:border-brand-400">{a.kind === 'skill' ? '✦ ' : '● '}{a.name} <span className="font-normal text-slate-400">v{a.version}</span></button>))}</div>
-          </> : <div className="text-slate-500">No approved agents or skills are available yet. Build one in Project Context, then get it approved.</div>}
+          </> : <div className="text-slate-500">No approved agents or skills are available yet. Build one in MindDesigner, then get it approved.</div>}
         </div>)}
       {!editable && <div className="text-slate-400">Ask the project manager for permission to change this.</div>}
     </div>

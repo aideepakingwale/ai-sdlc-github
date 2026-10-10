@@ -1,5 +1,7 @@
 # Custom agents and skills
 
+**MindDesigner** is where this lives in the product: a sidebar item per project (design, test, run and place your own agents and skills), and a **MindDesigner** tab in Governance for administrators (built-in agents, the organisation's own, guardrails, approvals).
+
 People can build their own **agents** and **skills** without writing code, have them checked and approved, and attach them to the stages of a project.
 A definition is data (a JSON document); the platform interprets it. No code from a definition is ever run.
 
@@ -8,18 +10,18 @@ A definition is data (a JSON document); the platform interprets it. No code from
 | Tier | Where | Who | Notes |
 |---|---|---|---|
 | **Built-in** | the `agents/` and `skills/` files | the full inventory (files, notes, prompts) is for super-admins; the **copyable** ones are shared with every project | Read-only. The inventory routes (`/api/agents`, `/api/governance/prompts`, `/api/governance/skills`) answer super-admins only. See *Built-in starters* below. |
-| **Organisation** | Governance -> **Agent library** | super-admins build; **Open to projects** shares the approved version | A project sees only the open ones, read-only. **Copy to project** makes a private fork at that moment; the copy does not follow the original (it shows "a newer version exists"). |
-| **Project** | Project Context -> **Agents and skills** | the project's authors | Private to the project. |
+| **Organisation** | Governance -> **MindDesigner** | super-admins build; **Open to projects** shares the approved version | A project sees only the open ones, read-only. **Copy to project** makes a private fork at that moment; the copy does not follow the original (it shows "a newer version exists"). |
+| **Project** | **MindDesigner** (sidebar) | the project's authors | Private to the project. |
 
 ### Built-in starters
 
-A project's **Agents and skills -> Library** lists the built-in agents and skills it can copy, next to anything the organisation has opened. **View definition**
+A project's **MindDesigner -> Library** lists the built-in agents and skills it can copy, next to anything the organisation has opened. **View definition**
 shows the built-in's current instructions, what it reads and what it writes, read-only; **Copy to project** makes an ordinary draft in the project with that
 definition, remembering where it came from. The copy does not follow the built-in; the built-in is never changed.
 
 * **What can be copied:** the 29 specialist agents (the ones that write each stage's documents) and the skills that are only a prompt (11). Agents that run
   inside the platform's own code (planners, checkers, fixers, the code assistant) and skills that call tools cannot be copied, and say so in the admin view.
-* **Who decides:** every copyable built-in is shared with projects by default. A super-admin can stop sharing one under **Governance -> Agent library ->
+* **Who decides:** every copyable built-in is shared with projects by default. A super-admin can stop sharing one under **Governance -> MindDesigner ->
   Built-in** (`PUT /api/agent-library/core/{kind}/{id}/public`, migration `0050`). A super-admin can still copy anything.
 * **Who can copy:** people who may build agents in that project. A copy goes through the audit and approval like any other agent.
 * Endpoints: `GET /api/projects/{id}/agent-starters?kind=`, `GET .../agent-starters/{kind}/{core_id}`, then `POST /api/agent-defs/fork` with `sourceKind: core`.
@@ -36,13 +38,13 @@ version. A stage keeps the approved version it was given until someone moves it 
 * **Submit** needs a fresh audit with no blocking finding; warnings need an explicit "accept".
 * **Approve** needs someone other than the submitter (four eyes): the managing project manager, a super-admin, or a person the PM granted **can approve**.
   A super-admin may self-approve organisation definitions.
-* **Authors** are the managing PM, a super-admin, or a person granted **can edit** (Project Context -> Agents and skills -> *Who can edit and approve*).
+* **Authors** are the managing PM, a super-admin, or a person granted **can edit** (MindDesigner -> *Who can edit and approve*).
 
 ## Guardrails (`GUARDRAILS` in `agent_audit.py`)
 
 Blocking by default: `policy_override`, `secrets`, `prompt_injection`, `data_leak`, `typed_outputs`, `declared_vars`, `valid_expressions`,
 `delegation_limits`. Warnings: `pii_examples`, `success_criteria`, `conflicting`, `ambiguity`, `unused_inputs`. A super-admin can change a severity in
-Governance -> Agent library -> **Guardrails**.
+Governance -> MindDesigner -> **Guardrails**.
 
 ## What a definition can do
 
@@ -58,7 +60,7 @@ Governance -> Agent library -> **Guardrails**.
 
 An approved agent or skill can be used in three ways.
 
-* **On its own.** Project Context -> Agents and skills -> **Run** on a card. The form lists the agent's inputs. The project fills in what it can (an approved
+* **On its own.** MindDesigner -> **Run** on a card. The form lists the agent's inputs. The project fills in what it can (an approved
   artefact for `upstream:PRD`, the rules, the stack) and says where each value came from; anything typed wins. The answer is shown, can be copied or
   downloaded, and is kept in the run history (the latest 50 per agent per project). **Nothing in the project's stages changes.** The latest approved
   version runs. Open organisation agents run the same way.
@@ -79,7 +81,7 @@ Stages are designed in the Workflow designer; each stage inspector has *Custom a
   in the same run, before it looks at the stage's own artefacts.
 * **Wiring check** (`app/services/agent_wiring.py`). For every attached agent each input shows where it would come from: the stage brief, the rules or
   stack, an earlier stage's declared output (following the stage's dependencies), or an agent listed before it. An input nothing earlier produces turns red
-  and the agent would be skipped; text a person types counts only for agents set to *on request*. *Agents and skills -> Pipeline* shows the whole
+  and the agent would be skipped; text a person types counts only for agents set to *on request*. *MindDesigner -> Pipeline* shows the whole
   workflow this way, with the problems listed.
 * **A stage built from agents alone.** A custom stage can be set to *Build this stage from its custom agents only*: the persona writer does not run, the
   attached agents run in order, and the stage's outputs are taken from what they write. With no agent attached it falls back to its own writer.
@@ -105,7 +107,7 @@ when** a condition is true, or **on request**. Skills are offered to the people 
 
 * **Token cap per run** (Engine tab, 1,000 to 40,000): the most one run of the agent, with the agents it hands work to, may spend. It is checked between
   agents, so a single long answer can finish; an agent whose delegates used the cap does not make its own call. Empty means the platform limit.
-* **Monthly budget per project** (Project Context -> Agents and skills -> *Usage*, set by the managing PM or a super-admin): once the month's tokens
+* **Monthly budget per project** (MindDesigner -> *Usage*, set by the managing PM or a super-admin): once the month's tokens
   reach it, custom agents on that project do not start (a stage reports it and carries on). Tokens are counted, not money, because the price depends on
   the models routed to. Usage is recorded per agent that ran (`agent_usage`, migration `0048`), by source: stage, test or skill. Audits and probes are
   platform cost and are not counted.

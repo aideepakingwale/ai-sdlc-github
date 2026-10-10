@@ -133,7 +133,7 @@ function MemoryCard({ m, flow, canChange, canPromote, onStatus, onSave, onPromot
               <button type="button" className={`${btn} border border-slate-300 text-slate-600`} onClick={() => setEditing(true)}>Edit</button>
               {m.status === 'active' && <button type="button" className={`${btn} border border-slate-300 text-slate-600`} onClick={() => onStatus('archived')}>Archive</button>}
               {m.status === 'archived' && <button type="button" className={`${btn} border border-slate-300 text-slate-600`} onClick={() => onStatus('active')}>Restore</button>}
-              {canPromote && m.kind !== 'working_style' && <button type="button" className={`${btn} border border-brand-300 text-brand-700`} onClick={onMakeRule} title="Turn this into a binding rule in Project Context → Rules" data-testid="v2-memory-make-rule">Make it a rule</button>}
+              {canPromote && m.kind !== 'working_style' && <button type="button" className={`${btn} border border-brand-300 text-brand-700`} onClick={onMakeRule} title="Turn this into a binding rule in Project Mindset → Rules" data-testid="v2-memory-make-rule">Make it a rule</button>}
               {canPromote && <button type="button" className={`${btn} border border-brand-300 text-brand-700`} onClick={onPromote} title="Give this to every project in the organisation">Share with all projects</button>}
               <button type="button" className={`${btn} ml-auto text-bared-600`} onClick={onDelete} aria-label="Delete memory"><Icon name="trash" size={13} /></button>
             </div>

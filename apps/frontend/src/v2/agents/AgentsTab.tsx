@@ -13,7 +13,7 @@ const btn = 'rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs fon
 const primary = 'rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50';
 type ListResp = { rights: Rights; mine: Card[]; open: Card[]; pending: number };
 
-/** Project Context -> Agents and skills: what this project built, the organisation's open library, and who decides. */
+/** MindDesigner (project): what this project built, the organisation's open library, and who decides. */
 export default function AgentsTab({ projectId, userId, onBuilder }: { projectId: string; userId: string; onBuilder?: (open: boolean) => void }) {
   const qc = useQueryClient();
   const [kind, setKind] = useState<DefKind>('agent');

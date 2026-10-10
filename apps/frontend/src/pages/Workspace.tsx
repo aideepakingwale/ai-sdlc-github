@@ -322,7 +322,7 @@ export default function Workspace() {
                 className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:border-brand-300 hover:text-brand-700"
                 title="Canon (binding project rules) and Formwork (output templates) fed to every agent"
               >
-                <Icon name="book" size={13} className="mr-1 inline" />Project Context
+                <Icon name="book" size={13} className="mr-1 inline" />Project Mindset
               </button>
               <button
                 onClick={() => setQualityOpen(true)}

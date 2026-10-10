@@ -132,7 +132,7 @@ export default function GovernancePanel({ onClose, page = false }: { onClose: ()
               tab === 'library' ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-500'
             }`}
           >
-            Agent library
+            MindDesigner
           </button>
             </>
           )}

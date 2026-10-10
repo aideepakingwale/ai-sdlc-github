@@ -308,7 +308,7 @@ test.describe('pipeline and configuration pages', () => {
     const { name } = await newProject(page);
     await page.reload();
     await openProject(page, name);
-    for (const [nav, crumb] of [['models', 'Model routes'], ['context', 'Project Context'], ['quality', 'Quality'], ['governance', 'Governance'], ['observability', 'Observability'], ['designer', 'Workflow designer']] as const) {
+    for (const [nav, crumb] of [['models', 'Model routes'], ['context', 'Project Mindset'], ['minddesigner', 'MindDesigner'], ['quality', 'Quality'], ['governance', 'Governance'], ['observability', 'Observability'], ['designer', 'Workflow designer']] as const) {
       await page.getByTestId(`v2-nav-${nav}`).click();
       await expect(page.getByTestId('v2-crumb')).toContainText(crumb);
       await expect(page.locator('.fixed.inset-0.z-50')).toHaveCount(0);
@@ -755,8 +755,7 @@ test.describe('custom agents', () => {
     const { id, name } = await newProject(page);
     await page.reload();
     await openProject(page, name);
-    await page.getByTestId('v2-nav-context').click();
-    await page.getByTestId('v2-context-tab-agents').click();
+    await page.getByTestId('v2-nav-minddesigner').click();
     await expect(page.getByTestId('v2-agents-empty')).toBeVisible();
     await page.getByTestId('v2-agents-new').click();
     await expect(page.getByTestId('v2-builder')).toBeVisible();
@@ -804,8 +803,7 @@ test.describe('custom agents', () => {
 
     await page.reload();
     await openProject(page, name);
-    await page.getByTestId('v2-nav-context').click();
-    await page.getByTestId('v2-context-tab-agents').click();
+    await page.getByTestId('v2-nav-minddesigner').click();
     await expect(page.getByTestId('v2-agent-card')).toContainText('Approved v1');
 
     // attach it to a stage in the workflow designer
@@ -821,8 +819,7 @@ test.describe('custom agents', () => {
     const { id, name } = await newProject(page);
     await page.reload();
     await openProject(page, name);
-    await page.getByTestId('v2-nav-context').click();
-    await page.getByTestId('v2-context-tab-agents').click();
+    await page.getByTestId('v2-nav-minddesigner').click();
     await page.getByTestId('v2-agents-new').click();
     await expect(page.getByTestId('v2-builder')).toBeVisible();
 
@@ -859,8 +856,7 @@ test.describe('custom agents', () => {
     // editing the approved version starts v2, and now it can be compared
     await page.reload();
     await openProject(page, name);
-    await page.getByTestId('v2-nav-context').click();
-    await page.getByTestId('v2-context-tab-agents').click();
+    await page.getByTestId('v2-nav-minddesigner').click();
     await page.getByTestId('v2-agent-open').click();
     await page.getByTestId('v2-builder-desc').fill('Triages refund requests and says when to escalate them.');
     await expect(page.getByTestId('v2-save-state')).toHaveText('Saved');
@@ -878,8 +874,7 @@ test.describe('custom agents', () => {
     const defId = ((await created.json()) as { def: { id: string } }).def.id;
     await page.reload();
     await openProject(page, name);
-    await page.getByTestId('v2-nav-context').click();
-    await page.getByTestId('v2-context-tab-agents').click();
+    await page.getByTestId('v2-nav-minddesigner').click();
     await page.getByTestId('v2-agent-open').click();
     await page.getByTestId('v2-test-run').click();
     await expect(page.getByTestId('v2-test-result')).toBeVisible();
@@ -936,8 +931,7 @@ test.describe('custom agents', () => {
     expect(wrong.ok()).toBeTruthy();
     await page.reload();
     await openProject(page, name);
-    await page.getByTestId('v2-nav-context').click();
-    await page.getByTestId('v2-context-tab-agents').click();
+    await page.getByTestId('v2-nav-minddesigner').click();
 
     // run the intake checker on its own
     await page.getByTestId('v2-agent-card').filter({ hasText: 'Intake checker' }).getByTestId('v2-agent-run').click();
@@ -958,8 +952,7 @@ test.describe('custom agents', () => {
     expect(right.ok()).toBeTruthy();
     await page.reload();
     await openProject(page, name);
-    await page.getByTestId('v2-nav-context').click();
-    await page.getByTestId('v2-context-tab-agents').click();
+    await page.getByTestId('v2-nav-minddesigner').click();
     await page.getByTestId('v2-agents-view-pipeline').click();
     await expect(page.getByTestId('v2-pipeline-problems')).toHaveCount(0);
     await expect(page.getByTestId('v2-pipeline-agent')).toHaveCount(2);
@@ -1000,8 +993,7 @@ test.describe('custom agents', () => {
     const { id, name } = await newProject(page);
     await page.reload();
     await openProject(page, name);
-    await page.getByTestId('v2-nav-context').click();
-    await page.getByTestId('v2-context-tab-agents').click();
+    await page.getByTestId('v2-nav-minddesigner').click();
     await expect(page.getByTestId('v2-agents-empty')).toContainText('Library');
     await page.getByTestId('v2-agents-browse').click();
     await expect(page.getByTestId('v2-lib-builtin')).toBeVisible();

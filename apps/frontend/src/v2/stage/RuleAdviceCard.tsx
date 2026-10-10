@@ -7,7 +7,7 @@ import { Pill } from '../bits';
 
 /**
  * Shown when the project reaches solution architecture or technical design and rules that fit its profile are not in place yet.
- * It names what fits (from the project profile), adds it in one click, opens Project Context to review, or is dismissed for this stage.
+ * It names what fits (from the project profile), adds it in one click, opens Project Mindset to review, or is dismissed for this stage.
  * It never appears for what the project already has.
  */
 export default function RuleAdviceCard({ projectId, stage, onOpenContext }: { projectId: string; stage: number; onOpenContext?: () => void }) {
@@ -46,7 +46,7 @@ export default function RuleAdviceCard({ projectId, stage, onOpenContext }: { pr
       {note && <p className="mt-1 text-xs text-slate-600" role="status">{note}</p>}
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
         {r.canAuthor && <button type="button" onClick={() => add.mutate(ids)} disabled={add.isPending} data-testid="v2-advice-add" className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50">{add.isPending ? 'Adding…' : 'Add these rules'}</button>}
-        {onOpenContext && <button type="button" onClick={onOpenContext} data-testid="v2-advice-review" className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:border-brand-400">Review in Project Context</button>}
+        {onOpenContext && <button type="button" onClick={onOpenContext} data-testid="v2-advice-review" className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:border-brand-400">Review in Project Mindset</button>}
         {r.canAuthor && <button type="button" onClick={() => dismiss.mutate()} disabled={dismiss.isPending} data-testid="v2-advice-dismiss" className="ml-auto text-xs text-slate-500 hover:text-slate-800">Not for this stage</button>}
       </div>
     </section>

@@ -35,7 +35,7 @@ Only an explicit choice is remembered; the default is not stored. The choice is 
 ```
 
 - **Sidebar** (`v2/Sidebar.tsx`): project switcher with a **New project** button right under it (managers and admins), All projects, Project Explorer (PM/admin), Pipeline, the stages
-  with their status, Configure (Project Context, Quality, Connections, Workflow designer) and the six project tools. The collapse
+  with their status, Configure (Project Mindset, MindDesigner, Quality, Connections, Workflow designer) and the six project tools. The collapse
   button in the global bar hides it (`sdlc:v2:side-collapsed`).
 - **Global bar** (`v2/GlobalBar.tsx`): breadcrumb, technology-stack popover, Project panel toggle, Help, notifications,
   account menu (switch UI, delete project, sign out).
@@ -89,7 +89,7 @@ review, amending, outdated; most urgent first); Project context graph and Workfl
 
 **Codebase tab.** The uploaded archive's name, who uploaded it and when (`project_codebase`, migration `0041`), the language mix, a tree with line counts that opens on the first file, and a path header with Copy and Download over a light code panel (`CodeView tone="light"`).
 
-**Configuration pages.** Project Context, Quality, Connections (per-project Git, Jira, Confluence and knowledge base, see [connections.md](connections.md)), Governance, Observability, Project Explorer and the Workflow
+**Configuration pages.** Project Mindset, MindDesigner, Quality, Connections (per-project Git, Jira, Confluence and knowledge base, see [connections.md](connections.md)), Governance, Observability, Project Explorer and the Workflow
 designer render in the centre (the components' `page` prop turns the modal chrome off). Navigating anywhere else
 closes them. Saving or closing the designer returns to the pipeline page; a newly created project opens the designer
 page straight away.
@@ -188,11 +188,13 @@ Useful selectors: `v2-workspace`, `v2-sidebar`, `v2-project-switcher`,
 - The Quality chip on the Artefacts card comes from the stage's quality-score finding; individual artefacts have no score.
 
 
-## Project Context
+## Project Mindset
 
-Sidebar -> Project Context opens six tabs (`v2/ProjectContextPage.tsx`): **Stack** (the stack by layer, `projectconfig.json`), **Profile** (industry,
+Sidebar -> Project Mindset opens five tabs (`v2/ProjectContextPage.tsx`): **Technology** (the stack by layer, `projectconfig.json`), **Domain and compliance** (industry,
 regulations, domains; confirm what was found in documents), **Rules** (the
-binding "Canon": recommended and browsable rule packs, drafting from a document, organisation rules with opt-out, compliance), **Templates** (the "Formwork": drop a
-file, type and format detected), **Agents and skills** (build your own, see [custom-agents.md](custom-agents.md)) and **What agents see** (the exact text per stage). Governance -> **Organisation** holds the default profile, organisation rules, rule packs,
+binding "Canon": recommended and browsable rule packs, drafting from a document, organisation rules with opt-out, compliance), **Document formats** (the "Formwork": drop a
+file, type and format detected), and **Agent briefing** (the exact text per stage). Governance -> **Organisation** holds the default profile, organisation rules, rule packs,
 stack presets and platform templates for administrators. See [project-config.md](project-config.md). Test hooks: `v2-stack-tab`,
 `v2-profile-tab`, `v2-rules-tab`, `v2-pack-recommended`, `v2-advice` (the card on stages 2 and 3), `v2-templates-tab`, `v2-see-tab`, `v2-org-context`.
+
+Sidebar -> **MindDesigner** is the designer for your own agents and skills (see [custom-agents.md](custom-agents.md)); it was a tab of this page before and now stands on its own.

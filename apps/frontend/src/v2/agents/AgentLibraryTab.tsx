@@ -9,7 +9,7 @@ import ApprovalsView from './ApprovalsView';
 const btn = 'rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:border-brand-400 disabled:opacity-50';
 const primary = 'rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50';
 
-/** Governance -> Agent library (super-admin): the built-in agents and skills (locked), the organisation's own, the guardrails and approvals. */
+/** Governance -> MindDesigner (super-admin): the built-in agents and skills (locked), the organisation's own, the guardrails and approvals. */
 export default function AgentLibraryTab({ userId, onBuilder }: { userId: string; onBuilder?: (open: boolean) => void }) {
   const qc = useQueryClient();
   const [kind, setKind] = useState<DefKind>('agent');

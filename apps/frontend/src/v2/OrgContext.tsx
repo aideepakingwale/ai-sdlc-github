@@ -97,7 +97,7 @@ function OrgPresets() {
   const canEdit = q.data?.canEdit ?? false;
   return (
     <div data-testid="v2-org-presets-list">
-      <p className="mb-3 text-xs text-slate-500">A preset pins a set of stack layers on a project in one click (Project Context → Stack). The built-in ones are starting points.</p>
+      <p className="mb-3 text-xs text-slate-500">A preset pins a set of stack layers on a project in one click (Project Mindset → Technology). The built-in ones are starting points.</p>
       <ul className="mb-3 space-y-1.5">
         {(q.data?.presets ?? []).map((p) => (
           <li key={p.id} className="rounded-lg border border-slate-200 bg-white px-3 py-2">

@@ -156,7 +156,7 @@ export default function ProjectContextPanel({
       >
         {!embedded && <div className={page ? 'flex items-center justify-between px-1 pb-3' : 'flex items-center justify-between border-b border-slate-200 bg-white px-5 py-3'}>
           <div>
-            {page ? <h1 className="font-display text-xl font-bold text-navy">Project Context</h1> : <div className="text-sm font-bold text-slate-800">📖 Project Context</div>}
+            {page ? <h1 className="font-display text-xl font-bold text-navy">Project Mindset</h1> : <div className="text-sm font-bold text-slate-800">📖 Project Mindset</div>}
             <div className="text-xs text-slate-500">
               Canon (binding rules) and Formwork (output templates) — injected into every agent run
               {!canAuthor && ' · read-only for your role'}

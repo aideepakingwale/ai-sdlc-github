@@ -184,7 +184,7 @@ export default function AgentBuilder({ defId, projectId, onBack }: { defId: stri
       </div>
 
       {message && <div className="mb-2 rounded-lg bg-slate-100 px-3 py-1.5 text-xs text-slate-700" role="status" data-testid="v2-builder-message">{message}</div>}
-      {readOnlyOpen && <Note>An open library {kind}. It is read-only here. Copy it to this project to change it, from the Open library list.</Note>}
+      {readOnlyOpen && <Note>An open library {kind}. It is read-only here. Copy it to this project to change it, from the Library.</Note>}
       {status === 'pending' && <Note tone="amber">Waiting for approval. It cannot be edited while it waits.</Note>}
       {status === 'rejected' && <Note tone="red">Changes requested: “{cur?.comment || 'See the audit report.'}” Edit and submit it again.</Note>}
       {status === 'published' && rights?.edit && <Note>This version is approved and cannot change. Editing it starts version {(cur?.version ?? 0) + 1}.</Note>}

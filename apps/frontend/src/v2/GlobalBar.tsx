@@ -39,7 +39,7 @@ export default function GlobalBar({
   projectName: string | null;
   crumb?: string;
   onGoToStage: (seq: number) => void;
-  /** Opens Project Context (the stack, rules and templates). */
+  /** Opens Project Mindset (the technology, rules and formats). */
   onOpenContext?: () => void;
   onLogout: () => void;
   onDelete: () => void;
