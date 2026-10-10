@@ -58,6 +58,10 @@ export const GenerateRequestSchema = z.object({
   maxTokens: z.number().int().positive().max(64_000).default(4096),   // providers clamp to their own ceiling (see bedrock.ts)
   /** Free-form tag surfaced in audit logs (e.g. persona or node name). */
   tag: z.string().optional(),
+  /** Correlation id from the orchestrator (token governance): echoed in the
+   *  gateway's logs and in every attempt record so a ledger row can be matched
+   *  to a gateway log line and a provider invocation. */
+  requestId: z.string().max(128).optional(),
   /** Model tier to route to (D-25); default auto = intent-based frontier chain. */
   tier: ModelTierSchema.default('auto'),
   /**
@@ -71,11 +75,52 @@ export const GenerateRequestSchema = z.object({
 });
 export type GenerateRequest = z.infer<typeof GenerateRequestSchema>;
 
+/**
+ * Token usage exactly as the provider reports it (token governance).
+ *
+ * `promptTokens` is the TOTAL input the model processed (uncached + cache read +
+ * cache write), so existing consumers that sum prompt + completion stay correct.
+ * The split is carried alongside it: with prompt caching on, Anthropic's own
+ * `input_tokens` is only the uncached remainder, and the cached part is reported
+ * separately - dropping it under-counts exactly the largest, most repeated calls.
+ */
 export const LlmUsageSchema = z.object({
   promptTokens: z.number().int().nonnegative(),
   completionTokens: z.number().int().nonnegative(),
+  /** Input that was neither read from nor written to the prompt cache. */
+  inputTokens: z.number().int().nonnegative().default(0),
+  cacheReadTokens: z.number().int().nonnegative().default(0),
+  cacheWriteTokens: z.number().int().nonnegative().default(0),
+  /** True when the provider reported no usage (e.g. a stream that died) and the
+   *  numbers are an estimate from the characters sent and received. */
+  estimated: z.boolean().default(false),
 });
 export type LlmUsage = z.infer<typeof LlmUsageSchema>;
+
+export const AttemptOutcomeSchema = z.enum(['ok', 'error', 'canceled', 'refused']);
+export type AttemptOutcome = z.infer<typeof AttemptOutcomeSchema>;
+
+/**
+ * One provider attempt (token governance). A logical generate call can make
+ * several - retries on the same provider and failover down the chain - and each
+ * can have been billed, so the orchestrator writes one ledger row per record.
+ */
+export const AttemptRecordSchema = z.object({
+  provider: LlmProviderIdSchema,
+  model: z.string(),
+  outcome: AttemptOutcomeSchema,
+  /** Failure class (rate_limit | transient | auth_or_billing | canceled | ...). */
+  errorKind: z.string().optional(),
+  /** Short error text, never request content. */
+  error: z.string().max(300).optional(),
+  usage: LlmUsageSchema,
+  /** The provider's own response/request id (matches Bedrock invocation logs). */
+  providerRequestId: z.string().optional(),
+  stopReason: z.string().optional(),
+  region: z.string().optional(),
+  latencyMs: z.number().int().nonnegative().default(0),
+});
+export type AttemptRecord = z.infer<typeof AttemptRecordSchema>;
 
 export const GenerateResponseSchema = z.object({
   provider: LlmProviderIdSchema,
@@ -90,6 +135,9 @@ export const GenerateResponseSchema = z.object({
    *  incomplete (truncated). Lets the orchestrator retry with a larger budget
    *  instead of failing to parse the cut-off JSON (D-103). */
   truncated: z.boolean().default(false),
+  /** Every provider attempt, in order, including failed and retried ones. The
+   *  last record with outcome `ok` is the one that answered. */
+  usageLog: z.array(AttemptRecordSchema).default([]),
 });
 export type GenerateResponse = z.infer<typeof GenerateResponseSchema>;
 

@@ -1036,7 +1036,7 @@ async def _llm_repair_diagram(container, kind: str, content: str, issues: list[s
     system_id = "diagram_repair.regenerate.system" if mode == "regenerate" else "diagram_repair.fix.system"
     detected = "\n".join(f"- {p}" for p in issues) or "(the renderer rejected it)"
     result = await container.llm.generate(
-        intent="standard", tag="diagram_repair", temperature=0, max_tokens=2048,
+        activity="stage.repair", intent="standard", tag="diagram_repair", temperature=0, max_tokens=2048,
         messages=[
             {"role": "system", "content": prompt_library.render(system_id, kind=kind)},
             {"role": "user", "content": prompt_library.render("diagram_repair.user", detected=detected, content=content)},

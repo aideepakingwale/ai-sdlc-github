@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from typing import Any, Callable, TypeVar
 
 import httpx
@@ -15,6 +16,7 @@ from pydantic import BaseModel, ValidationError
 
 from ..domain.errors import SdlcError
 from ..services.prompt_library import render as render_prompt
+from ..services.usage_ledger import synthesize_log
 
 log = logging.getLogger("llm")
 
@@ -66,6 +68,26 @@ def parse_json_loose(raw: str) -> Any:
     raise SdlcError("PROVIDER_ERROR", "LLM output was not valid JSON")
 
 
+def _usage_of(raw: dict[str, Any] | None, fallback_completion: int = 0) -> dict[str, int]:
+    """The gateway's usage object as ints. `promptTokens` is the TOTAL input (uncached + cache read +
+    cache write); the split rides along so the ledger and reports can show the cache share."""
+    u = raw or {}
+    return {
+        "promptTokens": int(u.get("promptTokens") or 0),
+        "completionTokens": int(u.get("completionTokens") if u.get("completionTokens") is not None else fallback_completion),
+        "inputTokens": int(u.get("inputTokens") if u.get("inputTokens") is not None else (u.get("promptTokens") or 0)),
+        "cacheReadTokens": int(u.get("cacheReadTokens") or 0),
+        "cacheWriteTokens": int(u.get("cacheWriteTokens") or 0),
+    }
+
+
+def _log_tokens(usage_log: list[dict[str, Any]]) -> tuple[int, int]:
+    """(prompt, completion) tokens summed over a gateway usage log, for traces of failed calls."""
+    p = sum(int((a.get("usage") or {}).get("promptTokens") or 0) for a in usage_log)
+    c = sum(int((a.get("usage") or {}).get("completionTokens") or 0) for a in usage_log)
+    return p, c
+
+
 class LlmResult(BaseModel):
     provider: str
     model: str
@@ -76,6 +98,8 @@ class LlmResult(BaseModel):
     # D-103: the provider stopped at the output-token cap — `content` is truncated
     # (incomplete JSON). generate_json uses this to retry with a larger budget.
     truncated: bool = False
+    # Groups this call's ledger rows (one per provider attempt) with the gateway's logs.
+    request_id: str = ""
 
 
 class LlmClient:
@@ -117,6 +141,9 @@ class LlmClient:
         # Observability hook (D-35): set post-construction; every generate()
         # records a span. Telemetry failures never propagate.
         self.telemetry: Any = None
+        # Token ledger (docs/token-governance.md): set post-construction; every provider attempt
+        # becomes one row, failures included. None in tests that do not need it.
+        self.ledger: Any = None
 
     async def _debug_enabled(self) -> bool:
         """Is request/response capture on? Env baseline OR the runtime setting in
@@ -146,6 +173,17 @@ class LlmClient:
     async def close(self) -> None:
         await self._http.aclose()
 
+    async def _record_usage(
+        self, *, request_id: str, usage_log: list[dict[str, Any]], tag: str | None, activity: str,
+        started: float, truncated: bool = False,
+    ) -> None:
+        if self.ledger is None or not usage_log:
+            return
+        await self.ledger.record(
+            request_id=request_id, usage_log=usage_log, tag=tag, activity=activity,
+            latency_ms=int((time.perf_counter() - started) * 1000), truncated=truncated,
+        )
+
     async def providers(self) -> dict[str, Any]:
         """Fetch the gateway's live provider roster (D-68): mode, effectiveMock and
         per-provider {model, vision, configured, breaker}. Used to build the
@@ -167,12 +205,14 @@ class LlmClient:
         json_mode: bool = False,
         temperature: float = 0.2,
         max_tokens: int = 4096,
+        activity: str,
         tag: str | None = None,
         tier: str = "auto",
         model: str | None = None,
         role: str | None = None,
     ) -> LlmResult:
-        """One generation. `role` ('reason' | 'generate' | 'light' | 'plan' | 'vision') routes
+        """One generation. `activity` says what the tokens are for (see usage_context.ACTIVITIES);
+        it is required so every call is attributable. `role` ('reason' | 'generate' | 'light' | 'plan' | 'vision') routes
         the call through the models configured for that role (see services/model_routes.py).
         An explicit `model` always wins. A model that fails is skipped for
         ROLE_COOLDOWN_SECONDS and the next in the role's chain is tried, ending on the
@@ -181,7 +221,7 @@ class LlmClient:
             role, model,
             lambda m: self._generate(
                 intent=intent, messages=messages, json_mode=json_mode, temperature=temperature,
-                max_tokens=max_tokens, tag=tag, tier=tier, model=m))
+                max_tokens=max_tokens, tag=tag, tier=tier, model=m, activity=activity))
 
     async def _live_routes(self) -> dict[str, list[str]]:
         """The admin's live routes (Redis `sdlc:settings:model_routes`), cached briefly so
@@ -239,11 +279,13 @@ class LlmClient:
         json_mode: bool = False,
         temperature: float = 0.2,
         max_tokens: int = 4096,
+        activity: str,
         tag: str | None = None,
         tier: str = "auto",
         model: str | None = None,
     ) -> LlmResult:
         started = time.perf_counter()
+        request_id = uuid.uuid4().hex
 
         # Debug capture (D-104): sanitise + cap the request once; images are dropped
         # (base64 would dwarf the prompt). Populated only when debug is enabled.
@@ -267,6 +309,7 @@ class LlmClient:
                     "temperature": temperature,
                     "maxTokens": max_tokens,
                     "tier": tier,
+                    "requestId": request_id,
                     **({"tag": tag} if tag else {}),
                     **({"model": model} if model else {}),  # per-step model override (D-68)
                 },
@@ -278,20 +321,25 @@ class LlmClient:
         if res.status_code != 200:
             detail = res.json().get("error", {}) if res.headers.get("content-type", "").startswith("application/json") else {}
             message = detail.get("message", f"ai-client returned {res.status_code}")
-            await _trace(tier=tier, status="error", error=message)
+            # Failed attempts can still have been billed (a refusal, a stream that died): account for them.
+            failed_log = list((detail.get("details") or {}).get("usageLog") or [])
+            await self._record_usage(request_id=request_id, usage_log=failed_log, tag=tag, activity=activity, started=started)
+            fp, fc = _log_tokens(failed_log)
+            await _trace(tier=tier, status="error", error=message, prompt_tokens=fp, completion_tokens=fc)
             raise SdlcError("PROVIDER_ERROR", message)
         data = res.json()
+        usage_log = list(data.get("usageLog") or []) or synthesize_log(data)
+        await self._record_usage(request_id=request_id, usage_log=usage_log, tag=tag, activity=activity,
+                                 started=started, truncated=bool(data.get("truncated", False)))
         result = LlmResult(
             provider=data["provider"],
             model=data["model"],
             content=data["content"],
-            usage={
-                "promptTokens": data["usage"]["promptTokens"],
-                "completionTokens": data["usage"]["completionTokens"],
-            },
+            usage=_usage_of(data["usage"]),
             attempts=data.get("attempts", []),
             tier=data.get("tier", tier),
             truncated=bool(data.get("truncated", False)),
+            request_id=request_id,
         )
         await _trace(
             provider=result.provider, model=result.model, tier=result.tier,
@@ -309,6 +357,7 @@ class LlmClient:
         on_delta: Callable[[str], Any],
         temperature: float = 0.2,
         max_tokens: int = 16000,
+        activity: str,
         tag: str | None = None,
         tier: str = "auto",
         model: str | None = None,
@@ -321,7 +370,7 @@ class LlmClient:
             role, model,
             lambda m: self._generate_stream(
                 intent=intent, messages=messages, on_delta=on_delta, temperature=temperature,
-                max_tokens=max_tokens, tag=tag, tier=tier, model=m))
+                max_tokens=max_tokens, tag=tag, tier=tier, model=m, activity=activity))
 
     async def _generate_stream(
         self,
@@ -331,11 +380,13 @@ class LlmClient:
         on_delta: Callable[[str], Any],
         temperature: float = 0.2,
         max_tokens: int = 16000,
+        activity: str,
         tag: str | None = None,
         tier: str = "auto",
         model: str | None = None,
     ) -> LlmResult:
         started = time.perf_counter()
+        request_id = uuid.uuid4().hex
         debug = await self._debug_enabled()
         req_body = self._cap(_sanitize_for_trace(messages)) if debug else None
         parts: list[str] = []
@@ -345,7 +396,7 @@ class LlmClient:
                 "POST", f"{self._base}/v1/generate/stream",
                 json={
                     "intent": intent, "messages": messages, "json": False,
-                    "temperature": temperature, "maxTokens": max_tokens, "tier": tier,
+                    "temperature": temperature, "maxTokens": max_tokens, "tier": tier, "requestId": request_id,
                     **({"tag": tag} if tag else {}),
                     **({"model": model} if model else {}),
                 },
@@ -373,20 +424,28 @@ class LlmClient:
                     elif kind == "done":
                         final = obj
                     elif kind == "error":
+                        # Attempts that failed after streaming began can have been billed: account for them.
+                        await self._record_usage(request_id=request_id, usage_log=list(obj.get("usageLog") or []),
+                                                 tag=tag, activity=activity, started=started)
+                        await self._stream_trace(tag, started, req_body, status="error", error=obj.get("message") or "stream error",
+                                                 usage_log=list(obj.get("usageLog") or []))
                         raise SdlcError("PROVIDER_ERROR", obj.get("message") or "stream error")
         except httpx.HTTPError as err:
+            await self._stream_trace(tag, started, req_body, status="error", error=f"ai-client unreachable: {err}")
             raise SdlcError("PROVIDER_ERROR", f"ai-client unreachable: {err}") from err
         content = (final.get("content") if final.get("content") else "".join(parts)) or ""
-        usage = final.get("usage") or {}
+        usage_log = list(final.get("usageLog") or []) or synthesize_log(final)
+        await self._record_usage(request_id=request_id, usage_log=usage_log, tag=tag, activity=activity,
+                                 started=started, truncated=bool(final.get("truncated", False)))
         result = LlmResult(
             provider=final.get("provider", "unknown"),
             model=final.get("model", "unknown"),
             content=content,
-            usage={"promptTokens": usage.get("promptTokens", 0),
-                   "completionTokens": usage.get("completionTokens", len(content) // 4)},
+            usage=_usage_of(final.get("usage"), fallback_completion=len(content) // 4),
             attempts=[],
             tier=final.get("tier", tier),
             truncated=bool(final.get("truncated", False)),
+            request_id=request_id,
         )
         if self.telemetry is not None:
             await self.telemetry.record(
@@ -397,6 +456,19 @@ class LlmClient:
             )
         return result
 
+    async def _stream_trace(
+        self, tag: str | None, started: float, req_body: str | None, *, status: str, error: str,
+        usage_log: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """A failed stream used to leave no trace at all."""
+        if self.telemetry is None:
+            return
+        p, c = _log_tokens(usage_log or [])
+        await self.telemetry.record(
+            kind="llm", tag=tag, latency_ms=int((time.perf_counter() - started) * 1000),
+            status=status, error=error, prompt_tokens=p, completion_tokens=c, request_body=req_body,
+        )
+
     async def generate_json(
         self,
         *,
@@ -405,6 +477,7 @@ class LlmClient:
         schema: type[T],
         temperature: float = 0.2,
         max_tokens: int = 8192,
+        activity: str,
         tag: str | None = None,
         tier: str = "auto",
         model: str | None = None,
@@ -433,7 +506,7 @@ class LlmClient:
             result = await self.generate(
                 intent=intent, messages=msgs, json_mode=True,
                 temperature=temperature, max_tokens=effective_max, tag=tag, tier=tier, model=model,
-                role=role,
+                role=role, activity=activity,
             )
             # Provider says it hit the cap → grow the budget and retry before parsing
             # (parsing truncated JSON is pointless).

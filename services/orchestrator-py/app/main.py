@@ -40,6 +40,7 @@ from .services.publisher import PublishService
 from .services.rag import RagService
 from .services.skills import SkillService
 from .services.telemetry import TelemetryService
+from .services.usage_ledger import UsageLedger
 from .services.workflow import WorkflowService
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -121,6 +122,7 @@ async def lifespan(app: FastAPI):
     monitor = BuildMonitor(dynamo, redis, mcp, db, audit, settings)
     telemetry = TelemetryService(db)  # AI observability (D-35)
     llm.telemetry = telemetry
+    llm.ledger = UsageLedger(db)       # token ledger: one row per provider attempt (docs/token-governance.md)
     canon = CanonService(db, authz, audit)                      # D-38
     formworks = FormworkService(db, authz, audit, content, canon)
     memory = MemoryService(db, authz, audit)

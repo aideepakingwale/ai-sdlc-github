@@ -34,7 +34,7 @@ class _Recorder(LlmClient):
 
 
 async def _call(c, **kw):
-    return await c.generate(intent="standard", messages=[{"role": "user", "content": "x"}], **kw)
+    return await c.generate(intent="standard", messages=[{"role": "user", "content": "x"}], activity="other", **kw)
 
 
 async def test_light_role_uses_the_configured_fast_model():
@@ -81,7 +81,7 @@ async def test_generate_json_passes_the_role_through():
 
     c = _Recorder({"light": "bedrock/haiku"})
     data, _ = await c.generate_json(intent="standard", messages=[{"role": "user", "content": "x"}],
-                                    schema=Out, role="light")
+                                    schema=Out, role="light", activity="other")
     assert data.ok and c.models == ["bedrock/haiku"]
 
 

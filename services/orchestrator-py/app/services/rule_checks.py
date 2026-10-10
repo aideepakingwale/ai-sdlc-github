@@ -58,7 +58,7 @@ class RuleChecker:
             rules_text = "\n".join(f"- id={r['id']} [{r['category']}] {r['title']}: {r['body']}" for r in rules)
             docs_text = "\n\n".join(f"### {t}\n{x}" for _, t, x in docs)
             res, _ = await self._llm.generate_json(
-                intent="standard", tag="rule_check", schema=Verdicts, temperature=0, max_tokens=2500, max_attempts=2, role=role_of("rule-checker", "light"),
+                activity="stage.review", intent="standard", tag="rule_check", schema=Verdicts, temperature=0, max_tokens=2500, max_attempts=2, role=role_of("rule-checker", "light"),
                 messages=[{"role": "system", "content": render_prompt("rule_check.system")},
                           {"role": "user", "content": render_prompt("rule_check.user", rules=rules_text, documents=docs_text)}])
             by_rule = {r["id"]: r for r in rules}

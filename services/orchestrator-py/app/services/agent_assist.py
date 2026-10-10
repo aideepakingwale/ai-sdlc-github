@@ -95,7 +95,7 @@ class AgentAssist:
         if len(doc) > MAX_DOC:
             raise SdlcError("VALIDATION_FAILED", f"The document is longer than {MAX_DOC:,} characters. Use the part the agent needs")
         res, llm = await self._llm.generate_json(
-            intent="generation", tag="agent_draft", schema=Draft, temperature=0.2, max_tokens=3000, max_attempts=2, role="reason",
+            activity="agent.build", intent="generation", tag="agent_draft", schema=Draft, temperature=0.2, max_tokens=3000, max_attempts=2, role="reason",
             messages=[{"role": "system", "content": render_prompt("agent_draft.system")},
                       {"role": "user", "content": render_prompt("agent_draft.user", kind=kind, sources=", ".join(AGENT_SOURCES) if kind == "agent" else "user (typed by the person running the skill)",
                                                                   artefacts=", ".join(ARTEFACTS), document=doc)}])
@@ -135,7 +135,7 @@ class AgentAssist:
         first, second = (row["b"], row["a"]) if swap else (row["a"], row["b"])
         try:
             j, llm = await self._llm.generate_json(
-                intent="standard", tag="agent_compare", schema=Judgement, temperature=0, max_tokens=600, max_attempts=2, role="reason",
+                activity="agent.build", intent="standard", tag="agent_compare", schema=Judgement, temperature=0, max_tokens=600, max_attempts=2, role="reason",
                 messages=[{"role": "system", "content": render_prompt("agent_compare.system")},
                           {"role": "user", "content": render_prompt("agent_compare.user", description=body.get("description") or name,
                                                                       input=json.dumps(case["inputs"], ensure_ascii=False)[:3000],

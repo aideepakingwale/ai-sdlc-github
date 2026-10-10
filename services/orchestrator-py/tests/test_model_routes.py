@@ -67,7 +67,7 @@ class _Rec(LlmClient):
 
 
 async def _gen(c, **kw):
-    return await c.generate(intent="standard", messages=[{"role": "user", "content": "x"}], **kw)
+    return await c.generate(intent="standard", messages=[{"role": "user", "content": "x"}], activity="other", **kw)
 
 
 async def test_the_chain_is_tried_in_order_then_the_normal_chain():
@@ -103,7 +103,7 @@ async def test_roles_are_independent_and_an_explicit_model_wins():
 
 async def test_streaming_calls_are_routed_too():
     c = _Rec({"generate": ["bedrock/sonnet"]})
-    await c.generate_stream(intent="generation", messages=[], on_delta=lambda t: None, role="generate")
+    await c.generate_stream(intent="generation", messages=[], on_delta=lambda t: None, role="generate", activity="other")
     assert c.calls == ["stream:bedrock/sonnet"]
 
 

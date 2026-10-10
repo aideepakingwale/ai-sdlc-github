@@ -179,7 +179,7 @@ async def _fact_check(gs: GraphState, config: RunnableConfig) -> dict[str, Any]:
             f"[P{a.phase}] {a.type}: {a.summary[:150]}" for a in state.context_window
         )[:8_000]
         data, _ = await deps.llm.generate_json(
-            intent="standard", tag="fact_check_node", temperature=0, max_tokens=1024, schema=FactCheck,
+            activity="stage.review", intent="standard", tag="fact_check_node", temperature=0, max_tokens=1024, schema=FactCheck,
             role=role_of("fact-checker", "light"),
             messages=[
                 {"role": "system", "content": render_prompt("fact_check.system")},

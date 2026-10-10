@@ -315,7 +315,7 @@ async def _generate_markdown_in_parts(
     stay consistent and do not repeat each other, and joined in outline order. Used when the single-shot
     call is cut off at the model's output limit."""
     outline, res = await deps.llm.generate_json(
-        intent=intent, tag=f"{base_tag}:{field_name}:outline", max_attempts=2,
+        activity="stage.generate", intent=intent, tag=f"{base_tag}:{field_name}:outline", max_attempts=2,
         messages=[{"role": "system", "content": system, "cache": True},
                   {"role": "user", "content": f"{user}\n\n" + render_prompt("long_document.outline.user", field_name=field_name)}],
         schema=_DocOutline, max_tokens=4_000, model=model, role=role,
@@ -332,7 +332,7 @@ async def _generate_markdown_in_parts(
         mine = "; ".join(sec.title for sec in group)
         async with sem:
             r = await deps.llm.generate(
-                intent=intent, tag=f"{base_tag}:{field_name}:part{idx + 1}", max_tokens=max_tokens, model=model, role=role,
+                activity="stage.generate", intent=intent, tag=f"{base_tag}:{field_name}:part{idx + 1}", max_tokens=max_tokens, model=model, role=role,
                 messages=[{"role": "system", "content": system, "cache": True},
                           {"role": "user", "content": f"{user}\n\n" + render_prompt(
                               "long_document.part.user", part=idx + 1, parts=len(groups), field_name=field_name, outline=toc, sections=mine,
@@ -462,7 +462,7 @@ async def _generate_with_specialists(
             try:
                 try:
                     inst, res = await deps.llm.generate_json(
-                        intent=intent, tag=f"{base_tag}:{spec.id}",
+                        activity="stage.generate", intent=intent, tag=f"{base_tag}:{spec.id}",
                         messages=[{"role": "system", "content": prompt.system, "cache": True}, {"role": "user", "content": user}],
                         schema=wrapper, max_tokens=max_tokens, model=(model if role == "generate" else None), role=role,
                         max_attempts=1 if single_text else 3)
@@ -504,7 +504,7 @@ async def _generate_with_specialists(
             role = state.model_role or role_for_stage(state.stage_template)
             try:
                 inst, res = await deps.llm.generate_json(
-                    intent=intent, tag=f"{base_tag}:stage", messages=[{"role": "system", "content": stage_system, "cache": True}, {"role": "user", "content": user}],
+                    activity="stage.generate", intent=intent, tag=f"{base_tag}:stage", messages=[{"role": "system", "content": stage_system, "cache": True}, {"role": "user", "content": user}],
                     schema=wrapper, max_tokens=max_tokens, model=model, role=role)
             except Exception as err:  # noqa: BLE001
                 for f in stage_wide:
@@ -596,7 +596,7 @@ async def _generate_phase_split(
         long_text = fi.annotation is str            # a markdown document field (e.g. lldMarkdown)
         try:
             inst, res = await deps.llm.generate_json(
-                intent=intent, tag=f"{base_tag}:{field_name}",
+                activity="stage.generate", intent=intent, tag=f"{base_tag}:{field_name}",
                 messages=[{"role": "system", "content": system, "cache": True},
                           {"role": "user", "content": instruction}],
                 schema=wrapper, max_tokens=max_tokens, model=model, role=role,
@@ -1178,7 +1178,7 @@ async def _generate(deps: AgentDeps, state: AgentState, emit: Emit, *, rework: s
         # D-98: cache the (large, stable) system prompt so the repair retry reuses it
         # as a cached prefix (~10% input cost) instead of re-billing the context.
         data, result = await deps.llm.generate_json(
-            intent=_intent, tag=_tag,
+            activity="stage.generate", intent=_intent, tag=_tag,
             messages=[{"role": "system", "content": system, "cache": True}, {"role": "user", "content": user}],
             schema=PHASE_SCHEMAS[state.stage_template],
             max_tokens=_max_tokens,
@@ -1329,7 +1329,7 @@ async def _validate_output(
     verdict = ValidationVerdict(ok=True)
     try:
         data, _ = await deps.llm.generate_json(
-            intent="standard", tag=f"validation_stage{state.current_phase}",
+            activity="stage.validate", intent="standard", tag=f"validation_stage{state.current_phase}",
             temperature=0, max_tokens=1024, schema=ValidationVerdict,
             model=state.model_overrides.get("validate") or None,  # per-step model override (D-68)
             role=role_of("quality-validator", "light"),
@@ -2067,7 +2067,7 @@ async def _run_phase3(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
         emit({"type": "node", "node": "agent", "label": f"Spectral FAIL ({len(errors)} errors) — auto-correcting"})
         system, user = openapi_fix_prompt(openapi_yaml, errors)
         fix, _ = await deps.llm.generate_json(
-            intent="generation", tag="phase3_openapi_fix", schema=OpenapiFix, temperature=0,
+            activity="stage.repair", intent="generation", tag="phase3_openapi_fix", schema=OpenapiFix, temperature=0,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         )
         openapi_yaml = fix.openapiYaml
@@ -2488,7 +2488,7 @@ async def _run_custom(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAg
     user = render_prompt("phase.custom.user", user_input=user_input, context_block=context_block or "(none)")
 
     data, result = await deps.llm.generate_json(
-        intent="generation", tag=f"custom_stage{state.current_phase}",
+        activity="stage.generate", intent="generation", tag=f"custom_stage{state.current_phase}",
         temperature=0.2, max_tokens=6144, schema=CustomPhaseOutput,
         model=state.model_overrides.get("generate") or None,
         role=state.model_role or role_for_stage(7),
@@ -2667,7 +2667,7 @@ async def _stream_document(
             task.add_done_callback(saves.discard)
 
     result = await deps.llm.generate_stream(
-        intent="generation", tag=tag,
+        activity="stage.generate", intent="generation", tag=tag,
         messages=[{"role": "system", "content": system, "cache": True},
                   {"role": "user", "content": user}],
         on_delta=_on_delta,

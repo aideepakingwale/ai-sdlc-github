@@ -97,7 +97,7 @@ class RuleAssist:
         rules: list[dict[str, Any]] = []
         try:
             res, _ = await self._llm.generate_json(
-                intent="standard", tag="rule_draft", schema=RuleDraft, temperature=0.1, max_tokens=4000, max_attempts=2, role=role_of("rule-drafter", "generate"),
+                activity="rules.draft", intent="standard", tag="rule_draft", schema=RuleDraft, temperature=0.1, max_tokens=4000, max_attempts=2, role=role_of("rule-drafter", "generate"),
                 messages=[{"role": "system", "content": render_prompt("rule_draft.system")},
                           {"role": "user", "content": render_prompt("rule_draft.user", document=text)}])
             rules = [r.model_dump() for r in res.rules]

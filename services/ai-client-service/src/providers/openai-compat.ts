@@ -4,6 +4,7 @@ import {
   estimateTokens,
   fitMaxTokens,
   isAbortError,
+  makeUsage,
   ProviderCallError,
   type LlmProvider,
   type ProviderResult,
@@ -80,20 +81,33 @@ export function createOpenAiCompatProvider(opts: OpenAiCompatOpts): LlmProvider 
 
       const data = (await res.json()) as {
         choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
-        usage?: { prompt_tokens?: number; completion_tokens?: number };
+        usage?: {
+          prompt_tokens?: number; completion_tokens?: number;
+          prompt_tokens_details?: { cached_tokens?: number };
+        };
         model?: string;
+        id?: string;
       };
+      // prompt_tokens already INCLUDES cached tokens on OpenAI-compatible APIs.
+      const cached = data.usage?.prompt_tokens_details?.cached_tokens ?? 0;
+      const usage = makeUsage(
+        Math.max(0, (data.usage?.prompt_tokens ?? 0) - cached),
+        data.usage?.completion_tokens ?? 0,
+        { cacheRead: cached },
+      );
+      const finish = data.choices?.[0]?.finish_reason;
       const content = data.choices?.[0]?.message?.content;
       if (typeof content !== 'string') {
-        throw new ProviderCallError(opts.id, 'transient', `${opts.id} returned no content`);
+        throw new ProviderCallError(opts.id, 'transient', `${opts.id} returned no content`, undefined, {
+          usage, providerRequestId: data.id, stopReason: finish,
+        });
       }
       return {
         content,
         model: data.model ?? model,
-        usage: {
-          promptTokens: data.usage?.prompt_tokens ?? 0,
-          completionTokens: data.usage?.completion_tokens ?? 0,
-        },
+        usage,
+        providerRequestId: data.id,
+        stopReason: finish,
         // D-103: `length` finish_reason means the output hit the max_tokens cap.
         truncated: data.choices?.[0]?.finish_reason === 'length',
       };

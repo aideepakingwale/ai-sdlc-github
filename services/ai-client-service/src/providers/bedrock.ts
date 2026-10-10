@@ -1,6 +1,9 @@
 import { AnthropicBedrock } from '@anthropic-ai/bedrock-sdk';
 import type { GenerateRequest } from '@sdlc/shared';
-import { classifyStatus, isAbortError, ProviderCallError, type LlmProvider, type ProviderResult } from './types.js';
+import {
+  classifyStatus, estimateTokens, isAbortError, makeUsage, ProviderCallError,
+  type FailureInfo, type LlmProvider, type ProviderResult,
+} from './types.js';
 
 /**
  * AWS Bedrock provider (D-33): Claude via the Bedrock Mantle client — the
@@ -102,52 +105,105 @@ export function createBedrockProvider(opts: {
       // still returns the complete assembled Message.
       const timeout = AbortSignal.timeout(opts.timeoutMs ?? 600_000);
       const combined = AbortSignal.any([signal, timeout]);
+
+      // Token governance: a call that fails after Bedrock started generating is still
+      // billed, so keep what the stream knows. `currentMessage` is the SDK's running
+      // snapshot (input + cache usage arrive with message_start; the final output
+      // count only at the end, so a mid-stream failure estimates the output from the
+      // characters received and says so via `estimated`).
+      const cl = client;
+      const open = () => cl.messages.stream(
+        {
+          model: modelId,
+          max_tokens: maxTokens,
+          // system/messages carry optional cache_control blocks (D-98) that this
+          // SDK version's param types don't model; cast at this adapter boundary.
+          ...(system ? { system: system as never } : {}),
+          messages: messages as never,
+        },
+        { signal: combined },
+      );
+      let stream: ReturnType<typeof open> | undefined;
+      let streamedChars = 0;
+      const requestChars = JSON.stringify(system ?? '').length + JSON.stringify(messages).length;
+      const idOf = (fallback?: string): string | undefined => {
+        const h = stream?.response?.headers?.get?.('x-amzn-requestid');
+        return h || stream?.request_id || fallback || undefined;
+      };
+      const failure = (): FailureInfo => {
+        const snap = stream?.currentMessage;
+        const u = snap?.usage;
+        const base = { providerRequestId: idOf(snap?.id), stopReason: snap?.stop_reason ?? undefined, region: opts.region };
+        const hasInput = Boolean(u && (u.input_tokens > 0 || (u.cache_read_input_tokens ?? 0) > 0 || (u.cache_creation_input_tokens ?? 0) > 0));
+        if (u && hasInput) {
+          const est = Math.ceil(streamedChars / 4);
+          const out = Math.max(u.output_tokens ?? 0, est);
+          return {
+            ...base,
+            usage: makeUsage(u.input_tokens, out, {
+              cacheRead: u.cache_read_input_tokens ?? 0,
+              cacheWrite: u.cache_creation_input_tokens ?? 0,
+              estimated: out !== (u.output_tokens ?? 0),
+            }),
+          };
+        }
+        if (streamedChars > 0) {
+          return { ...base, usage: makeUsage(estimateTokens('x'.repeat(requestChars)), Math.ceil(streamedChars / 4), { estimated: true }) };
+        }
+        return base; // never started generating (throttled, auth, bad request): nothing billed
+      };
+
       try {
-        const stream = client.messages.stream(
-          {
-            model: modelId,
-            max_tokens: maxTokens,
-            // system/messages carry optional cache_control blocks (D-98) that this
-            // SDK version's param types don't model; cast at this adapter boundary.
-            ...(system ? { system: system as never } : {}),
-            messages: messages as never,
-          },
-          { signal: combined },
-        );
+        stream = open();
         // D-112 live streaming: forward each text delta to the caller as it arrives.
-        if (onText) stream.on('text', (delta: string) => { try { onText(delta); } catch { /* ignore */ } });
+        stream.on('text', (delta: string) => {
+          streamedChars += delta.length;
+          if (onText) { try { onText(delta); } catch { /* ignore */ } }
+        });
         const res = await stream.finalMessage();
         const content = res.content
           .filter((b): b is Extract<(typeof res.content)[number], { type: 'text' }> => b.type === 'text')
           .map((b) => b.text)
           .join('');
+        // `input_tokens` is only the UNCACHED part when prompt caching is used; cache
+        // reads and writes are reported separately and must be added back (F1).
+        const usage = makeUsage(res.usage?.input_tokens ?? 0, res.usage?.output_tokens ?? 0, {
+          cacheRead: res.usage?.cache_read_input_tokens ?? 0,
+          cacheWrite: res.usage?.cache_creation_input_tokens ?? 0,
+        });
+        const providerRequestId = idOf(res.id);
         if (!content || res.stop_reason === 'refusal') {
-          throw new ProviderCallError('bedrock', 'transient', `bedrock returned no text (stop: ${res.stop_reason})`);
+          // Billed even though unusable: carry the real usage on the error.
+          throw new ProviderCallError('bedrock', 'transient', `bedrock returned no text (stop: ${res.stop_reason})`, undefined, {
+            usage, providerRequestId, stopReason: res.stop_reason ?? undefined, region: opts.region,
+          });
         }
         return {
           content,
           model: res.model ?? modelId,
-          usage: {
-            promptTokens: res.usage?.input_tokens ?? 0,
-            completionTokens: res.usage?.output_tokens ?? 0,
-          },
+          usage,
+          providerRequestId,
+          stopReason: res.stop_reason ?? undefined,
+          region: opts.region,
           // D-103: the model hit the output-token cap — content is incomplete.
           truncated: res.stop_reason === 'max_tokens',
         };
       } catch (err) {
         if (err instanceof ProviderCallError) throw err;
+        const info = failure();
         // D-103: an abort (caller disconnect or our own timeout) is not a provider
         // fault — raise `canceled` so the router doesn't trip the breaker.
         if (isAbortError(err, combined)) {
-          throw new ProviderCallError('bedrock', 'canceled', `bedrock call canceled: ${(err as Error).message ?? String(err)}`);
+          throw new ProviderCallError('bedrock', 'canceled', `bedrock call canceled: ${(err as Error).message ?? String(err)}`, undefined, info);
         }
         // The Anthropic SDK throws typed APIError subclasses carrying `status`;
         // duck-type so we don't depend on instanceof across package instances.
         const status = (err as { status?: unknown }).status;
         if (typeof status === 'number') {
-          throw classifyStatus('bedrock', status, (err as Error).message ?? '');
+          const e = classifyStatus('bedrock', status, (err as Error).message ?? '');
+          throw new ProviderCallError(e.provider, e.kind, e.message, e.status, info);
         }
-        throw new ProviderCallError('bedrock', 'transient', `bedrock call failed: ${String(err)}`);
+        throw new ProviderCallError('bedrock', 'transient', `bedrock call failed: ${String(err)}`, undefined, info);
       }
     },
   };

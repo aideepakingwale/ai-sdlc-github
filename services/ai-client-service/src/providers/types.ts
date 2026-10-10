@@ -1,4 +1,4 @@
-import type { GenerateRequest, LlmProviderId, LlmUsage } from '@sdlc/shared';
+import type { AttemptRecord, GenerateRequest, LlmProviderId, LlmUsage } from '@sdlc/shared';
 
 export interface ProviderResult {
   content: string;
@@ -7,6 +7,41 @@ export interface ProviderResult {
   /** True when the provider stopped at the output-token cap (max_tokens /
    *  length / MAX_TOKENS) — the content is incomplete (D-103). */
   truncated?: boolean;
+  /** Provider-side ids and context for token governance (kept per attempt). */
+  providerRequestId?: string;
+  stopReason?: string;
+  region?: string;
+}
+
+/** Build a full usage record. `promptTokens` is always the TOTAL input
+ *  (uncached + cache read + cache write); the split rides alongside it. */
+export function makeUsage(
+  input: number,
+  output: number,
+  extra: { cacheRead?: number; cacheWrite?: number; estimated?: boolean } = {},
+): LlmUsage {
+  const cacheRead = Math.max(0, Math.trunc(extra.cacheRead ?? 0));
+  const cacheWrite = Math.max(0, Math.trunc(extra.cacheWrite ?? 0));
+  const uncached = Math.max(0, Math.trunc(input));
+  return {
+    promptTokens: uncached + cacheRead + cacheWrite,
+    completionTokens: Math.max(0, Math.trunc(output)),
+    inputTokens: uncached,
+    cacheReadTokens: cacheRead,
+    cacheWriteTokens: cacheWrite,
+    estimated: extra.estimated === true,
+  };
+}
+
+export const ZERO_USAGE: LlmUsage = makeUsage(0, 0);
+
+/** What a failed attempt still tells us (token governance): tokens the provider
+ *  billed before the call failed, and the ids needed to find it in provider logs. */
+export interface FailureInfo {
+  usage?: LlmUsage;
+  providerRequestId?: string;
+  stopReason?: string;
+  region?: string;
 }
 
 /**
@@ -21,11 +56,17 @@ export interface ProviderResult {
 export type ProviderFailureKind = 'rate_limit' | 'auth_or_billing' | 'transient' | 'canceled';
 
 export class ProviderCallError extends Error {
+  /** Attached by the router when it rethrows, so the caller can still account for
+   *  every attempt (and its tokens) that preceded the failure. */
+  usageLog?: AttemptRecord[];
+
   constructor(
     readonly provider: LlmProviderId,
     readonly kind: ProviderFailureKind,
     message: string,
     readonly status?: number,
+    /** Set by a provider when the failed call was still (partly) billed. */
+    readonly info: FailureInfo = {},
   ) {
     super(message);
     this.name = 'ProviderCallError';

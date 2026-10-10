@@ -514,7 +514,7 @@ class CodeEditService:
                 messages = [{"role": "system", "content": system, "cache": True}] + _compact(convo)
                 try:
                     step, res = await self._llm.generate_json(
-                        intent="generation", tag="code_edit", schema=AgentStep, messages=messages, temperature=0.1,
+                        activity="code.assist", intent="generation", tag="code_edit", schema=AgentStep, messages=messages, temperature=0.1,
                         max_tokens=16_000, max_attempts=2, role=role)
                 except SdlcError as err:
                     emit({"type": "error", "code": err.code, "message": f"The assistant could not continue: {err.message}"})

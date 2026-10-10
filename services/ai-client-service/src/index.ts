@@ -214,8 +214,10 @@ app.post('/v1/generate', async (req, reply) => {
         model: res.model,
         intent: parsed.data.intent,
         tag: parsed.data.tag,
+        requestId: parsed.data.requestId,
         ms: Date.now() - started,
         usage: res.usage,
+        attempts: res.usageLog.length,
       },
       'generate ok',
     );
@@ -224,8 +226,11 @@ app.post('/v1/generate', async (req, reply) => {
     if (isSdlcError(err)) {
       return reply.status(err.httpStatus).send({ error: { code: err.code, message: err.message, details: err.details } });
     }
-    log.error({ err }, 'generate failed');
-    return reply.status(500).send({ error: { code: 'INTERNAL', message: 'Internal error' } });
+    // A cancelled call is not an SdlcError, but it may still have been billed:
+    // hand back whatever attempts were made so the caller can account for them.
+    const usageLog = (err as { usageLog?: unknown }).usageLog;
+    log.error({ err, requestId: parsed.data.requestId }, 'generate failed');
+    return reply.status(500).send({ error: { code: 'INTERNAL', message: 'Internal error', details: { usageLog: usageLog ?? [] } } });
   }
 });
 
@@ -258,14 +263,16 @@ app.post('/v1/generate/stream', async (req, reply) => {
     if (!streamed && res.content) write({ type: 'delta', text: res.content }); // non-streaming provider
     write({
       type: 'done', provider: res.provider, model: res.model, usage: res.usage,
-      tier: res.tier, truncated: res.truncated ?? false, content: res.content,
+      tier: res.tier, truncated: res.truncated ?? false, content: res.content, usageLog: res.usageLog,
     });
-    log.info({ provider: res.provider, model: res.model, tag: parsed.data.tag, ms: Date.now() - started, streamed }, 'generate/stream ok');
+    log.info({ provider: res.provider, model: res.model, tag: parsed.data.tag, requestId: parsed.data.requestId, ms: Date.now() - started, streamed }, 'generate/stream ok');
     reply.raw.end();
   } catch (err) {
     const msg = isSdlcError(err) ? err.message : 'Internal error';
-    log.error({ err }, 'generate/stream failed');
-    try { write({ type: 'error', message: msg }); } catch { /* client gone */ }
+    log.error({ err, requestId: parsed.data.requestId }, 'generate/stream failed');
+    // Failed attempts can have been billed (tokens streamed before the failure).
+    const usageLog = (isSdlcError(err) ? (err.details as { usageLog?: unknown } | undefined)?.usageLog : (err as { usageLog?: unknown }).usageLog) ?? [];
+    try { write({ type: 'error', message: msg, usageLog }); } catch { /* client gone */ }
     reply.raw.end();
   }
 });

@@ -75,7 +75,7 @@ async def test_engine_runs_each_agent_with_its_own_prompt_role_and_leaves_a_reco
     seen: list[dict] = []
 
     class Llm:
-        async def generate_json(self, *, intent, tag, messages, schema, max_tokens, model=None, role=None, max_attempts=3):
+        async def generate_json(self, *, intent, tag, messages, schema, max_tokens, model=None, role=None, max_attempts=3, activity=None):
             fields = list(schema.model_fields)
             seen.append({"tag": tag, "role": role, "system": messages[0]["content"], "user": messages[1]["content"], "fields": fields})
             vals = {f: _minimal_value(schema.model_fields[f].annotation, "x", _min_len(schema.model_fields[f])) for f in fields}
@@ -123,7 +123,7 @@ async def test_regenerating_one_artefact_runs_only_its_agent_and_reuses_the_rest
     calls: list[str] = []
 
     class Llm:
-        async def generate_json(self, *, intent, tag, messages, schema, max_tokens, model=None, role=None, max_attempts=3):
+        async def generate_json(self, *, intent, tag, messages, schema, max_tokens, model=None, role=None, max_attempts=3, activity=None):
             calls.append(tag.split(":")[-1])
             fields = list(schema.model_fields)
             vals = {f: _minimal_value(schema.model_fields[f].annotation, "new", _min_len(schema.model_fields[f])) for f in fields}

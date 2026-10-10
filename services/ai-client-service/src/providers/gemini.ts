@@ -1,5 +1,5 @@
 import type { GenerateRequest } from '@sdlc/shared';
-import { classifyStatus, isAbortError, ProviderCallError, type LlmProvider, type ProviderResult } from './types.js';
+import { classifyStatus, isAbortError, makeUsage, ProviderCallError, type LlmProvider, type ProviderResult } from './types.js';
 
 /** Google Gemini Flash via the generateContent REST API. */
 export function createGeminiProvider(opts: {
@@ -58,17 +58,34 @@ export function createGeminiProvider(opts: {
 
       const data = (await res.json()) as {
         candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }>;
-        usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+        usageMetadata?: {
+          promptTokenCount?: number; candidatesTokenCount?: number;
+          cachedContentTokenCount?: number; thoughtsTokenCount?: number;
+        };
+        responseId?: string;
       };
       const content = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('');
-      if (!content) throw new ProviderCallError('gemini', 'transient', 'gemini returned no content');
+      // Gemini's promptTokenCount already INCLUDES cached content, and thinking
+      // ("thoughts") tokens are billed as output but not counted in candidatesTokenCount.
+      const um = data.usageMetadata;
+      const cached = um?.cachedContentTokenCount ?? 0;
+      const usage = makeUsage(
+        Math.max(0, (um?.promptTokenCount ?? 0) - cached),
+        (um?.candidatesTokenCount ?? 0) + (um?.thoughtsTokenCount ?? 0),
+        { cacheRead: cached },
+      );
+      const finish = data.candidates?.[0]?.finishReason;
+      if (!content) {
+        throw new ProviderCallError('gemini', 'transient', 'gemini returned no content', undefined, {
+          usage, providerRequestId: data.responseId, stopReason: finish,
+        });
+      }
       return {
         content,
         model,
-        usage: {
-          promptTokens: data.usageMetadata?.promptTokenCount ?? 0,
-          completionTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
-        },
+        usage,
+        providerRequestId: data.responseId,
+        stopReason: finish,
         // D-103: `MAX_TOKENS` finishReason means the output was capped/truncated.
         truncated: data.candidates?.[0]?.finishReason === 'MAX_TOKENS',
       };

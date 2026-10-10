@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { setRequestProject } from './api/client';
 import type { PlanEvent, StreamEvent, User } from './api/types';
 
 /** Live activity feed entry rendered inside the in-flight assistant bubble. */
@@ -155,10 +156,16 @@ function reduce(cur: StreamState, e: StreamEvent): Partial<StreamState> {
 export const useApp = create<AppState>((set) => ({
   user: null,
   // Signing out drops every live run too: the next person in this tab must not see the previous one's output.
-  setUser: (user) => set(user ? { user } : { user, streams: {}, activeProjectId: null }),
+  setUser: (user) => {
+    if (!user) setRequestProject(null);
+    set(user ? { user } : { user, streams: {}, activeProjectId: null });
+  },
 
   activeProjectId: null,
-  setActiveProject: (activeProjectId) => set({ activeProjectId }),
+  setActiveProject: (activeProjectId) => {
+    setRequestProject(activeProjectId);
+    set({ activeProjectId });
+  },
 
   streams: {},
   beginStream: (key) =>

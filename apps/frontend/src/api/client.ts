@@ -10,14 +10,21 @@ class ApiError extends Error {
   }
 }
 
+/** The project the person has open. Sent on every request so the server can charge model tokens to that project
+ *  (token governance): routes that take the project in their path do not need it, but design-time calls
+ *  (MindDesigner audit, test, draft) are not project URLs. The server checks the person belongs to it. */
+let requestProject: string | null = null;
+export function setRequestProject(id: string | null): void { requestProject = id; }
+function projectHeader(): Record<string, string> { return requestProject ? { 'x-project-id': requestProject } : {}; }
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // FormData bodies must NOT get a JSON content-type — the browser sets the
   // multipart boundary itself. Only JSON string bodies get the header.
   const isForm = typeof FormData !== 'undefined' && init?.body instanceof FormData;
   const res = await fetch(path, {
     credentials: 'include',
-    headers: init?.body && !isForm ? { 'content-type': 'application/json' } : undefined,
     ...init,
+    headers: { ...(init?.body && !isForm ? { 'content-type': 'application/json' } : {}), ...projectHeader() },
   });
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: { code?: string; message?: string } } | null;
@@ -62,7 +69,7 @@ async function streamSse<E = StreamEvent>(
   const sendBody = method === 'POST' && body !== undefined;
   const res = await fetch(url, {
     method, credentials: 'include',
-    headers: sendBody ? { 'content-type': 'application/json' } : undefined,
+    headers: { ...(sendBody ? { 'content-type': 'application/json' } : {}), ...projectHeader() },
     body: sendBody ? JSON.stringify(body) : undefined,
     signal,
   });

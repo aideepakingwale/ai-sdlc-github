@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -11,6 +12,7 @@ from ..auth.sessions import verify_session
 from ..config import Settings
 from ..domain.errors import SdlcError
 from ..domain.models import UserPublic
+from ..services import usage_context
 
 
 @dataclass
@@ -68,4 +70,38 @@ async def current_user(
     user = verify_session(sdlc_session, container.settings.JWT_SECRET)
     if not user:
         raise SdlcError("AUTH_FAILED", "Session invalid or expired")
+    # Token ledger: every model call this request makes belongs to this person and, when one is open, to
+    # their project (the dependency is async, so the context change carries into the endpoint and anything
+    # it awaits or spawns).
+    usage_context.update(user_id=user.id, actor_type="user")
+    project_id = request.path_params.get("project_id")   # the route checks access itself
+    if not project_id:
+        project_id = await _header_project(request, container, user)
+    if project_id:
+        usage_context.update(project_id=project_id)
     return user
+
+
+_PROJECT_OK: dict[tuple[str, str], float] = {}
+
+
+async def _header_project(request: Request, container: "Container", user: UserPublic) -> str | None:
+    """The project the person has open (`X-Project-Id`), for calls whose URL carries none (MindDesigner design-time
+    work). Tokens are charged to it, so the person must belong to it: a project they cannot access is ignored,
+    never charged. Memberships are cached for a minute."""
+    pid = request.headers.get("x-project-id")
+    if not pid or len(pid) > 64:
+        return None
+    now = time.monotonic()
+    if _PROJECT_OK.get((user.id, pid), 0.0) > now:
+        return pid
+    try:
+        await container.authz.assert_project_access(pid, user)
+        if not await container.db.get_project(pid):    # an administrator passes the access check for any id
+            return None
+    except Exception:  # noqa: BLE001 — denied or unknown: do not attribute
+        return None
+    _PROJECT_OK[(user.id, pid)] = now + 60.0
+    if len(_PROJECT_OK) > 5000:
+        _PROJECT_OK.clear()
+    return pid

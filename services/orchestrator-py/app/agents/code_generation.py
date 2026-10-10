@@ -86,7 +86,7 @@ async def propose(deps: Any, state: AgentState, emit: Any, previous: dict[str, A
         stack_block=render_stack(state.tech_stack, owner=False, source=state.tech_stack_source, layers=state.stack_layers, stage=6))
     user = render_prompt("code.structure.user", user_input=user_input, context_block=context_block or "(none)", feedback_block=feedback)
     data, result = await deps.llm.generate_json(
-        intent="generation", tag=f"stage{state.current_phase}_code_structure", temperature=0.2,
+        activity="code.generate", intent="generation", tag=f"stage{state.current_phase}_code_structure", temperature=0.2,
         max_tokens=min(16_000, getattr(deps.settings, "PHASE_MAX_TOKENS", 16_000)), schema=CodeStructureOutput,
         model=state.model_overrides.get("generate") or None, role=state.model_role or role_for_stage(state.stage_template),
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}])
@@ -147,7 +147,7 @@ async def _write_batch(deps: Any, state: AgentState, system: str, structure: dic
                              batch_block=batch_block + (f"\n\n{note}" if note else ""), plan_block=_plan_block(structure),
                              context_block=context_block or "(none)", files_marker=f"<!-- files: {' | '.join(paths)} -->")
         data, result = await deps.llm.generate_json(
-            intent="generation", tag=f"stage{state.current_phase}_code_batch{batch.index}", temperature=0.2,
+            activity="code.generate", intent="generation", tag=f"stage{state.current_phase}_code_batch{batch.index}", temperature=0.2,
             max_tokens=getattr(deps.settings, "PHASE_MAX_TOKENS", 16_000), schema=CodeBatchOutput,
             model=state.model_overrides.get("generate") or None, role=state.model_role or role_for_stage(state.stage_template),
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}])

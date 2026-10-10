@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { estimateTokens, type GenerateRequest } from '@sdlc/shared';
 import * as corpus from './mock-corpus.js';
-import type { LlmProvider, ProviderResult } from './types.js';
+import { makeUsage, type LlmProvider, type ProviderResult } from './types.js';
 
 /**
  * Deterministic mock LLM (D-06). Orchestrator prompts embed a directive line
@@ -25,7 +25,7 @@ export function createMockProvider(): LlmProvider {
       const imageCount = req.messages.reduce((n, m) => n + (m.images?.length ?? 0), 0);
       if (imageCount > 0) {
         const content = `[mock-vision] received ${imageCount} image(s); no vision provider configured — deterministic placeholder.`;
-        return { content, model: 'mock-sdlc-1', usage: { promptTokens: estimateTokens(all), completionTokens: estimateTokens(content) } };
+        return { content, model: 'mock-sdlc-1', usage: makeUsage(estimateTokens(all), estimateTokens(content)) };
       }
       const kind = /#mock:([a-z0-9_]+)/.exec(all)?.[1] ?? 'chat';
       const userText = [...req.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
@@ -36,10 +36,7 @@ export function createMockProvider(): LlmProvider {
       return {
         content,
         model: 'mock-sdlc-1',
-        usage: {
-          promptTokens: estimateTokens(all),
-          completionTokens: estimateTokens(content),
-        },
+        usage: makeUsage(estimateTokens(all), estimateTokens(content)),
       };
     },
   };

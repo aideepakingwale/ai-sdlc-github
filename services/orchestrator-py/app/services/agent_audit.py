@@ -260,7 +260,7 @@ class AgentAuditor:
             gtext = "\n".join(f"{g['id']} ({_sev(ov, g['id'])}): {g['text']}" for g in GUARDRAILS)
             rtext = "\n".join(f"- {r}" for r in rules[:20])[:3000] or "(none)"
             res, llm = await self._llm.generate_json(
-                intent="standard", tag="agent_audit", schema=ModelReport, temperature=0, max_tokens=2500, max_attempts=2, role="reason",
+                activity="agent.build", intent="standard", tag="agent_audit", schema=ModelReport, temperature=0, max_tokens=2500, max_attempts=2, role="reason",
                 messages=[{"role": "system", "content": render_prompt("agent_audit.system")},
                           {"role": "user", "content": render_prompt(
                               "agent_audit.user", guardrails=gtext, rules=rtext, name=name, kind=kind, description=body.get("description", ""),

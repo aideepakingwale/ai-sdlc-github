@@ -353,7 +353,7 @@ class StackAdvisor:
             system = render_prompt("stack_advisor.system", layers=_layers_help(), profile_vocab=_profile_help())
             user = render_prompt("stack_advisor.user", stage=str(template), current=have, documents=_digest(docs))
             advice, _res = await self._llm.generate_json(
-                intent="standard", tag="stack_advisor", schema=StackAdvice, temperature=0, max_tokens=2000, max_attempts=2,
+                activity="project.advise", intent="standard", tag="stack_advisor", schema=StackAdvice, temperature=0, max_tokens=2000, max_attempts=2,
                 role=role_of("stack-advisor", "light"),
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": user}])
         except Exception:  # noqa: BLE001

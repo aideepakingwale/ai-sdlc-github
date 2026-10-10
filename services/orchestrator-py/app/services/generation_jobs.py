@@ -27,6 +27,7 @@ from typing import Any, Awaitable, Callable
 
 from redis import exceptions as redis_exceptions
 
+from . import usage_context
 from .telemetry import set_run_context
 from ..domain.errors import SdlcError
 
@@ -187,12 +188,27 @@ class GenerationJobs:
                 continue
             await self._run_job(payload)
 
+    async def _user_id_for(self, actor: str) -> str | None:
+        """users.id for the email a job was started by (None when unknown: the ledger flags it)."""
+        if not actor:
+            return None
+        try:
+            row = await self._db.get_user_by_email(actor)
+            return str(row["id"]) if row else None
+        except Exception:  # noqa: BLE001 — attribution must never stop a job
+            log.warning("could not resolve user for job actor %r", actor, exc_info=True)
+            return None
+
     async def _run_job(self, payload: dict[str, Any]) -> None:
         job_id = payload["jobId"]
         project_id = payload["projectId"]
         phase = int(payload["phase"])
         actor = payload.get("actor") or ""
         set_run_context(project_id, phase)   # this long-lived worker must not attribute spans to the PREVIOUS job's project
+        # Token ledger: the person who pressed the button owns this job's tokens (the job stores their
+        # email); the previous job's user must not leak into this one.
+        usage_context.reset(user_id=await self._user_id_for(actor), project_id=project_id, stage=phase,
+                            run_id=job_id, actor_type="job")
         pkey = self._progress_key(project_id, phase)
         queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
 

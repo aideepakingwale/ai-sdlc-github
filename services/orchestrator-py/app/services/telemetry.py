@@ -21,6 +21,8 @@ import time
 from contextvars import ContextVar
 from typing import Any
 
+from . import usage_context
+
 log = logging.getLogger("telemetry")
 
 # Rough public list prices per 1M tokens (input, output) for cost ESTIMATES on
@@ -39,6 +41,8 @@ _run_context: ContextVar[dict[str, Any] | None] = ContextVar("obs_run_context", 
 
 def set_run_context(project_id: str | None, stage: int | None = None) -> None:
     _run_context.set({"projectId": project_id, "stage": stage})
+    # The token ledger reads the same project/stage (docs/token-governance.md).
+    usage_context.update(project_id=project_id, stage=stage)
 
 
 def estimate_cost_usd(provider: str | None, prompt_tokens: int, completion_tokens: int) -> float:

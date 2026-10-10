@@ -628,7 +628,7 @@ class ChatService:
         req = user_input.strip() or f"Produce {', '.join(stage.get('outputs') or ['the deliverables'])} for the '{stage['name']}' stage."
         try:
             out, _ = await self._deps.llm.generate_json(
-                intent="standard", tier="auto", tag="clarify", max_tokens=1500, max_attempts=2, role=role_of("clarifier", "light"),
+                activity="stage.clarify", intent="standard", tier="auto", tag="clarify", max_tokens=1500, max_attempts=2, role=role_of("clarifier", "light"),
                 schema=ClarificationOutput,
                 messages=[
                     {"role": "system", "content": render_prompt("policy.clarification") + "\n\n" + render_prompt(
@@ -910,7 +910,7 @@ class ChatService:
             try:
                 system, usr = traits_prompt(project=project, user_text=user_text, upstream=upstream)
                 data, _ = await self._deps.llm.generate_json(
-                    intent="standard", tag="project_traits", temperature=0, max_tokens=900, role=role_of("trait-classifier", "light"),
+                    activity="project.advise", intent="standard", tag="project_traits", temperature=0, max_tokens=900, role=role_of("trait-classifier", "light"),
                     schema=ProjectTraitsIntel, max_attempts=1,
                     messages=[{"role": "system", "content": system}, {"role": "user", "content": usr}],
                 )
@@ -1233,7 +1233,7 @@ class ChatService:
         )
         try:
             data, _ = await self._deps.llm.generate_json(
-                intent="standard", tag=f"stage_planner_t{stage['template']}", temperature=0.1,
+                activity="stage.plan", intent="standard", tag=f"stage_planner_t{stage['template']}", temperature=0.1,
                 # The proposal (understood/willProduce/format/recommendation) plus steps and
                 # tool/skill/assumption/risk lists need headroom; a small cap truncated the
                 # JSON on richer stages and failed the whole plan (D-112 fix). Generous and
@@ -2294,7 +2294,7 @@ class ChatService:
         try:
             toc = outline_text(body)
             result, _ = await self._deps.llm.generate_json(
-                intent="standard", tag="attachment_sections", temperature=0, max_tokens=500, max_attempts=1, role=role_of("attachment-section-picker", "light"),
+                activity="ingest.read", intent="standard", tag="attachment_sections", temperature=0, max_tokens=500, max_attempts=1, role=role_of("attachment-section-picker", "light"),
                 schema=SectionPick,
                 messages=[
                     {"role": "system", "content": render_prompt("attachment_sections.system", budget_chars=f"{cap // 2:,}")},

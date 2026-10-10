@@ -55,7 +55,7 @@ def find_text_diagrams(markdown: str) -> list[TextDiagram]:
 async def _convert_one(llm: Any, block: TextDiagram, tag: str) -> str | None:
     try:
         res = await llm.generate(
-            intent="standard", tag=tag, temperature=0, max_tokens=2_000, role=role_of("text-diagram-converter", "generate"),
+            activity="stage.repair", intent="standard", tag=tag, temperature=0, max_tokens=2_000, role=role_of("text-diagram-converter", "generate"),
             messages=[{"role": "system", "content": render_prompt("diagram.from_text.system")},
                       {"role": "user", "content": block.body[:6_000]}])
     except Exception as err:  # noqa: BLE001 - advisory: the original block stays

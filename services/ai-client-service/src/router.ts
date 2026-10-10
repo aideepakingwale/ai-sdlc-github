@@ -1,6 +1,7 @@
 import type { Logger } from 'pino';
 import {
   SdlcError,
+  type AttemptRecord,
   type GenerateRequest,
   type GenerateResponse,
   type LlmIntent,
@@ -8,7 +9,7 @@ import {
   type ProviderHealth,
 } from '@sdlc/shared';
 import type { CircuitBreaker } from './breaker.js';
-import { ProviderCallError, type LlmProvider } from './providers/types.js';
+import { ProviderCallError, ZERO_USAGE, type LlmProvider } from './providers/types.js';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -144,6 +145,9 @@ export class LlmRouter {
     onText?: (delta: string) => void,
   ): Promise<GenerateResponse> {
     const attempts: string[] = [];
+    // Token governance: one record per provider CALL (retries and failovers included),
+    // because each can have been billed.
+    const usageLog: AttemptRecord[] = [];
     const candidates = this.candidates(req, optsOverride ?? this.opts);
     if (candidates.length === 0) {
       throw new SdlcError('PROVIDER_EXHAUSTED', 'No LLM providers configured');
@@ -163,7 +167,7 @@ export class LlmRouter {
       }
 
       try {
-        const result = await this.callWithRetry(provider, callReq, signal, onText);
+        const result = await this.callWithRetry(provider, callReq, signal, onText, usageLog);
         return {
           provider: provider.id,
           model: result.model,
@@ -172,6 +176,7 @@ export class LlmRouter {
           attempts,
           tier: req.tier,
           truncated: result.truncated ?? false,
+          usageLog,
         };
       } catch (err) {
         if (!(err instanceof ProviderCallError)) throw err;
@@ -181,6 +186,7 @@ export class LlmRouter {
         // the provider for everyone) and stop here: the request is gone / over budget.
         if (err.kind === 'canceled') {
           this.log.info({ provider: provider.id, error: err.message }, 'provider call canceled — breaker untouched');
+          err.usageLog = usageLog;
           throw err;
         }
         // D-94: log the RAW provider error (status + message) so failures are
@@ -202,20 +208,38 @@ export class LlmRouter {
     }
 
     throw new SdlcError('PROVIDER_EXHAUSTED', 'All LLM providers failed or are disabled', {
-      details: { attempts },
+      details: { attempts, usageLog },
     });
   }
 
   /** 429 → exponential backoff up to 3 retries; transient → 1 retry (Module 3 §2). */
-  private async callWithRetry(provider: LlmProvider, req: GenerateRequest, signal: AbortSignal, onText?: (delta: string) => void) {
+  private async callWithRetry(
+    provider: LlmProvider, req: GenerateRequest, signal: AbortSignal,
+    onText: ((delta: string) => void) | undefined, usageLog: AttemptRecord[],
+  ) {
     let lastErr: ProviderCallError | undefined;
     for (let attempt = 0; attempt < 4; attempt++) {
+      const t0 = Date.now();
       try {
         // Only stream deltas on the first attempt, so a retry after a mid-stream
         // failure doesn't double the text in the caller's live preview (D-112).
-        return await provider.generate(req, signal, attempt === 0 ? onText : undefined);
+        const result = await provider.generate(req, signal, attempt === 0 ? onText : undefined);
+        usageLog.push({
+          provider: provider.id, model: result.model, outcome: 'ok', usage: result.usage,
+          providerRequestId: result.providerRequestId, stopReason: result.stopReason, region: result.region,
+          latencyMs: Date.now() - t0,
+        });
+        return result;
       } catch (err) {
         if (!(err instanceof ProviderCallError)) throw err;
+        usageLog.push({
+          provider: provider.id, model: req.model || provider.model,
+          outcome: err.kind === 'canceled' ? 'canceled' : err.info.stopReason === 'refusal' ? 'refused' : 'error',
+          errorKind: err.kind, error: err.message.slice(0, 300),
+          usage: err.info.usage ?? ZERO_USAGE,
+          providerRequestId: err.info.providerRequestId, stopReason: err.info.stopReason, region: err.info.region,
+          latencyMs: Date.now() - t0,
+        });
         lastErr = err;
         if (err.kind === 'canceled') throw err; // D-103: never retry a cancellation
         if (err.kind === 'auth_or_billing') throw err;

@@ -1,6 +1,6 @@
 # Token governance: audit of today's usage tracking, and the design for token reporting and project quotas
 
-Status: design, revised to the product decisions in section 12 (nothing here is built yet). Written after reading the code paths and querying a real local database (819 traces, all on the offline
+Status: **phase 0 (capture) is built** (section 13); the rest is design, revised to the product decisions in section 12. Written after reading the code paths and querying a real local database (819 traces, all on the offline
 mock provider, so the *shapes* are real and the *volumes* are not).
 
 ## 1. What was audited
@@ -153,7 +153,7 @@ Bedrock's own account quotas (tokens and requests per minute) are what really th
 
 | Phase | Content | Size |
 |---|---|---|
-| 0. Capture | Full usage object and per-attempt rows in the gateway; partial usage on failure; `UsageContext` with required `activity` and user attribution for HTTP and background jobs; the ledger table; billable flag. No behaviour change. | M |
+| 0. Capture (**built**) | Full usage object and per-attempt rows in the gateway; partial usage on failure; `UsageContext` with required `activity` and user attribution for HTTP and background jobs; the ledger table; billable flag. No behaviour change. | M |
 | 1. Reporting | Rollup, project and organisation views and API, per-person breakdown inside a project, CSV, waste view; MindDesigner Usage moves onto the ledger. | M |
 | 2. Reconcile | Invocation logging, nightly drift check, application inference profiles with tags. | S/M |
 | 3. Pools and allocation | `token_pools` and `token_grants`, admin allocation console, balance meter, thresholds and notifications; **recording only** (the balance can go negative and nothing is blocked), so balances can be set sensibly from real consumption. | M |
@@ -187,3 +187,47 @@ Assumptions made in this revision (say if any is wrong):
 * Calls with no project are an alarm (target zero), never charged to a project, and do not gate anyone.
 * The organisation pool gates all projects when it is empty.
 * Allocation is done by administrators; project managers can request more but not grant it.
+
+## 13. Phase 0, as built
+
+What changed, and where to look.
+
+**Gateway (`services/ai-client-service`, `packages/shared/src/llm.ts`)**
+
+* `LlmUsage` now carries `promptTokens` (the TOTAL input: uncached + cache read + cache write, so anything that sums prompt + completion stays right), `completionTokens`, and the split `inputTokens`, `cacheReadTokens`, `cacheWriteTokens`, plus `estimated`.
+* The router returns `usageLog`: one `AttemptRecord` per provider call (retries and failovers included) with the outcome (`ok | error | canceled | refused`), the failure class, the usage, the provider request id, stop reason and region. It is also attached to `PROVIDER_EXHAUSTED` (`error.details.usageLog`), to a cancelled call, and to the SSE `error` event, so a failed call still reports what it was billed.
+* Bedrock reads cache read and write tokens, takes the request id from `x-amzn-requestid`, and keeps the SDK's running snapshot so a mid-stream failure reports the input the stream announced and an estimated output (`estimated: true`). A refusal or empty answer is billed and carries its real usage. Gemini's cached and "thinking" tokens and the OpenAI-compatible `cached_tokens` are folded in the same way.
+
+**Orchestrator (`services/orchestrator-py`)**
+
+* Migration `0051_llm_usage_ledger.sql`: `llm_usage_events`, append-only (a trigger refuses UPDATE and DELETE unless a maintenance session sets `app.ledger_maintenance`), `total_tokens` generated from the four parts.
+* `app/services/usage_context.py`: the context (user, project, stage, run, agent, actor type), the activity taxonomy, and which providers are non-billable (`mock`, `local`).
+* `app/services/usage_ledger.py`: turns a gateway usage log into rows. `LlmClient` is the only caller; a ledger write failure is logged at error level and never fails the generation.
+* `LlmClient.generate / generate_json / generate_stream` take a **required** `activity`. All 34 call sites pass one; `tests/test_usage_ledger.py` walks the code and fails the build if one does not, or names an activity outside the taxonomy.
+* Attribution: the `current_user` dependency sets the person; the project comes from the route (`/projects/{project_id}/...`) or, for calls whose URL has none (MindDesigner audit, test, draft, compare), from the `X-Project-Id` header the web app sends for the open project. The header is honoured only for a project the person can access and that exists. Background generation jobs set the person (resolved from the job's `started_by` email), the project, the stage and the job id explicitly, so one job never inherits the previous job's identity. Agent runs add the agent id and classify their calls (`agent.run`, `agent.stage_run`, `agent.build`).
+* A billable call with no project logs `UNATTRIBUTED model call` (the target is zero).
+
+**Not in phase 0, on purpose.** No quota, no reports, no UI, and `llm_traces`, `audit_index` and `agent_usage` are untouched (they keep working; phase 1 moves reporting onto the ledger, phase 4 retires the custom-agent limits). `stage.rework` exists in the taxonomy but is not assigned yet: rework passes are visible today through the tag and the per-attempt rows.
+
+**Checking it on a running system**
+
+```sql
+-- tokens by project, person and activity (billable only), last 7 days
+SELECT project_id, user_id, activity, count(*) calls, sum(total_tokens) tokens
+FROM llm_usage_events WHERE billable AND ts > now() - interval '7 days'
+GROUP BY 1,2,3 ORDER BY tokens DESC;
+
+-- calls with no project or person (should be none)
+SELECT activity, tag, count(*) FROM llm_usage_events
+WHERE billable AND (project_id IS NULL OR user_id IS NULL) GROUP BY 1,2;
+
+-- spend that bought nothing: failed, refused, cancelled and truncated attempts
+SELECT activity, status, count(*), sum(total_tokens) FROM llm_usage_events
+WHERE status <> 'ok' GROUP BY 1,2 ORDER BY 4 DESC;
+
+-- how much of the prompt came from the cache
+SELECT sum(cache_read_tokens)::float / nullif(sum(input_tokens + cache_read_tokens + cache_write_tokens), 0) AS cache_read_share
+FROM llm_usage_events WHERE provider = 'bedrock';
+```
+
+**To confirm against a real Bedrock account.** The cache fields were implemented from the SDK's types and covered with a faked stream; they have not yet been seen on a live response. After the first real run, compare a few `provider_request_id` values and their token counts with the Bedrock invocation log (phase 2 automates this).

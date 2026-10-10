@@ -169,7 +169,7 @@ async def _drawio_architecture(ctx: SkillContext) -> dict[str, Any]:
     )
     try:
         spec, res = await ctx.deps.llm.generate_json(
-            intent="architecture", tag="skill:drawio_spec", temperature=0.2, max_tokens=3000,
+            activity="skill.run", intent="architecture", tag="skill:drawio_spec", temperature=0.2, max_tokens=3000,
             schema=CloudArchitecture, max_attempts=2,
             messages=[
                 {"role": "system", "content": system},
@@ -236,7 +236,7 @@ def _llm_skill(instruction: str, tier: SkillTier, mock_kind: str) -> Callable[[S
             mock_kind=mock_kind,
         )
         res = await ctx.deps.llm.generate(
-            intent="generation", tier=("local" if tier == "local" else "frontier"),
+            activity="skill.run", intent="generation", tier=("local" if tier == "local" else "frontier"),
             tag=f"skill:{mock_kind}", temperature=0.2, max_tokens=2048,
             messages=[
                 {"role": "system", "content": system},

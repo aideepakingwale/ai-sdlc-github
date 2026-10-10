@@ -1630,7 +1630,7 @@ async def test_llm_client_traces_success_via_telemetry(monkeypatch):
         )
 
     monkeypatch.setattr(client._http, "post", fake_post)
-    res = await client.generate(intent="standard", messages=[{"role": "user", "content": "x"}], tag="unit")
+    res = await client.generate(intent="standard", messages=[{"role": "user", "content": "x"}], tag="unit", activity="other")
     assert res.content == "hi"
     (span,) = captured
     assert span["kind"] == "llm" and span["tag"] == "unit"
