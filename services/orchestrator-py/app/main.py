@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 
 from .agents.phase_agents import AgentDeps
-from .api import auth_routes, chat_routes, config_routes, project_routes, rules_routes
+from .api import agents_routes, auth_routes, chat_routes, config_routes, project_routes, rules_routes
 from .api.deps import Container
 from .auth.keycloak import KeycloakAuth
 from .config import get_settings
@@ -136,10 +136,15 @@ async def lifespan(app: FastAPI):
     pack_admin = PackAdmin(db, audit, canon.catalog)
     rule_advisor = RuleAdvisor(canon, project_config)
     rule_checker = RuleChecker(db, content, llm, canon, settings)
+    from .repos.agent_repo import AgentRepo
+    from .services.agent_audit import AgentAuditor
+    from .services.agent_defs import AgentDefService
+    from .services.agent_runtime import AgentRuntime
+    agent_runtime = AgentRuntime(llm, audit)
     agent_deps = AgentDeps(
         llm=llm, mcp=mcp, db=db, audit=audit, rag=rag, content=content, monitor=monitor,
         settings=settings, telemetry=telemetry, canon=canon, formworks=formworks, memory=memory,
-        project_config=project_config, stack_advisor=stack_advisor, rule_checker=rule_checker,
+        project_config=project_config, stack_advisor=stack_advisor, rule_checker=rule_checker, agent_runtime=agent_runtime,
     )
     workflow = WorkflowService(db, dynamo, audit)
     stack_advisor.workflow = workflow
@@ -180,6 +185,12 @@ async def lifespan(app: FastAPI):
     container.codebase = CodebaseService(db, rag)
     container.content, container.flow = content, flow
     container.skills = SkillService(db, authz, agent_deps, workflow)
+    from .services.skills import SKILL_PACKS
+    agent_defs = AgentDefService(db, AgentRepo(db), authz, audit, AgentAuditor(llm, agent_runtime), agent_runtime, canon=canon,
+                                 project_config=project_config, workflow=workflow, skill_packs=lambda: SKILL_PACKS)
+    container.agent_defs = agent_defs
+    container.skills.custom = agent_defs
+    chat.agent_defs = agent_defs
     container.workflow = workflow
     container.telemetry = telemetry
     container.extras["publisher"] = publisher
@@ -297,3 +308,4 @@ app.include_router(chat_routes.router)
 app.include_router(project_routes.router)
 app.include_router(config_routes.router)
 app.include_router(rules_routes.router)
+app.include_router(agents_routes.router)

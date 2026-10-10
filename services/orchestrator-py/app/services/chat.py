@@ -233,6 +233,7 @@ class ChatService:
                 model_overrides=self._model_overrides_from(self._step_overrides(sp_row)),  # per-step model (D-68)
                 per_artifact=await self._per_artifact_enabled(),  # runtime split toggle (D-106)
                 **self._custom_fields(stage),  # custom phase config (D-74)
+                custom_agents=await self._custom_agents_for(project["id"], stage),
             )
             prev_status = (st or {}).get("status", "NOT_STARTED") if st else "NOT_STARTED"
             await self._dynamo.put_phase_state(
@@ -801,6 +802,18 @@ class ChatService:
         if not session:
             return
         await self._db.insert_chat_turn(session["id"], phase, um, (agent_message or "").strip())
+
+    agent_defs: Any = None      # AgentDefService, set after construction (custom agents attached to a stage)
+
+    async def _custom_agents_for(self, project_id: str, stage: dict) -> list[dict[str, Any]]:
+        """The approved, pinned custom agents attached to this stage, resolved and ready to run. Never raises: a stage runs without them."""
+        if self.agent_defs is None or not stage.get("key"):
+            return []
+        try:
+            return await self.agent_defs.resolve_for_run(project_id, stage["key"])
+        except Exception:  # noqa: BLE001
+            log.warning("could not load custom agents for stage %s", stage.get("key"), exc_info=True)
+            return []
 
     @staticmethod
     def _custom_fields(stage: dict) -> dict[str, Any]:
@@ -2072,6 +2085,7 @@ class ChatService:
             retrigger_fields=retrigger_fields,  # D-107 step 2: regenerate only these parts
             resume=resume,  # continue an interrupted run from its persisted parts
             **self._custom_fields(stage),  # custom phase config (D-74)
+            custom_agents=await self._custom_agents_for(project_id, stage),
         )
         await self._record_manifest(project=project, session=session, stage=stage, overlay=overlay, state=state,
                                     attached=attached_items, user=user)

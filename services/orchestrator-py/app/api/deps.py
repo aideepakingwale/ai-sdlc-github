@@ -48,6 +48,7 @@ class Container:
     rule_checker: Any = None    # checks a stage's documents against the must-rules
     pack_admin: Any = None      # the organisation's rule packs (create, import, export, hide, restore)
     rule_advisor: Any = None    # recommends rule packs from the project's profile
+    agent_defs: Any = None      # custom agents and skills: definitions, audit, approval, stage attachments
     code_edit: Any = None  # prompt-based code assistant: agentic edits shown as a diff, applied by a person
     gen_jobs: Any = None  # durable background stage generation (D-97 L2)
     extras: dict[str, Any] = field(default_factory=dict)

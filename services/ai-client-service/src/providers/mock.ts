@@ -101,6 +101,21 @@ function render(kind: string, topic: string, seed: string, userText: string, all
       return JSON.stringify({ rules: [] });
     case 'rule_check':
       return JSON.stringify({ results: [] });
+    case 'agent_audit':
+      // The model review of a custom agent definition finds nothing offline; the platform's own checks and probes do the work.
+      return JSON.stringify({ findings: [] });
+    case 'custom_agent': {
+      // A custom agent or skill: answer every output the user message declares (OUTPUT_SCHEMA: {"name": "type"}) with a sample of that type.
+      let schema: Record<string, string> = {};
+      try {
+        schema = JSON.parse(/OUTPUT_SCHEMA:\s*(\{[^\n]*\})/.exec(all)?.[1] ?? '{}') as Record<string, string>;
+      } catch {
+        schema = {};
+      }
+      const sample = (type: string): unknown =>
+        type === 'number' ? 0.5 : type === 'boolean' ? true : type === 'object' ? { note: 'mock output' } : type === 'list' ? ['mock item one', 'mock item two'] : `Mock output (ref ${seed}).`;
+      return JSON.stringify({ outputs: Object.fromEntries(Object.entries(schema).map(([k, t]) => [k, sample(t)])) });
+    }
     case 'plan':
       return JSON.stringify({
         steps: [

@@ -845,6 +845,7 @@ class AgentDeps:
     project_config: Any = None  # ProjectConfigService — projectconfig.json (the stack by layer)
     stack_advisor: Any = None   # StackAdvisor — identifies the stack from a stage's documents
     rule_checker: Any = None    # RuleChecker — compares a stage's documents with the must-rules
+    agent_runtime: Any = None   # AgentRuntime — runs the custom agents attached to a stage
 
 
 @dataclass
@@ -949,7 +950,7 @@ async def _save_artifact(
     deps: AgentDeps, state: AgentState, emit: Emit, *,
     type_: str, title: str, content: str, summary: str,
     url: str | None = None, exact: bool = False, ref_key: str | None = None,
-    source_path: str | None = None, ignore_scope: bool = False,
+    source_path: str | None = None, ignore_scope: bool = False, run: dict[str, Any] | None = None,
 ) -> ContextArtifact | None:
     # D-112 Phase B-ii: honour the reviewer's confirmed scope. If this artifact's
     # concept was explicitly excluded (and not included), skip it entirely — do not
@@ -1029,7 +1030,13 @@ async def _save_artifact(
         ref=ArtifactRef(url=ref_url, key=(ref_key if stored_ok else None)),
     )
     await deps.rag.index_artifact(state.project_id, artefact_id, artifact)  # D-19
-    await _record_run(deps, state, artefact_id, type_)
+    if run is not None:                 # a custom agent's own record (agent, model, prompts, delegates)
+        try:
+            await deps.db.insert_artefact_run(artefact_id=artefact_id, project_id=state.project_id, phase=state.current_phase, field=None, run=run)
+        except Exception:  # noqa: BLE001 - the record must never lose an artefact
+            log.warning("could not record the custom agent run for %s", type_, exc_info=True)
+    else:
+        await _record_run(deps, state, artefact_id, type_)
     emit({"type": "artifact", "artifact": {"type": type_, "title": title, "url": url, "key": ref_key}})
     return artifact
 
@@ -2817,6 +2824,39 @@ TEMPLATE_TOOLS: dict[int, list[str]] = {
 
 
 async def run_phase_agent(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAgentResult:
+    result = await _run_phase_agent_core(deps, state, emit)
+    return await _with_custom_agents(deps, state, emit, result)
+
+
+async def _with_custom_agents(deps: AgentDeps, state: AgentState, emit: Emit, result: PhaseAgentResult) -> PhaseAgentResult:
+    """After the stage's own agents: run the custom agents attached to it (approved, pinned versions) and add what they wrote.
+    Skipped when a single part is being regenerated, so a retrigger does not re-run them. A failure never fails the stage."""
+    if not state.custom_agents or deps.agent_runtime is None or state.retrigger_fields:
+        return result
+    try:
+        from ..services.agent_stage import run_stage_agents
+        from ..services.project_config import render_layers
+
+        rules = (await deps.canon.render_block(state.project_id, state.stage_template)) if deps.canon is not None else ""
+        decided, _ = render_layers(state.stack_layers or [], state.stage_template)
+        stack = ("## Technology stack decided for this project\n" + decided) if decided else ""
+        async def save(**kw: Any) -> ContextArtifact | None:
+            return await _save_artifact(deps, state, emit, exact=True, **kw)
+        res = await run_stage_agents(
+            runtime=deps.agent_runtime, items=state.custom_agents, brief=state.user_input or "", upstream=lambda t: _ctx_content(state, t) or next((a.summary for a in reversed(state.context_window) if a.type == t and a.summary), None), rules=rules, stack=stack,
+            project_context="\n\n".join(x for x in (rules, stack) if x), save=save, emit=emit, audit=deps.audit, project_id=state.project_id, phase=state.current_phase)
+    except Exception:  # noqa: BLE001
+        log.warning("custom agents could not run for stage %s", state.current_phase, exc_info=True)
+        return result
+    if res.artifacts or res.ran or res.failed:
+        result.new_artifacts = [*result.new_artifacts, *res.artifacts]
+        note = res.summary()
+        if note:
+            result.summary = f"{result.summary} {note}".strip()
+    return result
+
+
+async def _run_phase_agent_core(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAgentResult:
     # The stage's TEMPLATE picks the generation engine (D-30); the runtime slot
     # (current_phase = workflow seq) only labels where results are recorded.
     runner = _RUNNERS.get(state.stage_template)

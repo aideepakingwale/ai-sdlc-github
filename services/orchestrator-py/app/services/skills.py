@@ -321,6 +321,7 @@ class SkillService:
         self._authz = authz
         self._deps = agent_deps
         self._workflow = workflow
+        self.custom: Any = None       # AgentDefService: custom skills attached to a stage (set after construction)
 
     async def _template_of(self, project_id: str, seq: int) -> int:
         """Map a workflow stage slot to its driving template; skills are
@@ -332,6 +333,22 @@ class SkillService:
             return int(stage["template"])
         except Exception:
             return seq
+
+    async def _stage_key(self, project_id: str, seq: int) -> str | None:
+        if self._workflow is None:
+            return None
+        try:
+            return (await self._workflow.stage_by_seq(project_id, seq))["key"]
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _can_run_custom(item: dict, user: UserPublic, membership: str | None) -> bool:
+        if user.role == "SUPER_ADMIN":
+            return True
+        if user.role == "PROJECT_MANAGER" or not membership:
+            return False
+        return not item["roles"] or membership in item["roles"]
 
     async def list_for(self, project_id: str, current_phase: int, user: UserPublic, phase: int | None) -> list[dict]:
         """Skills the user may run, scoped to `phase` (the focused stage) or the
@@ -350,9 +367,50 @@ class SkillService:
                 "tools": list(s.tools), "inputHint": s.input_hint,
                 "needsInput": s.needs_input, "canRun": runnable,
             })
+        if self.custom is not None:
+            key = await self._stage_key(project_id, phase or current_phase)
+            for it in (await self.custom.skills_for_stage(project_id, key) if key else []):
+                body = it["body"]
+                out.append({
+                    "id": f"custom:{it['def_id']}", "name": it["name"], "description": body.get("description", ""), "phase": None, "tier": "custom",
+                    "roles": it["roles"], "tools": [], "inputHint": (body.get("inputs") or [{}])[0].get("description", "") or "Type what you want the skill to work on",
+                    "needsInput": True, "canRun": self._can_run_custom(it, user, membership), "custom": True, "version": it["version"],
+                })
         return out
 
+    async def _execute_custom(self, project_id: str, skill_id: str, user: UserPublic, user_input: str) -> dict:
+        project = await self._db.get_project(project_id)
+        if not project:
+            raise SdlcError("NOT_FOUND", "Project not found")
+        enforce_input(user_input, channel="skill")
+        membership = None if user.role in ("SUPER_ADMIN", "PROJECT_MANAGER") else await self._authz.get_membership_role(project_id, user.id)
+        def_id = skill_id.split(":", 1)[1]
+        key = await self._stage_key(project_id, project["current_phase"])
+        item = next((i for i in (await self.custom.skills_for_stage(project_id, key) if key else []) if i["def_id"] == def_id), None)
+        if item is None:
+            # a skill attached to another stage may still be run from that stage's own view; check them all
+            view = await self._workflow.view(project_id) if self._workflow else {"stages": []}
+            for st in view["stages"]:
+                item = next((i for i in await self.custom.skills_for_stage(project_id, st["key"]) if i["def_id"] == def_id), None)
+                if item:
+                    break
+        if item is None:
+            raise SdlcError("NOT_FOUND", "That skill is not attached to any stage of this project")
+        if not self._can_run_custom(item, user, membership):
+            raise SdlcError("FORBIDDEN", f"Skill '{item['name']}' is not available to your role on this project")
+        set_run_context(project_id, project["current_phase"])
+        ver = {"body": item["body"], "version": item["version"]}
+        d = {"id": item["def_id"], "name": item["name"]}
+        result = await self.custom.run_skill_body(project_id, d, ver, user_input.strip())
+        safe_output, masked = sanitise_output(str(result.get("output", "")))
+        result["output"] = safe_output
+        self._deps.audit.record(project_id=project_id, phase=project["current_phase"], agent_role="SkillRunner", event="skill.executed", human_reviewer=user.email,
+                                detail={"skill": skill_id, "custom": True, "masked": masked, **result.get("meta", {})})
+        return {"skill": skill_id, "name": item["name"], "tier": "custom", **result}
+
     async def execute(self, project_id: str, skill_id: str, user: UserPublic, user_input: str) -> dict:
+        if skill_id.startswith("custom:") and self.custom is not None:
+            return await self._execute_custom(project_id, skill_id, user, user_input)
         skill = _BY_ID.get(skill_id)
         if not skill:
             raise SdlcError("NOT_FOUND", f"Unknown skill {skill_id}")
