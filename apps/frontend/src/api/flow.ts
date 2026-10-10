@@ -81,6 +81,8 @@ export interface StageConfig {
   contextSources?: string[];
   /** Free-text instructions/metadata for the stage's agent. */
   agentNotes?: string;
+  /** A custom stage built only from the custom agents attached to it (no persona writer). */
+  agentsOnly?: boolean;
   /** Which model role generates this stage (multi-model routing). Omitted = by stage type. */
   modelRole?: 'reason' | 'generate' | 'light';
 }

@@ -24,6 +24,7 @@ from ..domain.models import UserPublic
 from ..repos.pg import new_id
 from . import agent_catalog, safe_expr
 from .agent_assist import AgentAssist, sample_inputs
+from .agent_wiring import wire
 from .agent_audit import AgentAuditor, blocks, catalogue, warns
 from .agent_body import KINDS, MODEL_ROLES, RUNS, ROLE_LABEL, clean_name, core_to_body, default_body, normalise_body, summary
 from .agent_runtime import AgentRuntime, RunResult
@@ -280,28 +281,28 @@ class AgentDefService:
         except Exception:  # noqa: BLE001
             return []
 
+    async def rules_block(self, project_id: str | None, stage_template: int | None = None) -> str:
+        if not project_id or self._canon is None:
+            return ""
+        try:
+            return (await self._canon.render_block(project_id, stage_template)) or ""
+        except Exception:  # noqa: BLE001
+            return ""
+
+    async def stack_block(self, project_id: str | None, stage_template: int | None = None) -> str:
+        if not project_id or self._config is None:
+            return ""
+        try:
+            from .project_config import render_layers
+
+            decided, _ = render_layers(await self._config.layers(project_id), stage_template)
+            return ("## Technology stack decided for this project\n" + decided) if decided else ""
+        except Exception:  # noqa: BLE001
+            return ""
+
     async def context_text(self, project_id: str | None, stage_template: int | None = None) -> str:
         """The project rules and stack, as the agent will be told them."""
-        if not project_id:
-            return ""
-        parts = []
-        try:
-            if self._canon is not None:
-                block = await self._canon.render_block(project_id, stage_template)
-                if block:
-                    parts.append(block)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            if self._config is not None:
-                from .project_config import render_layers
-
-                decided, _ = render_layers(await self._config.layers(project_id), stage_template)
-                if decided:
-                    parts.append("## Technology stack decided for this project\n" + decided)
-        except Exception:  # noqa: BLE001
-            pass
-        return "\n\n".join(parts)
+        return "\n\n".join(x for x in (await self.rules_block(project_id, stage_template), await self.stack_block(project_id, stage_template)) if x)
 
     def child_resolver(self, project_id: str | None) -> Callable[[str, "int | None"], Awaitable["dict[str, Any] | None"]]:
         """Finds a delegate: an approved agent of this project, or an open organisation agent. Returns {name, body, version} or None."""
@@ -495,6 +496,9 @@ class AgentDefService:
             pub = next((v for v in vs if v["status"] == "published"), None)
             if pub:
                 available.append({"defId": d["id"], "name": d["name"], "kind": d["kind"], "source": d["scope"], "version": pub["version"], **summary(pub["body"])})
+        wiring = {w["defId"]: w for w in (await self._wiring(project_id)).get(stage_key, [])}
+        for it in items:
+            it["wiring"] = wiring.get(it["defId"])
         return {"rights": r, "items": items, "available": available, "stage": stage_key}
 
     async def set_stage_items(self, user: UserPublic, project_id: str, stage_key: str, items: list[dict[str, Any]]) -> dict[str, Any]:
@@ -717,3 +721,51 @@ class AgentDefService:
         await self._repo.set_limit(project_id, None if monthly_tokens is None else int(monthly_tokens), user.id)
         self._event(None, user, "custom_agent.budget", project=project_id, monthly_tokens=monthly_tokens)
         return await self.project_usage(user, project_id)
+
+    # ================================================================== pipeline: what feeds what, and running on request
+    async def _wiring(self, project_id: str) -> dict[str, list[dict[str, Any]]]:
+        """For every stage, the attached agents in run order and where each of their inputs would come from."""
+        stages = list((await self._stage_keys(project_id)).values())
+        if not stages:
+            return {}
+        attached: dict[str, list[dict[str, Any]]] = {}
+        for a in await self._repo.list_attachments(project_id):
+            d = await self._repo.get_def(a["def_id"])
+            if not await self._visible_to_project(d, project_id):
+                continue
+            ver = next((v for v in await self._repo.list_versions(d["id"]) if v["version"] == a["pinned_version"]), None)
+            if ver is None:
+                continue
+            attached.setdefault(a["stage_key"], []).append({"def_id": d["id"], "name": d["name"], "kind": d["kind"], "runs": a["runs"], "body": ver["body"], "position": a["position"]})
+        for lst in attached.values():
+            lst.sort(key=lambda x: x["position"])
+        return wire(stages, attached)
+
+    async def pipeline(self, user: UserPublic, project_id: str) -> dict[str, Any]:
+        """The whole workflow with the agents attached to each stage, and whether the pipeline feeds them."""
+        r = await self.rights(project_id, user)
+        stages = sorted((await self._stage_keys(project_id)).values(), key=lambda s: s["seq"])
+        wiring = await self._wiring(project_id)
+        out = [{"key": s["key"], "seq": s["seq"], "name": s["name"], "template": s["template"], "custom": bool(s.get("custom")), "agentsOnly": bool(s.get("agentsOnly")),
+                "outputs": list(s.get("outputs") or []), "agents": wiring.get(s["key"], [])} for s in stages]
+        return {"rights": r, "stages": out, "problems": [{"stage": s["name"], "agent": a["name"], "inputs": [i for i in a["inputs"] if i["status"] == "missing"]}
+                                                         for s in out for a in s["agents"] if a["blocked"]]}
+
+    async def runnable(self, project_id: str, def_id: str, stage_key: str | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
+        """The definition, the approved version that would run, and (for a run inside a stage) the attachment that pins it."""
+        d = await self._repo.get_def(def_id)
+        if not await self._visible_to_project(d, project_id):
+            raise SdlcError("NOT_FOUND", "Agent or skill not found")
+        versions = await self._repo.list_versions(def_id)
+        if stage_key:
+            att = next((a for a in await self._repo.list_attachments(project_id, stage_key) if a["def_id"] == def_id), None)
+            if att is None:
+                raise SdlcError("VALIDATION_FAILED", f"'{d['name']}' is not attached to that stage")
+            ver = next((v for v in versions if v["version"] == att["pinned_version"] and v["status"] in RUNNABLE), None)
+            if ver is None:
+                raise SdlcError("VALIDATION_FAILED", f"'{d['name']}' has no approved version {att['pinned_version']}")
+            return d, ver, att
+        ver = next((v for v in versions if v["status"] == "published"), None)
+        if ver is None:
+            raise SdlcError("VALIDATION_FAILED", f"'{d['name']}' has no approved version yet. Get it approved first, or try it from the builder's test drawer")
+        return d, ver, None

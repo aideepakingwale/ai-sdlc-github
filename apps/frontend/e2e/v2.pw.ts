@@ -738,12 +738,17 @@ test.describe('custom agents', () => {
   const SECOND = { email: process.env.E2E_SECOND_EMAIL ?? 'admin2@devmind.local', password: process.env.E2E_SECOND_PASSWORD ?? process.env.E2E_PASSWORD ?? 'Password123!' };
 
   /** A second signed-in person, because the person who submits an agent cannot approve it. */
+  let second: Awaited<ReturnType<typeof pwRequest.newContext>> | null = null;
   async function secondPerson(baseURL: string) {
-    const ctx = await pwRequest.newContext({ baseURL });
-    const res = await ctx.post('/api/auth/login', { data: SECOND });
-    test.skip(!res.ok(), 'no second administrator is available to approve (set E2E_SECOND_EMAIL)');
-    return ctx;
+    if (!second) {                                   // one sign-in for the whole file, so the login rate limit is not hit
+      const ctx = await pwRequest.newContext({ baseURL });
+      const res = await ctx.post('/api/auth/login', { data: SECOND });
+      test.skip(!res.ok(), 'no second administrator is available to approve (set E2E_SECOND_EMAIL)');
+      second = ctx;
+    }
+    return second!;
   }
+  test.afterAll(async () => { await second?.dispose(); });
 
   test('build an agent with the palette, audit it, get it approved by someone else, then attach it to a stage', async ({ page, baseURL }) => {
     await login(page, '/?ui=v2');
@@ -796,7 +801,6 @@ test.describe('custom agents', () => {
     const other = await secondPerson(baseURL!);
     const ok = await other.post(`/api/agent-defs/${defId}/decision`, { data: { decision: 'approve' } });
     expect(ok.ok()).toBeTruthy();
-    await other.dispose();
 
     await page.reload();
     await openProject(page, name);
@@ -851,7 +855,6 @@ test.describe('custom agents', () => {
     const defId = ((await (await page.request.get(`/api/projects/${id}/agents?kind=agent`)).json()) as { mine: Array<{ id: string }> }).mine[0]!.id;
     const other = await secondPerson(baseURL!);
     expect((await other.post(`/api/agent-defs/${defId}/decision`, { data: { decision: 'approve' } })).ok()).toBeTruthy();
-    await other.dispose();
 
     // editing the approved version starts v2, and now it can be compared
     await page.reload();
@@ -898,6 +901,98 @@ test.describe('custom agents', () => {
     await page.getByTestId('v2-usage-save').click();
     await expect(page.getByTestId('v2-usage-exceeded')).toHaveCount(0);
     expect((await page.request.post(`/api/agent-defs/${defId}/test`, { data: { inputs: { input_1: 'x' } } })).ok()).toBeTruthy();
+  });
+
+  /** An approved agent in a project, made through the API: create, audit, accept the warnings, submit, and have a second person approve. */
+  async function approvedAgent(page: Page, baseURL: string, projectId: string, name: string, body: Record<string, unknown>): Promise<string> {
+    const made = await page.request.post('/api/agent-defs', { data: { kind: 'agent', name, scope: 'project', projectId, body } });
+    expect(made.ok()).toBeTruthy();
+    const id = ((await made.json()) as { def: { id: string } }).def.id;
+    await page.request.post(`/api/agent-defs/${id}/audit`);
+    await page.request.post(`/api/agent-defs/${id}/audit/ack`, { data: { ack: true } });
+    expect((await page.request.post(`/api/agent-defs/${id}/submit`)).ok()).toBeTruthy();
+    const other = await secondPerson(baseURL);
+    expect((await other.post(`/api/agent-defs/${id}/decision`, { data: { decision: 'approve' } })).ok()).toBeTruthy();
+    return id;
+  }
+  const INTAKE = {
+    description: 'Checks an incoming case and lists what is missing.', role: 'generate',
+    prompt: 'You check an incoming airline case for completeness.\nRead {subject} and list every fact that is missing, one per line.\nSay clearly when nothing is missing.',
+    inputs: [{ name: 'subject', type: 'string', source: 'user', required: true }], outputs: [{ name: 'findings', type: 'string', artefact_type: 'REPORT', format: 'Markdown' }],
+  };
+  const SUMMARY = {
+    description: 'Summarises the findings of the intake check.', role: 'generate',
+    prompt: 'You summarise the findings of an intake check.\nRead {findings} and write a three line summary a manager can act on.\nName the single most urgent gap first.',
+    inputs: [{ name: 'findings', type: 'string', source: 'upstream:REPORT', required: true }], outputs: [{ name: 'summary', type: 'string', artefact_type: 'CHECKLIST', format: 'Markdown' }],
+  };
+
+  test('run an agent on its own, see the run, and see how the pipeline feeds it', async ({ page, baseURL }) => {
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    const intake = await approvedAgent(page, baseURL!, id, 'Intake checker', INTAKE);
+    const summary = await approvedAgent(page, baseURL!, id, 'Findings summary', SUMMARY);
+    // the summary reads the intake check's REPORT, so it must come after it in the same stage
+    const wrong = await page.request.put(`/api/projects/${id}/stages/p2/agents`, { data: { items: [{ defId: summary }, { defId: intake, runs: 'on_request' }] } });
+    expect(wrong.ok()).toBeTruthy();
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-nav-context').click();
+    await page.getByTestId('v2-context-tab-agents').click();
+
+    // run the intake checker on its own
+    await page.getByTestId('v2-agent-card').filter({ hasText: 'Intake checker' }).getByTestId('v2-agent-run').click();
+    await expect(page.getByTestId('v2-run-panel')).toHaveAttribute('data-stage', '');
+    await page.getByTestId('v2-run-field-subject').fill('Refund request, booking reference missing.');
+    await page.getByTestId('v2-run-go').click();
+    await expect(page.getByTestId('v2-run-output')).toContainText('findings');
+    await expect(page.getByTestId('v2-run-history-item')).toHaveCount(1);
+    await page.getByTestId('v2-run-back').click();
+    await page.getByTestId('v2-agents-view-runs').click();
+    await expect(page.getByTestId('v2-runs-row')).toContainText('Intake checker');
+
+    // the pipeline shows the order and that the summary has nothing to read yet
+    await page.getByTestId('v2-agents-view-pipeline').click();
+    await expect(page.getByTestId('v2-pipeline-problems')).toContainText('Findings summary');
+    // putting the intake check first fixes it
+    const right = await page.request.put(`/api/projects/${id}/stages/p2/agents`, { data: { items: [{ defId: intake, runs: 'on_request' }, { defId: summary }] } });
+    expect(right.ok()).toBeTruthy();
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-nav-context').click();
+    await page.getByTestId('v2-context-tab-agents').click();
+    await page.getByTestId('v2-agents-view-pipeline').click();
+    await expect(page.getByTestId('v2-pipeline-problems')).toHaveCount(0);
+    await expect(page.getByTestId('v2-pipeline-agent')).toHaveCount(2);
+  });
+
+  test('order agents in a stage with the arrows, and build a custom stage from its agents alone', async ({ page, baseURL }) => {
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    const intake = await approvedAgent(page, baseURL!, id, 'Intake checker', INTAKE);
+    const summary = await approvedAgent(page, baseURL!, id, 'Findings summary', SUMMARY);
+    await page.request.put(`/api/projects/${id}/stages/p2/agents`, { data: { items: [{ defId: summary }, { defId: intake, runs: 'on_request' }] } });
+    const wf = (await (await page.request.get(`/api/projects/${id}/workflow`)).json()) as { config: { stages: Array<{ key: string; template: number }> } };
+    const custom = wf.config.stages.find((s) => s.template === 7)!.key;
+    await page.request.put(`/api/projects/${id}/stages/${custom}/agents`, { data: { items: [{ defId: intake, runs: 'on_request' }, { defId: summary }] } });
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-nav-designer').click();
+    await page.getByTestId('v2-designer-stage-p2').click();
+    await expect(page.getByTestId('v2-stage-agent')).toHaveCount(2);
+    await expect(page.getByTestId('v2-stage-agent').first()).toContainText('Findings summary');
+    await expect(page.getByTestId('v2-wiring-blocked')).toBeVisible();
+    // move the intake check above it: the warning goes and the order is saved
+    await page.getByTestId('v2-stage-agent').nth(1).getByTestId('v2-stage-agent-up').click();
+    await expect(page.getByTestId('v2-stage-agent').first()).toContainText('Intake checker');
+    await expect(page.getByTestId('v2-wiring-blocked')).toHaveCount(0);
+    const saved = (await (await page.request.get(`/api/projects/${id}/stages/p2/agents`)).json()) as { items: Array<{ name: string }> };
+    expect(saved.items.map((i) => i.name)).toEqual(['Intake checker', 'Findings summary']);
+
+    // a custom stage can be built from its agents alone; its outputs follow what they write
+    await page.getByTestId(`v2-designer-stage-${custom}`).click();
+    await page.getByTestId('v2-agents-only').check();
+    await expect(page.getByTestId('v2-agents-only')).toBeChecked();
+    await expect(page.getByText('CHECKLIST').first()).toBeVisible();
   });
 
   test('built-in agents are only for super-admins; a project cannot see them', async ({ page }) => {

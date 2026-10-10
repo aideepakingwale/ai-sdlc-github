@@ -108,6 +108,8 @@ class StageConfig(BaseModel):
     outputSpecs: list[OutputSpec] = Field(default_factory=list)
     contextSources: list[str] = Field(default_factory=list)
     agentNotes: str = Field(default="", max_length=8000)
+    # A custom stage built only from the custom agents attached to it: the persona writer does not run. Custom stages only.
+    agentsOnly: bool = False
     # Which model role this stage generates with (multi-model routing): reason = strongest
     # reasoning, generate = balanced, light = fast. None = by stage type (design stages use
     # reason, the rest generate). The role's models are set by a super-admin.
@@ -198,6 +200,8 @@ def validate_workflow(config: WorkflowConfig) -> list[str]:
             errors.append(f"Stage key '{s.key}' must be a slug (a-z, 0-9, -, _; 1-30 chars, starts with a letter)")
         if s.template not in TEMPLATES:
             errors.append(f"Stage '{s.key}': unknown template {s.template}")
+        if s.agentsOnly and s.template != CUSTOM_TEMPLATE:
+            errors.append(f"Stage '{s.key}': only a custom stage can be built from agents alone")
         if s.reviewerRole not in s.team:
             errors.append(f"Stage '{s.key}': reviewer role {s.reviewerRole} must be part of the team {s.team}")
         for role in s.team:

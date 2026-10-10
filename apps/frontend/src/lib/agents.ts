@@ -58,7 +58,7 @@ export interface PendingItem {
 export interface StageItem {
   defId: string; name: string; kind: DefKind; source: 'org' | 'project'; pinnedVersion: number; publishedVersion: number | null; newerAvailable: boolean;
   runs: 'always' | 'when' | 'on_request'; condition: string; roles: string[]; description: string; roleLabel: string; inputs: string[]; outputs: string[];
-  outputsDetail: OutputDef[]; childrenDetail: string[];
+  outputsDetail: OutputDef[]; childrenDetail: string[]; wiring?: Wiring | null;
 }
 export interface StageAvailable { defId: string; name: string; kind: DefKind; source: 'org' | 'project'; version: number; description: string }
 
@@ -238,3 +238,51 @@ export function parseCap(text: string): { ok: true; value: number | null } | { o
   if (n < TOKEN_CAP.min || n > TOKEN_CAP.max) return { ok: false, error: `Between ${TOKEN_CAP.min.toLocaleString()} and ${TOKEN_CAP.max.toLocaleString()} tokens` };
   return { ok: true, value: n };
 }
+
+
+// ---- running on request, and the pipeline an agent sits in
+export interface RunInput { name: string; type: ValueType; required: boolean; description: string; source: string; prefill: string | null; prefillFrom: string | null }
+export interface RunForm {
+  rights: Rights; def: { id: string; name: string; kind: DefKind; version: number; description: string; scope: 'org' | 'project' }; stage: string | null; canRun: boolean; why: string;
+  inputs: RunInput[]; outputs: Array<{ name: string; type: ValueType; artefactType: string; format: Format }>; savesToStage: boolean;
+}
+export interface RunOutcome {
+  runId: string; def: { id: string; name: string; kind: DefKind; version: number }; outputs: Record<string, unknown>; saved: Array<{ id: string; type: string; title: string }>;
+  warnings: string[]; tokens: number; provider: string; model: string; mock: boolean; stage: string | null; context: Array<{ layer: string; label: string; chars: number }>;
+  outputsDetail: Array<{ name: string; type: ValueType; artefactType: string; format: Format }>;
+}
+export interface RunHistoryItem {
+  id: string; defId: string; name: string; version: number; stage: string | null; by: string; at: string; tokens: number; inputs: Record<string, unknown>;
+  outputs: Record<string, unknown>; warnings: string[]; saved: Array<{ id: string; type: string; title: string }>; model: string;
+}
+export interface WireInput { name: string; source: string; required: boolean; status: 'ok' | 'missing' | 'optional'; from: string }
+export interface Wiring { defId: string; name: string; runs: 'always' | 'when' | 'on_request'; blocked: boolean; inputs: WireInput[]; outputs: string[] }
+export interface PipelineStage { key: string; seq: number; name: string; template: number; custom: boolean; agentsOnly: boolean; outputs: string[]; agents: Wiring[] }
+export interface PipelineView { rights: Rights; stages: PipelineStage[]; problems: Array<{ stage: string; agent: string; inputs: WireInput[] }> }
+
+/** Move one item to a new place in a list (the order agents run in). Out-of-range moves leave the list as it is. */
+export function moveItem<T>(list: T[], from: number, to: number): T[] {
+  if (from === to || from < 0 || to < 0 || from >= list.length || to >= list.length) return list;
+  const next = list.slice();
+  const [it] = next.splice(from, 1);
+  next.splice(to, 0, it as T);
+  return next;
+}
+/** A value typed into the run form, checked against the input's type. Objects and lists are checked by the server (a list may be one item per line). */
+export function parseRunValue(text: string, type: ValueType): { ok: true; value: unknown } | { ok: false; error: string } {
+  const t = text.trim();
+  if (type === 'number') { const n = Number(t); return t !== '' && Number.isFinite(n) ? { ok: true, value: n } : { ok: false, error: 'Use a number' }; }
+  if (type === 'boolean') { const l = t.toLowerCase(); return ['true', 'yes', '1'].includes(l) ? { ok: true, value: true } : ['false', 'no', '0'].includes(l) ? { ok: true, value: false } : { ok: false, error: 'Use yes or no' }; }
+  if ((type === 'object' && t.startsWith('{')) || (type === 'list' && t.startsWith('['))) { try { JSON.parse(t); } catch { return { ok: false, error: 'That is not valid JSON' }; } }
+  return { ok: true, value: text };
+}
+/** What an output looks like to read, copy or save. */
+export function outputText(value: unknown, format: Format): string {
+  if (typeof value === 'string') return value;
+  return format === 'Markdown' ? `\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\`` : JSON.stringify(value, null, 2);
+}
+export const outputFileName = (agent: string, output: string, format: Format): string =>
+  `${`${agent}-${output}`.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'output'}.${format === 'JSON' ? 'json' : format === 'Markdown' ? 'md' : 'txt'}`;
+/** The artefact types a set of attached agents write, in the order they run, without repeats. */
+export const agentOutputTypes = (items: Array<{ outputsDetail: OutputDef[] }>): string[] => [...new Set(items.flatMap((i) => i.outputsDetail.map((o) => o.artefact_type)))];
+export const WIRE_TONE: Record<WireInput['status'], 'green' | 'red' | 'slate'> = { ok: 'green', missing: 'red', optional: 'slate' };

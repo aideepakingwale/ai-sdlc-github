@@ -194,3 +194,23 @@ class AgentRepo:
         await self._p.execute(
             "INSERT INTO agent_project_limits (project_id, monthly_tokens, updated_by) VALUES ($1,$2,$3) "
             "ON CONFLICT (project_id) DO UPDATE SET monthly_tokens=$2, updated_by=$3, updated_at=now()", project_id, int(monthly_tokens), user_id)
+
+    # ------------------------------------------------------------ runs a person started (migration 0049)
+    KEEP_RUNS = 50
+
+    async def insert_run(self, r: dict[str, Any]) -> None:
+        await self._p.execute(
+            "INSERT INTO agent_runs (id, def_id, version, project_id, stage_key, user_id, user_name, inputs, outputs, warnings, saved, tokens, provider, model) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
+            r["id"], r["def_id"], r["version"], r["project_id"], r.get("stage_key"), r.get("user_id"), r.get("user_name"), r["inputs"], r["outputs"],
+            r.get("warnings", []), r.get("saved", []), int(r.get("tokens", 0)), r.get("provider"), r.get("model"))
+        await self._p.execute(           # a project keeps the latest runs of an agent, not every one
+            "DELETE FROM agent_runs WHERE id IN (SELECT id FROM agent_runs WHERE project_id=$1 AND def_id=$2 ORDER BY created_at DESC OFFSET $3)",
+            r["project_id"], r["def_id"], self.KEEP_RUNS)
+
+    async def list_runs(self, project_id: str, def_id: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        if def_id:
+            rows = await self._p.fetch("SELECT * FROM agent_runs WHERE project_id=$1 AND def_id=$2 ORDER BY created_at DESC LIMIT $3", project_id, def_id, limit)
+        else:
+            rows = await self._p.fetch("SELECT * FROM agent_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT $2", project_id, limit)
+        return [dict(r) for r in rows]

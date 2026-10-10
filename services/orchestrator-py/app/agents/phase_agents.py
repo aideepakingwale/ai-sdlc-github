@@ -2824,14 +2824,19 @@ TEMPLATE_TOOLS: dict[int, list[str]] = {
 
 
 async def run_phase_agent(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAgentResult:
-    result = await _run_phase_agent_core(deps, state, emit)
+    if state.agents_only and state.custom_agents and deps.agent_runtime is not None:
+        # A stage built only from its attached agents: nothing of its own to write first.
+        emit({"type": "node", "node": "agent", "label": f"'{state.stage_name}' is built from its custom agents"})
+        result = PhaseAgentResult(summary=f"{state.stage_name}: built from its custom agents.", new_artifacts=[], gate_status="PENDING_REVIEW")
+    else:
+        result = await _run_phase_agent_core(deps, state, emit)
     return await _with_custom_agents(deps, state, emit, result)
 
 
 async def _with_custom_agents(deps: AgentDeps, state: AgentState, emit: Emit, result: PhaseAgentResult) -> PhaseAgentResult:
     """After the stage's own agents: run the custom agents attached to it (approved, pinned versions) and add what they wrote.
     Skipped when a single part is being regenerated, so a retrigger does not re-run them. A failure never fails the stage."""
-    if not state.custom_agents or deps.agent_runtime is None or state.retrigger_fields:
+    if not state.custom_agents or deps.agent_runtime is None or (state.retrigger_fields and not state.agents_only):
         return result
     try:
         from ..services.agent_stage import run_stage_agents

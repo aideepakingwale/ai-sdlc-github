@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '../../api/client';
-import { spentPercent, statusChip, tokensLabel, type Card, type DefDetail, type DefKind, type ProjectUsage, type Rights } from '../../lib/agents';
+import { spentPercent, statusChip, tokensLabel, WIRE_TONE, type Card, type DefDetail, type DefKind, type PipelineView, type ProjectUsage, type RunHistoryItem, type Rights } from '../../lib/agents';
 import type { ProjectMember } from '../../api/types';
 import { Pill } from '../bits';
 import AgentBuilder from './AgentBuilder';
+import AgentRunPanel from './AgentRunPanel';
 import ApprovalsView from './ApprovalsView';
 
 const btn = 'rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:border-brand-400 disabled:opacity-50';
@@ -15,8 +16,9 @@ type ListResp = { rights: Rights; mine: Card[]; open: Card[]; pending: number };
 export default function AgentsTab({ projectId, userId, onBuilder }: { projectId: string; userId: string; onBuilder?: (open: boolean) => void }) {
   const qc = useQueryClient();
   const [kind, setKind] = useState<DefKind>('agent');
-  const [view, setView] = useState<'mine' | 'open' | 'approvals' | 'people' | 'usage'>('mine');
+  const [view, setView] = useState<'mine' | 'open' | 'approvals' | 'people' | 'usage' | 'runs' | 'pipeline'>('mine');
   const [editing, setEditing] = useState<string | null>(null);
+  const [running, setRunning] = useState<string | null>(null);
   const [msg, setMsg] = useState('');
   const q = useQuery({ queryKey: ['agent-lists', projectId, kind], queryFn: () => api.get<ListResp>(`/api/projects/${projectId}/agents?kind=${kind}`) });
   const open = (id: string | null) => { setEditing(id); onBuilder?.(id !== null); };
@@ -28,9 +30,10 @@ export default function AgentsTab({ projectId, userId, onBuilder }: { projectId:
     mutationFn: (c: Card) => api.post<DefDetail>('/api/agent-defs/fork', { sourceKind: 'def', sourceId: c.id, kind: c.kind, scope: 'project', projectId }),
     onSuccess: (d) => { void qc.invalidateQueries({ queryKey: ['agent-lists'] }); setView('mine'); open(d.def.id); }, onError: (e) => setMsg(e instanceof Error ? e.message : 'Could not copy it'),
   });
+  if (running) return <AgentRunPanel projectId={projectId} defId={running} onBack={() => setRunning(null)} />;
   if (editing) return <AgentBuilder defId={editing} projectId={projectId} onBack={() => open(null)} />;
   const rights = q.data?.rights;
-  const views: Array<['mine' | 'open' | 'approvals' | 'people' | 'usage', string]> = [['mine', 'Mine'], ['open', 'Open library'], ...(rights?.approve ? [['approvals', `Approvals${q.data?.pending ? ` (${q.data.pending})` : ''}`] as ['approvals', string]] : []), ...(rights?.edit || rights?.approve || rights?.manage ? [['usage', 'Usage'] as ['usage', string]] : []), ...(rights?.manage ? [['people', 'Who can edit and approve'] as ['people', string]] : [])];
+  const views: Array<['mine' | 'open' | 'approvals' | 'people' | 'usage' | 'runs' | 'pipeline', string]> = [['mine', 'Mine'], ['open', 'Open library'], ['runs', 'Runs'], ['pipeline', 'Pipeline'], ...(rights?.approve ? [['approvals', `Approvals${q.data?.pending ? ` (${q.data.pending})` : ''}`] as ['approvals', string]] : []), ...(rights?.edit || rights?.approve || rights?.manage ? [['usage', 'Usage'] as ['usage', string]] : []), ...(rights?.manage ? [['people', 'Who can edit and approve'] as ['people', string]] : [])];
   const cards = view === 'mine' ? q.data?.mine ?? [] : q.data?.open ?? [];
   return (
     <div data-testid="v2-agents-tab">
@@ -43,6 +46,8 @@ export default function AgentsTab({ projectId, userId, onBuilder }: { projectId:
       {view === 'approvals' && <ApprovalsView projectId={projectId} userId={userId} onOpen={(id) => open(id)} />}
       {view === 'people' && <People projectId={projectId} />}
       {view === 'usage' && <Usage projectId={projectId} />}
+      {view === 'runs' && <Runs projectId={projectId} onOpen={(id) => setRunning(id)} />}
+      {view === 'pipeline' && <Pipeline projectId={projectId} />}
       {(view === 'mine' || view === 'open') && (
         q.isLoading ? <div className="animate-pulse text-sm text-slate-400">Loading…</div> :
         !cards.length ? <div className="rounded-xl border border-slate-300 bg-white p-6 text-center text-sm text-slate-500" data-testid="v2-agents-empty">{view === 'mine' ? `No ${kind}s built for this project yet.` : `The organisation has not opened any ${kind}s to projects yet.`}</div> :
@@ -55,8 +60,8 @@ export default function AgentsTab({ projectId, userId, onBuilder }: { projectId:
                 <p className="mt-1 text-sm text-slate-600">{c.description || 'No description yet.'}</p>
                 <div className="mt-2 flex flex-wrap gap-1 text-xs"><Pill>{c.roleLabel}</Pill>{c.inputs.map((i) => <Pill key={i} tone="brand">● {i}</Pill>)}{c.outputs.map((o) => <Pill key={o} tone="green">{o} ●</Pill>)}{c.children > 0 && <Pill tone="amber">↳ {c.children}</Pill>}</div>
                 <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                  {view === 'mine' ? <><button type="button" className={btn} onClick={() => open(c.id)} data-testid="v2-agent-open">{rights?.edit ? 'Open' : 'View'}</button><span>{c.usedInStages ? `Used in ${c.usedInStages} stage${c.usedInStages > 1 ? 's' : ''}` : 'Not used in a stage yet'}</span></>
-                    : <><button type="button" className={btn} onClick={() => open(c.id)}>View</button>{rights?.edit && <button type="button" className={primary} disabled={copy.isPending} data-testid="v2-agent-copy" onClick={() => copy.mutate(c)}>Copy to project</button>}<span>A copy is yours to change; it does not follow the original.</span></>}
+                  {view === 'mine' ? <><button type="button" className={btn} onClick={() => open(c.id)} data-testid="v2-agent-open">{rights?.edit ? 'Open' : 'View'}</button>{c.publishedVersion && <button type="button" className={primary} data-testid="v2-agent-run" onClick={() => setRunning(c.id)}>▶ Run</button>}<span>{c.usedInStages ? `Used in ${c.usedInStages} stage${c.usedInStages > 1 ? 's' : ''}` : 'Not used in a stage yet'}</span></>
+                    : <><button type="button" className={btn} onClick={() => open(c.id)}>View</button><button type="button" className={btn} data-testid="v2-agent-run" onClick={() => setRunning(c.id)}>▶ Run</button>{rights?.edit && <button type="button" className={primary} disabled={copy.isPending} data-testid="v2-agent-copy" onClick={() => copy.mutate(c)}>Copy to project</button>}<span>A copy is yours to change; it does not follow the original.</span></>}
                 </div>
               </li>
             );
@@ -124,6 +129,43 @@ function Usage({ projectId }: { projectId: string }) {
         {u.byAgent.map((a) => <tr key={a.defId} className="border-t border-slate-100" data-testid="v2-usage-row"><td className="py-1.5">{a.name} <span className="text-xs text-slate-400">{a.kind}</span></td><td>{a.runs}</td><td className="text-right">{a.tokens.toLocaleString()}</td></tr>)}
         {!u.byAgent.length && <tr><td colSpan={3} className="py-3 text-center text-slate-400">Nothing has run this month.</td></tr>}
       </tbody></table>
+    </div>
+  );
+}
+
+function Runs({ projectId, onOpen }: { projectId: string; onOpen: (defId: string) => void }) {
+  const q = useQuery({ queryKey: ['agent-run-history', projectId, 'all'], queryFn: () => api.get<{ runs: RunHistoryItem[] }>(`/api/projects/${projectId}/agent-runs?limit=30`) });
+  const runs = q.data?.runs ?? [];
+  return (
+    <div className="rounded-xl border border-slate-300 bg-white p-4" data-testid="v2-agent-runs">
+      <p className="mb-2 text-sm text-slate-600">Runs people started on request, on their own or inside a stage. A stage's automatic runs are recorded on the artefacts they wrote.</p>
+      {q.isLoading ? <div className="animate-pulse text-sm text-slate-400">Loading…</div> : !runs.length ? <div className="py-4 text-center text-sm text-slate-400">Nothing has been run yet.</div> : (
+        <table className="w-full text-sm"><thead><tr className="text-left text-xs text-slate-500"><th>Agent</th><th>By</th><th>When</th><th>Where</th><th className="text-right">Tokens</th><th /></tr></thead><tbody>
+          {runs.map((r) => <tr key={r.id} className="border-t border-slate-100" data-testid="v2-runs-row"><td className="py-1.5">{r.name} <span className="text-xs text-slate-400">v{r.version}</span></td><td>{r.by}</td><td>{new Date(r.at).toLocaleString()}</td>
+            <td>{r.stage ? `Saved to ${r.stage}` : 'On its own'}</td><td className="text-right">{r.tokens.toLocaleString()}</td><td className="text-right"><button type="button" className={btn} onClick={() => onOpen(r.defId)}>Run again</button></td></tr>)}
+        </tbody></table>)}
+    </div>
+  );
+}
+
+function Pipeline({ projectId }: { projectId: string }) {
+  const q = useQuery({ queryKey: ['agent-pipeline', projectId], queryFn: () => api.get<PipelineView>(`/api/projects/${projectId}/agent-pipeline`) });
+  const p = q.data;
+  if (!p) return <div className="animate-pulse text-sm text-slate-400">Loading…</div>;
+  return (
+    <div className="space-y-3" data-testid="v2-agent-pipeline">
+      <p className="text-sm text-slate-600">The workflow, stage by stage, with the agents attached to each in the order they run. A red input means nothing earlier produces it, so the agent would be skipped. Attach, reorder and remove agents in the Workflow designer.</p>
+      {p.problems.length > 0 && <div className="rounded-lg bg-bared-200 px-3 py-2 text-xs text-bared-700" role="alert" data-testid="v2-pipeline-problems">{p.problems.map((x) => `${x.agent} in ${x.stage} needs ${x.inputs.map((i) => i.name).join(', ')}`).join('. ')}.</div>}
+      <ol className="space-y-2">
+        {p.stages.map((s) => (
+          <li key={s.key} className="rounded-xl border border-slate-300 bg-white p-3" data-testid="v2-pipeline-stage">
+            <div className="flex flex-wrap items-center gap-2"><span className="font-display text-sm font-bold text-navy">{s.seq}. {s.name}</span>{s.agentsOnly && <Pill tone="amber">Built from agents</Pill>}<span className="text-xs text-slate-400">writes {s.outputs.join(', ') || 'nothing declared'}</span></div>
+            {s.agents.length === 0 ? <div className="mt-1 text-xs text-slate-400">No custom agents.</div> : (
+              <ol className="mt-2 space-y-1.5 border-l-2 border-slate-200 pl-3">{s.agents.map((a, n) => (
+                <li key={a.defId} className="text-sm" data-testid="v2-pipeline-agent"><b>{n + 1}. {a.name}</b> <Pill tone={a.runs === 'on_request' ? 'amber' : 'green'}>{a.runs === 'always' ? 'every time' : a.runs === 'when' ? 'when…' : 'on request'}</Pill>
+                  <div className="mt-0.5 flex flex-wrap gap-1 text-xs">{a.inputs.map((i) => <Pill key={i.name} tone={WIRE_TONE[i.status]} title={i.from}>{i.name} ← {i.from}</Pill>)}<span className="text-slate-400">→ {a.outputs.join(', ') || 'nothing'}</span></div></li>))}</ol>)}
+          </li>))}
+      </ol>
     </div>
   );
 }

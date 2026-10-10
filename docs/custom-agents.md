@@ -41,6 +41,37 @@ Governance -> Agent library -> **Guardrails**.
 * The platform's Responsible-AI policy, the project rules and the stack decision are **always applied** and cannot be removed.
 * **Not in this release:** tools, webhooks and external agents. Skills are text only.
 
+## Running an agent
+
+An approved agent or skill can be used in three ways.
+
+* **On its own.** Project Context -> Agents and skills -> **Run** on a card. The form lists the agent's inputs. The project fills in what it can (an approved
+  artefact for `upstream:PRD`, the rules, the stack) and says where each value came from; anything typed wins. The answer is shown, can be copied or
+  downloaded, and is kept in the run history (the latest 50 per agent per project). **Nothing in the project's stages changes.** The latest approved
+  version runs. Open organisation agents run the same way.
+* **On request inside a stage.** The strip *Custom agents in this stage* in the stage view lists the attached agents with **Run now**. It runs the version
+  the stage pinned, and what it writes is saved into **that stage** as artefacts with a "How this was made" record. It needs write access to the stage
+  and a stage that has produced work and is not approved (an approved stage must be reopened first).
+* **Automatically**, after the stage's own agents, as attached with run mode *every time* or *only when* a condition holds.
+
+Runs started by hand count against the agent's token cap and the project's monthly budget, and what a person types is screened like a chat message.
+Endpoints: `GET /api/projects/{id}/agents/{def}/run-form[?stage=KEY]`, `POST .../run` (`{inputs, stageKey?}`), `GET /api/projects/{id}/agent-runs`.
+
+## Designing the pipeline
+
+Stages are designed in the Workflow designer; each stage inspector has *Custom agents and skills*.
+
+* **Order is the run order.** Agents in a stage run top to bottom; reorder with the arrows or by dragging.
+* **Chaining.** An agent earlier in the stage can feed one after it: a later agent's `upstream:<TYPE>` input reads what an earlier agent wrote of that type
+  in the same run, before it looks at the stage's own artefacts.
+* **Wiring check** (`app/services/agent_wiring.py`). For every attached agent each input shows where it would come from: the stage brief, the rules or
+  stack, an earlier stage's declared output (following the stage's dependencies), or an agent listed before it. An input nothing earlier produces turns red
+  and the agent would be skipped; text a person types counts only for agents set to *on request*. *Agents and skills -> Pipeline* shows the whole
+  workflow this way, with the problems listed.
+* **A stage built from agents alone.** A custom stage can be set to *Build this stage from its custom agents only*: the persona writer does not run, the
+  attached agents run in order, and the stage's outputs are taken from what they write. With no agent attached it falls back to its own writer.
+  Only custom stages can do this (the workflow refuses it on a built-in stage).
+
 ## Where they run
 
 A stage's custom agents run **after** the stage's own agents (`run_phase_agent` -> `_with_custom_agents`), once per attachment, and save one artefact per

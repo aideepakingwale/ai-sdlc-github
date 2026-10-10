@@ -49,13 +49,18 @@ async def run_stage_agents(
     extra_inputs: dict[str, Any] | None = None,
 ) -> StageAgentsResult:
     out = StageAgentsResult()
+    made: dict[str, str] = {}        # what agents earlier in this stage wrote, by artefact type: a later agent can read it as `upstream:<TYPE>`
+
+    def read(t: str) -> "str | None":
+        return made.get(t.upper()) or upstream(t)
+
     for it in items:
         if only and it["def_id"] != only:
             continue
         name, body = it["name"], it["body"]
         if it["runs"] == "on_request" and not only:
             continue
-        vals, missing = await resolve_inputs(body, brief=brief, upstream=upstream, rules=rules, stack=stack)
+        vals, missing = await resolve_inputs(body, brief=brief, upstream=read, rules=rules, stack=stack)
         for k, v in (extra_inputs or {}).items():
             if k in {i["name"] for i in body.get("inputs", [])}:
                 vals[k] = v
@@ -92,6 +97,7 @@ async def run_stage_agents(
         for o in outs:
             title = name if len(outs) == 1 else f"{name} - {o['name']}"
             content = render_output(res.outputs.get(o["name"]), o["format"])
+            made[o["artefact_type"].upper()] = content
             art = await save(type_=o["artefact_type"], title=title, content=content, summary=content[:300], run=res.record())
             if art is not None:
                 out.artifacts.append(art)

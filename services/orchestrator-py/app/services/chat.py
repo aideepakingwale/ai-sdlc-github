@@ -826,6 +826,7 @@ class ChatService:
             "custom_prompt_id": stage.get("promptId", "") or "",
             "custom_outputs": list(stage.get("outputs") or []),
             "custom_tools": list(stage.get("tools") or []),
+            "agents_only": bool(stage.get("agentsOnly")),
         }
 
     @staticmethod

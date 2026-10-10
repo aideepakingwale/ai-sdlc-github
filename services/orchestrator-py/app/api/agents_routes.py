@@ -71,6 +71,11 @@ class LimitBody(BaseModel):
     monthlyTokens: int | None = None
 
 
+class RunBody(BaseModel):
+    inputs: dict[str, Any] = {}
+    stageKey: str | None = None
+
+
 class StageItem(BaseModel):
     defId: str
     pinnedVersion: int | None = None
@@ -260,3 +265,24 @@ async def project_usage(project_id: str, user: UserPublic = Depends(current_user
 @router.put("/api/projects/{project_id}/agent-limits")
 async def put_limit(project_id: str, body: LimitBody, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     return await c.agent_defs.set_limit(user, project_id, body.monthlyTokens)
+
+
+# ------------------------------------------------------------------ running on request: on its own, or inside a stage
+@router.get("/api/projects/{project_id}/agents/{def_id}/run-form")
+async def run_form(project_id: str, def_id: str, stage: str | None = None, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    return await c.agent_runs.form(user, project_id, def_id, stage)
+
+
+@router.post("/api/projects/{project_id}/agents/{def_id}/run")
+async def run_agent(project_id: str, def_id: str, body: RunBody, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    return await c.agent_runs.run(user, project_id, def_id, body.inputs, body.stageKey)
+
+
+@router.get("/api/projects/{project_id}/agent-runs")
+async def agent_runs(project_id: str, defId: str | None = None, limit: int = 20, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    return await c.agent_runs.history(user, project_id, defId, limit)
+
+
+@router.get("/api/projects/{project_id}/agent-pipeline")
+async def agent_pipeline(project_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    return await c.agent_defs.pipeline(user, project_id)

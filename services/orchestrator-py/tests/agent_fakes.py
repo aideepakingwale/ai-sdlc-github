@@ -55,6 +55,7 @@ class MemRepo:
         self.cases: dict[str, dict] = {}
         self.usage: list[dict] = []
         self.limits: dict[str, int] = {}
+        self.runs: list[dict] = []
 
     async def insert_def(self, d):
         r = {"open": False, "retired": False, "source_kind": None, "source_id": None, "source_name": None, "source_version": None, "project_id": None, "created_at": NOW, "updated_at": NOW, **d}
@@ -195,6 +196,15 @@ async def _set_limit(self, project_id, monthly, user_id):
         self.limits[project_id] = monthly
 
 
+async def _insert_run(self, r):
+    self.runs.append({**r, "created_at": NOW})
+
+
+async def _list_runs(self, project_id, def_id=None, limit=20):
+    return [dict(r) for r in reversed(self.runs) if r["project_id"] == project_id and (def_id is None or r["def_id"] == def_id)][:limit]
+
+
+MemRepo.insert_run, MemRepo.list_runs = _insert_run, _list_runs
 MemRepo.record_usage, MemRepo.usage_for_def, MemRepo.usage_for_project, MemRepo.get_limit, MemRepo.set_limit = _record_usage, _usage_for_def, _usage_for_project, _get_limit, _set_limit
 
 
@@ -264,11 +274,24 @@ class Canon:
         return "## PROJECT CANON\nMUST: no secrets in code."
 
 
-def make(llm: FakeLlm | None = None):
+class FakeWorkflow:
+    """A small workflow: Requirements (writes PRD) -> Architecture (writes HLD) -> Test engineering, and a custom stage that depends on Requirements."""
+    STAGES = [
+        {"key": "stage-1", "seq": 1, "name": "Requirements", "template": 1, "outputs": ["PRD"], "dependsOn": [], "custom": False},
+        {"key": "stage-2", "seq": 2, "name": "Architecture", "template": 2, "outputs": ["HLD"], "dependsOn": ["stage-1"], "custom": False},
+        {"key": "stage-4", "seq": 3, "name": "Test engineering", "template": 4, "outputs": ["TEST_STRATEGY"], "dependsOn": ["stage-2"], "custom": False},
+        {"key": "audit", "seq": 4, "name": "Compliance audit", "template": 7, "outputs": ["REPORT"], "dependsOn": ["stage-1"], "custom": True, "agentsOnly": True},
+    ]
+
+    async def view(self, project_id):
+        return {"stages": [dict(s) for s in self.STAGES]}
+
+
+def make(llm: FakeLlm | None = None, *, workflow=None):
     llm = llm or FakeLlm()
     repo, audit = MemRepo(), FakeAudit()
     runtime = AgentRuntime(llm, audit, AgentUsage(repo))
-    svc = AgentDefService(Db(), repo, Authz(), audit, AgentAuditor(llm, runtime), runtime, canon=Canon(), usage=AgentUsage(repo), llm=llm,
+    svc = AgentDefService(Db(), repo, Authz(), audit, AgentAuditor(llm, runtime), runtime, canon=Canon(), usage=AgentUsage(repo), llm=llm, workflow=workflow,
                           skill_packs=lambda: [{"id": "draft_adr", "name": "Draft ADR", "description": "d", "version": 2, "body": "Draft an ADR", "tier": "frontier", "roles": ["SA"], "phase": 2}])
     return svc, repo, llm, audit
 

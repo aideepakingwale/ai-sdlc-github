@@ -181,6 +181,8 @@ class AgentState(BaseModel):
     custom_prompt_id: str = ""
     custom_outputs: list[str] = Field(default_factory=list)
     custom_tools: list[str] = Field(default_factory=list)
+    # A custom stage whose work is done entirely by the custom agents attached to it (no persona writer).
+    agents_only: bool = False
     # Custom agents attached to this stage and pinned to an approved version (see services/agent_defs.py): resolved, ready to run after the stage's own agents.
     custom_agents: list[dict[str, Any]] = Field(default_factory=list)
 

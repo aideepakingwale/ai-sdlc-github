@@ -15,6 +15,7 @@ import { COLOR_CLASSES } from '../../api/flow';
 import { Pill, StageDot, stageTone } from '../bits';
 import QualityCards, { useFeedback } from './QualityCards';
 import RuleAdviceCard from './RuleAdviceCard';
+import StageAgentsStrip from './StageAgentsStrip';
 import { stageMode, type StageMode } from './stageMode';
 
 const fmtTime = (iso: string): string => {
@@ -389,6 +390,7 @@ export default function StageChat(props: StageControllerProps & { onOpenPipeline
           {afterRun && (
             <Said who={`DevMind · ${mode === 'approved' ? 'approved' : 'ready for review'}`}>{stage.template === 6 ? 'Open the files to review them.' : 'Open an artefact to read it, then approve or ask for changes.'}</Said>
           )}
+          {afterRun && <StageAgentsStrip projectId={projectId} stageKey={stage.key} canWrite={stage.canRetrigger} />}
           {stage.template === 6 && afterRun && <CodeExplorer projectId={projectId} phase={selectedSeq} />}
           {afterRun && outputs}
           {afterRun && (stageArtefacts.length > 0 || ['PENDING_REVIEW', 'APPROVED'].includes(stage.status)) && (

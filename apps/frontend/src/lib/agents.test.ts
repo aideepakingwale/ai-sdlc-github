@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   appendLine, auditSubmittable, decodePalette, delegationMeters, encodePalette, fromDeveloperJson, insertAt, lineDiff, sampleInputs, segments, statusChip, stepIndex,
-  parseCap, spentPercent, tokensLabel, toDeveloperJson, uniqueName, variablesIn, type AgentBody,
+  agentOutputTypes, moveItem, outputFileName, outputText, parseCap, parseRunValue, spentPercent, tokensLabel, toDeveloperJson, uniqueName, variablesIn, type AgentBody,
 } from './agents';
 
 const body: AgentBody = {
@@ -95,5 +95,34 @@ describe('budgets', () => {
     const b = { ...body, budget_tokens: 4000 };
     const back = fromDeveloperJson(toDeveloperJson('Fraud', b), body);
     expect(back.ok && back.body.budget_tokens).toBe(4000);
+  });
+});
+
+describe('running and ordering', () => {
+  it('moves an agent to a new place in the order, and ignores a move that goes nowhere', () => {
+    expect(moveItem(['a', 'b', 'c'], 0, 2)).toEqual(['b', 'c', 'a']);
+    expect(moveItem(['a', 'b', 'c'], 2, 1)).toEqual(['a', 'c', 'b']);
+    const same = ['a', 'b'];
+    expect(moveItem(same, 0, 5)).toBe(same);
+    expect(moveItem(same, 1, 1)).toBe(same);
+  });
+  it('checks a typed value against its type', () => {
+    expect(parseRunValue('0.5', 'number')).toEqual({ ok: true, value: 0.5 });
+    expect(parseRunValue('', 'number')).toMatchObject({ ok: false });
+    expect(parseRunValue('Yes', 'boolean')).toEqual({ ok: true, value: true });
+    expect(parseRunValue('maybe', 'boolean')).toMatchObject({ ok: false });
+    expect(parseRunValue('{"a":', 'object')).toMatchObject({ ok: false });
+    expect(parseRunValue('one\ntwo', 'list')).toEqual({ ok: true, value: 'one\ntwo' });
+  });
+  it('shows an output as text and names the file it downloads as', () => {
+    expect(outputText('plain', 'Markdown')).toBe('plain');
+    expect(outputText({ a: 1 }, 'JSON')).toBe('{\n  "a": 1\n}');
+    expect(outputText([1], 'Markdown')).toContain('```json');
+    expect(outputFileName('Refund fraud screen', 'score', 'JSON')).toBe('refund-fraud-screen-score.json');
+    expect(outputFileName('!!', '', 'Text')).toBe('output.txt');
+  });
+  it('lists the artefact types a stage of agents writes, once each', () => {
+    const o = (t: string) => ({ name: 'x', type: 'string' as const, artefact_type: t, format: 'Markdown' as const });
+    expect(agentOutputTypes([{ outputsDetail: [o('REPORT'), o('CHECKLIST')] }, { outputsDetail: [o('REPORT')] }])).toEqual(['REPORT', 'CHECKLIST']);
   });
 });

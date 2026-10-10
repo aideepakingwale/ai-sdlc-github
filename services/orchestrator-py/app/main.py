@@ -192,6 +192,8 @@ async def lifespan(app: FastAPI):
     agent_defs = AgentDefService(db, agent_repo, authz, audit, AgentAuditor(llm, agent_runtime), agent_runtime, canon=canon, usage=agent_usage, llm=llm,
                                  project_config=project_config, workflow=workflow, skill_packs=lambda: SKILL_PACKS)
     container.agent_defs = agent_defs
+    from .services.agent_runs import AgentRunService
+    container.agent_runs = AgentRunService(agent_defs, agent_repo, db, dynamo, workflow, chat, agent_deps, audit)
     container.skills.custom = agent_defs
     chat.agent_defs = agent_defs
     container.workflow = workflow

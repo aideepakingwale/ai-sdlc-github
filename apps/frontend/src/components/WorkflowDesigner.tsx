@@ -1,4 +1,5 @@
 import StageAgents from '../v2/agents/StageAgents';
+import { agentOutputTypes, type StageItem } from '../lib/agents';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
@@ -378,6 +379,20 @@ export default function WorkflowDesigner({ projectId, onClose, page = false }: {
     if (!selected) return;
     commitSpecs(specsFor(selected).filter((_, idx) => idx !== i));
   };
+  /** Build the stage from its custom agents alone: its outputs become what those agents write. */
+  const setAgentsOnly = async (on: boolean) => {
+    if (!selected) return;
+    update(selectedIdx, { agentsOnly: on });      // the box answers at once; the outputs follow when the agents are known
+    if (!on) return;
+    let types: string[] = [];
+    try {
+      const r = await api.get<{ items: Array<StageItem> }>(`/api/projects/${projectId}/stages/${encodeURIComponent(selected.key)}/agents`);
+      types = agentOutputTypes(r.items.filter((i) => i.kind === 'agent'));
+    } catch { /* the stage may not be saved yet: keep its outputs as they are */ }
+    const have = new Map(specsFor(selected).map((o) => [o.name, o]));
+    if (!types.length) return;
+    update(selectedIdx, { agentsOnly: true, ...(types.length ? { outputs: types, outputSpecs: types.map((t) => have.get(t) ?? { name: t, description: '', spec: '', reviewers: [] }) } : {}) });
+  };
   const toggleContext = (id: string) => {
     if (!selected) return;
     const cur = selected.contextSources ?? [];
@@ -501,6 +516,7 @@ export default function WorkflowDesigner({ projectId, onClose, page = false }: {
                 return (
                   <button
                     key={s.key}
+                    data-testid={`v2-designer-stage-${s.key}`}
                     onClick={() => setSelectedKey(s.key)}
                     draggable
                     onDragStart={(e) => { setDragIdx(idx); if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'; }}
@@ -692,6 +708,11 @@ export default function WorkflowDesigner({ projectId, onClose, page = false }: {
                       <div className="text-[10px] font-semibold uppercase tracking-wide text-indigo-500">
                         Custom phase
                       </div>
+                      <label className="flex cursor-pointer items-start gap-2 rounded-md border border-indigo-200 bg-white px-2 py-1.5 text-[11px]">
+                        <input type="checkbox" data-testid="v2-agents-only" checked={Boolean(selected.agentsOnly)} onChange={(e) => void setAgentsOnly(e.target.checked)} className="mt-0.5 h-3.5 w-3.5 accent-brand-600" />
+                        <span><span className="font-medium text-slate-700">Build this stage from its custom agents only</span>
+                          <span className="block text-[10px] text-slate-500">The persona writer does not run. The agents attached below run in order and the stage's outputs follow what they write.</span></span>
+                      </label>
                       <div>
                         <label className="text-[10px] font-semibold uppercase text-slate-400">Agent persona</label>
                         <input
