@@ -47,11 +47,32 @@ A stage's custom agents run **after** the stage's own agents (`run_phase_agent` 
 declared output with a "How this was made" record. A failure is reported on the stage and does not fail it. Attachment modes: **every time**, **only
 when** a condition is true, or **on request**. Skills are offered to the people working in the stage (optionally limited by role).
 
+## Help while building
+
+* **Draft from a document** (`agent-drafter`): paste a runbook, procedure or policy, or choose a text file, and the model writes the first draft of the
+  description, prompt, inputs and outputs. The reply is forced into what a definition may hold (names, sources, artefact types, lengths) and replaces
+  those fields only; the model, delegates and access you set stay. Credentials and internal host names in the document are meant to become inputs, and
+  the audit still checks the result. Text only, at most 20,000 characters.
+* **Compare with an earlier version** (`agent-judge`): runs the earlier and the current version on the saved test cases (or one made-up sample) and has a
+  judge score each pair out of 10. The order the judge sees alternates between cases, so a bias towards the first answer cancels out. A newer version
+  that scores 0.5 or more lower is flagged "Worse" before you submit; it is advice, not a block.
+
+## Spend
+
+* **Token cap per run** (Engine tab, 1,000 to 40,000): the most one run of the agent, with the agents it hands work to, may spend. It is checked between
+  agents, so a single long answer can finish; an agent whose delegates used the cap does not make its own call. Empty means the platform limit.
+* **Monthly budget per project** (Project Context -> Agents and skills -> *Usage*, set by the managing PM or a super-admin): once the month's tokens
+  reach it, custom agents on that project do not start (a stage reports it and carries on). Tokens are counted, not money, because the price depends on
+  the models routed to. Usage is recorded per agent that ran (`agent_usage`, migration `0048`), by source: stage, test or skill. Audits and probes are
+  platform cost and are not counted.
+
 ## API
 
+
 `/api/agent-library` (super-admin), `/api/agent-defs/...` (create, fork, draft, audit, fix, ack, submit, withdraw, decision, open, retire, test, cases),
-`/api/agent-guardrails`, `/api/projects/{id}/agents`, `/agent-approvals`, `/agent-grants`, `/stages/{key}/agents`. Rules live in
-`app/services/agent_defs.py`; routes only carry them. Data: migration `0047_custom_agents.sql`.
+`/api/agent-defs/{id}/draft-from-text`, `/compare`, `/usage`, `/api/agent-guardrails`, `/api/projects/{id}/agents`, `/agent-approvals`, `/agent-grants`,
+`/agent-usage`, `/agent-limits`, `/stages/{key}/agents`. Rules live in
+`app/services/agent_defs.py`; routes only carry them. Data: migrations `0047_custom_agents.sql` and `0048_agent_usage.sql`.
 
 ## The builder
 

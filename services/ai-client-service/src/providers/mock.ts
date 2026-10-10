@@ -104,6 +104,24 @@ function render(kind: string, topic: string, seed: string, userText: string, all
     case 'agent_audit':
       // The model review of a custom agent definition finds nothing offline; the platform's own checks and probes do the work.
       return JSON.stringify({ findings: [] });
+    case 'agent_compare':
+      // Offline, two versions of an agent cannot be told apart by a judge: call it a tie so a comparison never invents a regression.
+      return JSON.stringify({ winner: 'tie', score_1: 7, score_2: 7, reason: 'The offline model cannot tell the two answers apart.' });
+    case 'agent_draft': {
+      // A draft from a document: take its first lines as the name and the steps, and give the agent one input and one output.
+      const doc = /<document>\n([\s\S]*?)\n<\/document>/.exec(all)?.[1] ?? '';
+      const lines = doc.split('\n').map((l) => l.trim()).filter(Boolean);
+      const title = (lines[0] ?? 'Drafted agent').replace(/^#+\s*/, '').slice(0, 60);
+      const skill = /Kind:\s*skill/.test(all);
+      return JSON.stringify({
+        name: title,
+        description: `Follows the procedure in "${title}" and reports what it finds.`,
+        prompt: `Follow this procedure for {subject}:\n${lines.slice(1, 9).map((l, i) => `${i + 1}. ${l.replace(/^[-*\d.\s]+/, '')}`).join('\n')}\nSay what you found and what to do next. If information is missing, say so instead of guessing.`,
+        role: 'generate',
+        inputs: [{ name: 'subject', type: 'string', source: skill ? 'user' : 'brief', description: 'What the procedure is applied to' }],
+        outputs: [{ name: 'findings', type: 'string', artefact_type: 'REPORT', format: 'Markdown' }],
+      });
+    }
     case 'custom_agent': {
       // A custom agent or skill: answer every output the user message declares (OUTPUT_SCHEMA: {"name": "type"}) with a sample of that type.
       let schema: Record<string, string> = {};

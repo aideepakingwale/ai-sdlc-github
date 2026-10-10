@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   appendLine, auditSubmittable, decodePalette, delegationMeters, encodePalette, fromDeveloperJson, insertAt, lineDiff, sampleInputs, segments, statusChip, stepIndex,
-  toDeveloperJson, uniqueName, variablesIn, type AgentBody,
+  parseCap, spentPercent, tokensLabel, toDeveloperJson, uniqueName, variablesIn, type AgentBody,
 } from './agents';
 
 const body: AgentBody = {
@@ -76,5 +76,24 @@ describe('delegation and diffs', () => {
   });
   it('shows what a version added and removed', () => {
     expect(lineDiff('a\nb', 'a\nc')).toEqual([{ kind: 'del', text: 'b' }, { kind: 'same', text: 'a' }, { kind: 'add', text: 'c' }]);
+  });
+});
+
+describe('budgets', () => {
+  it('reads a token cap: empty is the platform limit, and the range is enforced', () => {
+    expect(parseCap('')).toEqual({ ok: true, value: null });
+    expect(parseCap(' 5,000 ')).toEqual({ ok: true, value: 5000 });
+    expect(parseCap('12.5')).toMatchObject({ ok: false });
+    expect(parseCap('10')).toMatchObject({ ok: false, error: expect.stringContaining('1,000') });
+    expect(parseCap('90000')).toMatchObject({ ok: false });
+  });
+  it('shows how much of a budget is spent, never more than all of it', () => {
+    expect([spentPercent(50, 200), spentPercent(500, 200), spentPercent(5, null), spentPercent(5, 0)]).toEqual([25, 100, 0, 0]);
+    expect([tokensLabel(950), tokensLabel(12_400), tokensLabel(2_500_000)]).toEqual(['950', '12k', '2.5M']);
+  });
+  it('keeps the cap through developer-mode JSON', () => {
+    const b = { ...body, budget_tokens: 4000 };
+    const back = fromDeveloperJson(toDeveloperJson('Fraud', b), body);
+    expect(back.ok && back.body.budget_tokens).toBe(4000);
   });
 });

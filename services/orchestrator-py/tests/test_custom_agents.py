@@ -394,7 +394,7 @@ async def test_delegation_refuses_loops_and_too_much_depth_and_an_unavailable_de
     from app.services.agent_runtime import MAX_AGENTS
     with pytest.raises(SdlcError, match="at most"):
         await res.run(agent_id="z", name="Z", body=GOOD, inputs={"refund": {"x": 1}}, budget=Budget(agents=MAX_AGENTS))
-    with pytest.raises(SdlcError, match="token budget"):
+    with pytest.raises(SdlcError, match="token cap"):
         await res.run(agent_id="z", name="Z", body=GOOD, inputs={"refund": {"x": 1}}, budget=Budget(tokens=0))
 
 
@@ -542,3 +542,162 @@ async def test_core_definitions_are_for_super_admins_only_in_every_route_that_li
             await fn(user=PM)
         with pytest.raises(SdlcError, match="super-admin"):
             await fn(user=AUTHOR)
+
+
+# ---------------------------------------------------------------- comparing versions, drafting from a document, budgets
+async def two_versions(svc, repo, llm, *, old_marker="STYLE-ONE", new_marker="STYLE-TWO", old_out=None, new_out=None):
+    """A published agent (v1) and an edited draft (v2) whose prompts carry different markers, so the fake model answers each differently."""
+    g = {**GOOD, "prompt": GOOD["prompt"] + f"\n{old_marker}"}
+    d = await svc.create(PM, kind="agent", name="Fraud screen", scope="project", project_id="p1", body=g)
+    await publish(svc, PM, SUPER, d["def"]["id"])
+    await svc.save_draft(PM, d["def"]["id"], name=None, body={**g, "prompt": GOOD["prompt"] + f"\n{new_marker}"})
+    llm.by_marker = {old_marker: old_out or {"score": 0.4}, new_marker: new_out or {"score": 0.9}}
+    return d["def"]["id"]
+
+
+async def test_comparing_versions_scores_the_newer_against_the_older_whichever_order_the_judge_sees():
+    svc, repo, llm, _ = make()
+    did = await two_versions(svc, repo, llm)
+    llm.prefer = "0.9"
+    for n in ("one", "two", "three"):               # three cases: the judge sees the answers in alternating order
+        await svc.add_case(PM, did, f"case {n}", {"refund": {"amount": 10}})
+    out = await svc.run_compare(PM, did)
+    assert (out["a"], out["b"]) == (1, 2) and len(out["cases"]) == 3 and not out["usedSample"]
+    assert all(c["winner"] == "b" and c["scoreB"] > c["scoreA"] for c in out["cases"])
+    assert out["summary"]["verdict"] == "better" and out["summary"]["winsB"] == 3
+    llm.prefer = "0.4"                              # now the older answer is the better one
+    worse = await svc.run_compare(PM, did)
+    assert worse["summary"]["verdict"] == "worse" and "before you submit" in worse["summary"]["message"]
+    llm.prefer = None
+    same = await svc.run_compare(PM, did)
+    assert same["summary"]["verdict"] == "same"
+
+
+async def test_comparing_uses_a_sample_when_there_are_no_saved_cases_and_needs_an_earlier_version():
+    svc, repo, llm, _ = make()
+    d = await svc.create(PM, kind="agent", name="Only one", scope="project", project_id="p1", body=GOOD)
+    with pytest.raises(SdlcError, match="no earlier version"):
+        await svc.run_compare(PM, d["def"]["id"])
+    did = await two_versions(svc, repo, llm)
+    out = await svc.run_compare(PM, did)
+    assert out["usedSample"] and out["cases"][0]["name"] == "Sample input"
+    with pytest.raises(SdlcError):
+        await svc.run_compare(MEMBER, did)           # only people who may edit can run it
+
+
+async def test_a_case_one_version_cannot_run_is_reported_and_the_other_wins_it():
+    svc, repo, llm, _ = make()
+    did = await two_versions(svc, repo, llm)
+    await svc.add_case(PM, did, "needs refund", {"unrelated": 1})
+    out = await svc.run_compare(PM, did)
+    assert out["cases"][0]["errorA"] and out["cases"][0]["errorB"] and out["summary"]["verdict"] == "unknown"
+
+
+async def test_a_draft_from_a_document_is_cleaned_and_saved_without_touching_the_models_settings():
+    svc, repo, llm, _ = make()
+    d = await svc.create(PM, kind="agent", name="New agent", scope="project", project_id="p1")
+    did = d["def"]["id"]
+    await svc.save_draft(PM, did, name=None, body={**d["current"]["body"], "model": "Local · Llama 3 (Ollama)", "temperature": 0.7})
+    llm.draft = {"name": "Refund triage", "description": "Triage refunds.", "prompt": "1. Check {Booking ID}.\n2. Decide.",
+                 "role": "wizard", "inputs": [{"name": "Booking ID", "type": "date", "source": "banana"}, {"name": "booking id", "type": "string", "source": "context:rules"}],
+                 "outputs": [{"name": "Decision!", "type": "string", "artefact_type": "not valid", "format": "Pdf"}]}
+    out = await svc.draft_from_text(PM, did, "Runbook: when a refund request arrives, check the booking, the fare rules and decide.")
+    b = out["current"]["body"]
+    assert out["def"]["name"] == "Refund triage"
+    assert [i["name"] for i in b["inputs"]] == ["booking_id", "booking_id_2"] and b["inputs"][0]["source"] == "brief" and b["inputs"][1]["source"] == "context:rules"
+    assert b["inputs"][0]["type"] == "string" and b["role"] == "generate"
+    assert b["outputs"][0]["name"] == "decision" and b["outputs"][0]["artefact_type"] == "REPORT" and b["outputs"][0]["format"] == "Markdown"
+    assert b["model"] == "Local · Llama 3 (Ollama)" and b["temperature"] == 0.7        # what the person chose is kept
+
+
+async def test_a_draft_for_a_skill_takes_its_input_from_the_person_and_a_named_agent_keeps_its_name():
+    svc, repo, llm, _ = make()
+    d = await svc.create(PM, kind="skill", name="Fare rules lookup", scope="project", project_id="p1")
+    llm.draft = {"name": "Something else", "prompt": "Look up the {fare_class}.", "inputs": [{"name": "fare_class", "source": "brief"}], "outputs": [{"name": "answer"}]}
+    out = await svc.draft_from_text(PM, d["def"]["id"], "Procedure: look up the fare class, read its change and refund conditions, and explain them.")
+    assert out["def"]["name"] == "Fare rules lookup" and out["current"]["body"]["inputs"][0]["source"] == "user"
+
+
+async def test_a_draft_needs_a_real_document_and_an_editable_draft():
+    svc, repo, llm, _ = make()
+    d = await svc.create(PM, kind="agent", name="New agent", scope="project", project_id="p1")
+    llm.draft = {"prompt": "Do it."}
+    with pytest.raises(SdlcError, match="few sentences"):
+        await svc.draft_from_text(PM, d["def"]["id"], "too short")
+    with pytest.raises(SdlcError, match="longer than"):
+        await svc.draft_from_text(PM, d["def"]["id"], "x" * 30000)
+    llm.draft = {"prompt": ""}
+    with pytest.raises(SdlcError, match="did not write"):
+        await svc.draft_from_text(PM, d["def"]["id"], "A real procedure with enough words in it to be a document.")
+    with pytest.raises(SdlcError):
+        await svc.draft_from_text(MEMBER, d["def"]["id"], "A real procedure with enough words in it to be a document.")
+    ready = await svc.create(PM, kind="agent", name="Ready one", scope="project", project_id="p1", body=GOOD)
+    await svc.run_audit(PM, ready["def"]["id"])
+    await svc.submit(PM, ready["def"]["id"])
+    llm.draft = {"prompt": "Do it."}
+    with pytest.raises(SdlcError, match="waiting for approval"):
+        await svc.draft_from_text(PM, ready["def"]["id"], "A real procedure with enough words in it to be a document.")
+
+
+def test_the_token_cap_is_a_whole_number_in_range_or_empty():
+    assert body.normalise_body("agent", GOOD)["budget_tokens"] is None
+    assert body.normalise_body("agent", {**GOOD, "budget_tokens": "5000"})["budget_tokens"] == 5000
+    for bad in (10, 90000, "lots"):
+        with pytest.raises(SdlcError, match="token cap"):
+            body.normalise_body("agent", {**GOOD, "budget_tokens": bad})
+
+
+async def test_an_agents_own_cap_stops_a_run_whose_delegates_used_it_up():
+    svc, repo, llm, _ = make()
+    child = await svc.create(PM, kind="agent", name="Child", scope="project", project_id="p1", body=GOOD)
+    await publish(svc, PM, SUPER, child["def"]["id"])
+    parent = await svc.create(PM, kind="agent", name="Parent", scope="project", project_id="p1",
+                              body={**GOOD, "budget_tokens": 1000, "children": [{"agent_id": child["def"]["id"], "when": "always"}]})
+    llm.tokens = (600, 600)                          # each call spends more than the whole cap
+    with pytest.raises(SdlcError, match="token cap"):
+        await svc.run_test(PM, parent["def"]["id"], {"refund": {"a": 1}})
+    llm.tokens = (100, 20)
+    ok = await svc.run_test(PM, parent["def"]["id"], {"refund": {"a": 1}})
+    assert ok["totalTokens"] == 240
+
+
+async def test_usage_is_counted_per_agent_and_a_projects_monthly_budget_stops_further_runs():
+    svc, repo, llm, _ = make()
+    d = await svc.create(PM, kind="agent", name="Fraud screen", scope="project", project_id="p1", body=GOOD)
+    did = d["def"]["id"]
+    await svc.run_test(PM, did, {"refund": {"a": 1}})
+    u = await svc.def_usage(PM, did)
+    assert u["runs"] == 1 and u["tokens"] == 120 and u["bySource"] == {"test": 120}
+    p = await svc.project_usage(PM, "p1")
+    assert p["used"] == 120 and p["limit"] is None and p["byAgent"][0]["name"] == "Fraud screen" and not p["exceeded"]
+    with pytest.raises(SdlcError):
+        await svc.set_limit(AUTHOR, "p1", 100)         # only the manager sets the budget
+    await granted(svc, repo, edit=[AUTHOR])
+    with pytest.raises(SdlcError):
+        await svc.set_limit(AUTHOR, "p1", 100)
+    with pytest.raises(SdlcError, match="whole|number"):
+        await svc.set_limit(PM, "p1", -5)
+    assert (await svc.set_limit(PM, "p1", 100))["exceeded"] is True
+    with pytest.raises(SdlcError, match="monthly budget"):
+        await svc.run_test(PM, did, {"refund": {"a": 1}})
+    assert (await svc.set_limit(PM, "p1", None))["limit"] is None
+    await svc.run_test(PM, did, {"refund": {"a": 1}})
+    with pytest.raises(SdlcError):
+        await svc.project_usage(MEMBER, "p1")          # cost is for people who build or approve
+
+
+async def test_a_stage_run_over_the_monthly_budget_is_reported_and_does_not_fail_the_stage():
+    svc, repo, llm, audit = make()
+    d = await svc.create(PM, kind="agent", name="Fraud screen", scope="project", project_id="p1", body=GOOD)
+    await publish(svc, PM, SUPER, d["def"]["id"])
+    await svc.set_limit(PM, "p1", 1)
+    repo.usage.append({"def_id": d["def"]["id"], "project_id": "p1", "source": "stage", "prompt": 5, "completion": 5})
+    saved = []
+
+    async def save(**kw):
+        saved.append(kw)
+    items = [{"def_id": d["def"]["id"], "name": "Fraud screen", "version": 1, "body": GOOD | {"outputs": GOOD["outputs"]}, "runs": "always", "condition": ""}]
+    items[0]["body"] = body.normalise_body("agent", GOOD)
+    res = await run_stage_agents(runtime=svc._runtime, items=items, brief="b", upstream=lambda t: None, rules="", stack="", project_context="", save=save, emit=lambda e: None,
+                                 project_id="p1")
+    assert not saved and res.failed and "monthly budget" in res.failed[0]

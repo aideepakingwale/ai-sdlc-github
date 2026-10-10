@@ -29,6 +29,7 @@ RUNS = ("always", "when", "on_request")
 
 MAX_INPUTS, MAX_OUTPUTS, MAX_CHILDREN = 12, 8, 5
 MAX_PROMPT, MAX_DESC, MAX_NAME = 8_000, 400, 80
+MIN_CAP, MAX_CAP = 1_000, 40_000
 
 _IDENT = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 _ARTEFACT = re.compile(r"^[A-Z][A-Z0-9_]{1,39}$")
@@ -64,6 +65,19 @@ def clean_name(v: Any) -> str:
         raise _bad("A name needs at least 3 characters")
     if len(n) > MAX_NAME:
         raise _bad(f"A name is at most {MAX_NAME} characters")
+    return n
+
+
+def _cap(v: Any) -> int | None:
+    """The most tokens one run of this agent (with its delegates) may spend. Empty means the platform limit."""
+    if v in (None, "", 0):
+        return None
+    try:
+        n = int(v)
+    except (TypeError, ValueError) as err:
+        raise _bad("The token cap is a whole number") from err
+    if not MIN_CAP <= n <= MAX_CAP:
+        raise _bad(f"The token cap is between {MIN_CAP:,} and {MAX_CAP:,}")
     return n
 
 
@@ -140,6 +154,7 @@ def normalise_body(kind: str, data: dict[str, Any] | None) -> dict[str, Any]:
         "icon": str(d.get("icon") or ("shield" if kind == "agent" else "wand"))[:24],
         "execution_mode": mode,
         "tools": [],
+        "budget_tokens": _cap(d.get("budget_tokens")),
         "inputs": _inputs(d.get("inputs")),
         "outputs": _outputs(d.get("outputs")),
     }

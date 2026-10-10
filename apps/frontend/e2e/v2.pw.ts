@@ -280,7 +280,7 @@ test.describe('agents', () => {
     await expect(cat.getByRole('button', { name: 'Specialist (29)', exact: true })).toBeVisible();
     await cat.getByRole('button', { name: 'Proposed (3)', exact: true }).click();
     await expect(page.getByTestId('v2-agent-row')).toHaveCount(3);
-    await cat.getByRole('button', { name: 'All (55)', exact: true }).click();
+    await cat.getByRole('button', { name: 'All (57)', exact: true }).click();
     await page.getByTestId('v2-agent-row').filter({ hasText: 'prd' }).first().click();
     await expect(cat).toContainText('agents/generators/stage-1-requirements/prd.md');
     await expect(cat).toContainText('Product Requirements Document');
@@ -810,6 +810,94 @@ test.describe('custom agents', () => {
     await page.getByTestId('v2-stage-agent-chip').filter({ hasText: 'Refund fraud screen' }).click();
     await expect(page.getByTestId('v2-stage-agent')).toContainText('Refund fraud screen');
     await expect(page.getByTestId('v2-stage-agent')).toContainText('Approved version 1');
+  });
+
+  test('draft an agent from a runbook, cap its tokens, then compare a new version with the approved one', async ({ page, baseURL }) => {
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-nav-context').click();
+    await page.getByTestId('v2-context-tab-agents').click();
+    await page.getByTestId('v2-agents-new').click();
+    await expect(page.getByTestId('v2-builder')).toBeVisible();
+
+    // draft from a document
+    await page.getByTestId('v2-draft-open').click();
+    await page.getByTestId('v2-draft-text').fill('Refund triage runbook\n1. Check the booking and the fare rules.\n2. Compare the refund amount with the fare paid.\n3. Escalate when the amount is above the fare.');
+    await page.getByTestId('v2-draft-run').click();
+    await expect(page.getByTestId('v2-builder-name')).toHaveValue('Refund triage runbook');
+    await expect(page.getByTestId('v2-builder-prompt')).toHaveValue(/Check the booking and the fare rules/);
+    await page.getByTestId('v2-btab-io').click();
+    await expect(page.getByTestId('v2-input-row')).toHaveCount(1);
+    await expect(page.getByTestId('v2-input-row').locator('input').first()).toHaveValue('subject');
+
+    // a token cap: out of range is refused, a valid one is saved
+    await page.getByTestId('v2-btab-engine').click();
+    await page.getByTestId('v2-engine-cap').fill('50');
+    await expect(page.getByTestId('v2-engine-cap-error')).toContainText('1,000');
+    await page.getByTestId('v2-engine-cap').fill('5000');
+    await expect(page.getByTestId('v2-engine-cap-error')).toHaveCount(0);
+    await expect(page.getByTestId('v2-save-state')).toHaveText('Saved');
+
+    // compare needs an earlier version
+    await expect(page.getByTestId('v2-compare')).toBeDisabled();
+    await page.getByTestId('v2-btab-audit').click();
+    await page.getByTestId('v2-audit-run').click();
+    await expect(page.getByTestId('v2-audit-rerun')).toBeVisible({ timeout: 30_000 });
+    if (await page.getByTestId('v2-audit-ack').count()) await page.getByTestId('v2-audit-ack').check();
+    await page.getByTestId('v2-builder-submit').click();
+    await expect(page.getByTestId('v2-builder')).toHaveAttribute('data-status', 'pending');
+    const defId = ((await (await page.request.get(`/api/projects/${id}/agents?kind=agent`)).json()) as { mine: Array<{ id: string }> }).mine[0]!.id;
+    const other = await secondPerson(baseURL!);
+    expect((await other.post(`/api/agent-defs/${defId}/decision`, { data: { decision: 'approve' } })).ok()).toBeTruthy();
+    await other.dispose();
+
+    // editing the approved version starts v2, and now it can be compared
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-nav-context').click();
+    await page.getByTestId('v2-context-tab-agents').click();
+    await page.getByTestId('v2-agent-open').click();
+    await page.getByTestId('v2-builder-desc').fill('Triages refund requests and says when to escalate them.');
+    await expect(page.getByTestId('v2-save-state')).toHaveText('Saved');
+    await expect(page.getByTestId('v2-compare')).toBeEnabled();
+    await page.getByTestId('v2-compare').click();
+    await expect(page.getByTestId('v2-compare-result')).toBeVisible();
+    await expect(page.getByTestId('v2-compare-case')).toHaveCount(1);
+    await expect(page.getByTestId('v2-compare-message')).toContainText('Version 2');
+  });
+
+  test('a project sees what its agents spend, and a monthly budget stops further runs', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    const created = await page.request.post('/api/agent-defs', { data: { kind: 'agent', name: 'Budget probe', scope: 'project', projectId: id } });
+    const defId = ((await created.json()) as { def: { id: string } }).def.id;
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-nav-context').click();
+    await page.getByTestId('v2-context-tab-agents').click();
+    await page.getByTestId('v2-agent-open').click();
+    await page.getByTestId('v2-test-run').click();
+    await expect(page.getByTestId('v2-test-result')).toBeVisible();
+    await page.getByTestId('v2-btab-engine').click();
+    await expect(page.getByTestId('v2-def-usage')).toContainText('1 run');
+    await page.getByTestId('v2-builder-back').click();
+
+    await page.getByTestId('v2-agents-view-usage').click();
+    await expect(page.getByTestId('v2-usage-row')).toContainText('Budget probe');
+    await page.getByTestId('v2-usage-limit').fill('1');
+    await page.getByTestId('v2-usage-save').click();
+    await expect(page.getByTestId('v2-usage-exceeded')).toBeVisible();
+
+    const run = await page.request.post(`/api/agent-defs/${defId}/test`, { data: { inputs: { input_1: 'x' } } });
+    expect(run.ok()).toBeFalsy();
+    expect(JSON.stringify(await run.json())).toContain('monthly budget');
+    // lifting the limit lets it run again
+    await page.getByTestId('v2-usage-limit').fill('');
+    await page.getByTestId('v2-usage-save').click();
+    await expect(page.getByTestId('v2-usage-exceeded')).toHaveCount(0);
+    expect((await page.request.post(`/api/agent-defs/${defId}/test`, { data: { inputs: { input_1: 'x' } } })).ok()).toBeTruthy();
   });
 
   test('built-in agents are only for super-admins; a project cannot see them', async ({ page }) => {

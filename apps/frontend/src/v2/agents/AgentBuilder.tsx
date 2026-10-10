@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../api/client';
 import {
   ARTEFACT_TYPES, FORMATS, MODELS, MODEL_ROLES, PHASE_ROLES, SOURCE_OPTIONS, STAGE_NAMES, STEPS, VALUE_TYPES, appendLine, auditSubmittable, costHint, decodePalette, delegationMeters, fromDeveloperJson, insertAt,
-  sampleInputs, segments, statusChip, stepIndex, toDeveloperJson, uniqueName, type AgentBody, type Card, type DefDetail, type InputDef, type ModelRole, type OutputDef, type PaletteKind, type RunResultView,
+  sampleInputs, segments, statusChip, stepIndex, toDeveloperJson, uniqueName, parseCap, tokensLabel, TOKEN_CAP, VERDICT_TONE, type AgentBody, type Card, type CompareResult, type DefDetail, type DefUsage, type InputDef, type ModelRole, type OutputDef, type PaletteKind, type RunResultView,
 } from '../../lib/agents';
 import { Pill } from '../bits';
 import AuditPanel from './AuditPanel';
@@ -95,6 +95,17 @@ export default function AgentBuilder({ defId, projectId, onBack }: { defId: stri
   const retire = useMutation({ mutationFn: () => api.post(`/api/agent-defs/${defId}/retire`), onSuccess: () => { refreshLists(); onBack(); } });
   const remove = useMutation({ mutationFn: () => api.del(`/api/agent-defs/${defId}`), onSuccess: () => { refreshLists(); onBack(); }, onError: (e) => setMessage(errText(e, 'Could not delete')) });
   const toggleOpen = useMutation({ mutationFn: (open: boolean) => api.put<DefDetail>(`/api/agent-defs/${defId}/open`, { open }), onSuccess: (d) => { put(d); refreshLists(); }, onError: (e) => setMessage(errText(e, 'Could not change that')) });
+  const [draftOpen, setDraftOpen] = useState(false);
+  const [draftText, setDraftText] = useState('');
+  const draft = useMutation({
+    mutationFn: async (text: string) => { await flush(); return api.post<DefDetail>(`/api/agent-defs/${defId}/draft-from-text`, { text }); },
+    onSuccess: (d) => {
+      dirty.current = false; put(d);
+      if (d.current?.body) { setName(d.def.name); setBody(d.current.body); lastSaved.current = JSON.stringify({ n: d.def.name, b: d.current.body }); setDevText(toDeveloperJson(d.def.name, d.current.body)); }
+      setDraftOpen(false); setDraftText(''); setMessage('Drafted from your document. Read it through, edit it, then run the audit.'); refreshLists();
+    },
+    onError: (e) => setMessage(errText(e, 'Could not draft from that document')),
+  });
   const decide = useMutation({
     mutationFn: (v: { decision: string; comment: string }) => api.post<DefDetail>(`/api/agent-defs/${defId}/decision`, v),
     onSuccess: (d) => { put(d); refreshLists(); }, onError: (e) => setMessage(errText(e, 'Could not record the decision')),
@@ -203,6 +214,25 @@ export default function AgentBuilder({ defId, projectId, onBack }: { defId: stri
             </div>
           ) : (
             <div className="space-y-3">
+              {editable && (
+                <div className="rounded-lg border border-dashed border-slate-300 p-2" data-testid="v2-draft-box">
+                  {!draftOpen ? (
+                    <button type="button" className={btn} data-testid="v2-draft-open" onClick={() => setDraftOpen(true)}>✦ Draft from a document</button>
+                  ) : (
+                    <div className="space-y-2">
+                      <p className="text-xs text-slate-500">Paste a runbook, procedure or policy, or choose a text file. The model writes a first draft of the {kind}. It replaces the description, prompt, inputs and outputs below; you review and audit it like anything else.</p>
+                      <textarea aria-label="Document" data-testid="v2-draft-text" rows={7} value={draftText} onChange={(e) => setDraftText(e.target.value)} className={`${field} font-mono text-xs`} placeholder="Runbook or procedure…" />
+                      <div className="flex flex-wrap items-center gap-2">
+                        <input type="file" accept=".txt,.md,.markdown,.yaml,.yml,.json,.sh,.csv,text/*" aria-label="Choose a file" data-testid="v2-draft-file" className="text-xs"
+                          onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void f.text().then(setDraftText); }} />
+                        <button type="button" className={primary} disabled={draft.isPending || draftText.trim().length < 40} data-testid="v2-draft-run" onClick={() => draft.mutate(draftText)}>{draft.isPending ? 'Drafting…' : 'Draft it'}</button>
+                        <button type="button" className={btn} onClick={() => setDraftOpen(false)}>Cancel</button>
+                        <span className="text-[11px] text-slate-400">{draftText.length.toLocaleString()} of 20,000 characters</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
               <div><h3 className="font-display text-base font-semibold text-navy">Instructions</h3><p className="text-xs text-slate-500">Say what the {kind} does and what a good answer looks like. Use {'{name}'} to bring in an input.</p></div>
               <label className="block text-xs font-semibold text-slate-600">What it does <span className="font-normal text-slate-400">(the audit checks the {kind} against this)</span>
                 <input data-testid="v2-builder-desc" className={`${field} mt-1 font-normal`} value={body.description} disabled={!editable} onChange={(e) => edit((b) => ({ ...b, description: e.target.value }))} /></label>
@@ -251,7 +281,9 @@ export default function AgentBuilder({ defId, projectId, onBack }: { defId: stri
                 <select className={`${field} mt-1 font-normal`} disabled={!editable} value={body.fallback ?? ''} onChange={(e) => edit((b) => ({ ...b, fallback: e.target.value || null }))}><option value="">None</option>{MODELS.map((m) => <option key={m}>{m}</option>)}</select></label>
               <label className="block font-semibold text-slate-600">Temperature <b className="text-slate-900">{body.temperature.toFixed(1)}</b>
                 <input type="range" min={0} max={1} step={0.1} disabled={!editable} value={body.temperature} onChange={(e) => edit((b) => ({ ...b, temperature: Number(e.target.value) }))} className="mt-1 w-full" /></label>
+              <CapField value={body.budget_tokens ?? null} editable={editable} onChange={(v) => edit((b) => ({ ...b, budget_tokens: v }))} />
               <div className="rounded-lg bg-brand-50 p-2 text-slate-600">About ${hint.dollars} per run, about {hint.seconds} s. The same prompt and schema go to the fallback if the first model fails.</div>
+              {rights?.edit && <UsageCard defId={defId} />}
             </div>
           )}
           {tab === 'io' && kind === 'agent' && <IoTab body={body} editable={editable} spawn={spawn} edit={edit} name={name} />}
@@ -377,6 +409,11 @@ function TestDrawer({ defId, detail, body, editable }: { defId: string; detail: 
     mutationFn: () => api.post(`/api/agent-defs/${defId}/cases`, { name: caseName || `Case ${detail.cases.length + 1}`, inputs: JSON.parse(text) as Record<string, unknown> }),
     onSuccess: () => { setCaseName(''); void qc.invalidateQueries({ queryKey: ['agent-def', defId] }); }, onError: (e) => setError(errText(e, 'Could not save the case')),
   });
+  const [cmp, setCmp] = useState<CompareResult | null>(null);
+  const compare = useMutation({
+    mutationFn: () => api.post<CompareResult>(`/api/agent-defs/${defId}/compare`, {}),
+    onSuccess: (r) => { setCmp(r); setError(''); }, onError: (e) => { setCmp(null); setError(errText(e, 'The comparison failed')); },
+  });
   const delCase = useMutation({ mutationFn: (id: string) => api.del(`/api/agent-defs/${defId}/cases/${id}`), onSuccess: () => void qc.invalidateQueries({ queryKey: ['agent-def', defId] }) });
   const pill = (v: unknown) => JSON.stringify(v, null, 2);
   return (
@@ -386,6 +423,7 @@ function TestDrawer({ defId, detail, body, editable }: { defId: string; detail: 
         <div className="flex flex-wrap items-center gap-2">
           {detail.cases.length > 0 && <select aria-label="Saved cases" className="rounded-lg border border-slate-300 px-2 py-1 text-xs" value="" onChange={(e) => { const c = detail.cases.find((x) => x.id === e.target.value); if (c) setText(JSON.stringify(c.inputs, null, 2)); }}><option value="">Saved cases ({detail.cases.length})</option>{detail.cases.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>}
           <button type="button" className={btn} onClick={() => { touched.current = false; setTextRaw(sample); }} data-testid="v2-test-sample">Generate sample</button>
+          <button type="button" className={btn} disabled={!editable || compare.isPending || detail.versions.length < 2} data-testid="v2-compare" title={detail.versions.length < 2 ? 'Edit an approved version to start the next one, then compare' : 'Run the earlier version and this one on your saved cases and have a judge score both'} onClick={() => compare.mutate()}>{compare.isPending ? 'Comparing…' : `Compare with v${Math.max(1, (detail.current?.version ?? 2) - 1)}`}</button>
           <button type="button" className={primary} disabled={!editable || run.isPending} onClick={() => run.mutate()} data-testid="v2-test-run">{run.isPending ? 'Running…' : `▶ Run ${detail.def.kind}`}</button>
         </div>
       </div>
@@ -413,7 +451,56 @@ function TestDrawer({ defId, detail, body, editable }: { defId: string; detail: 
           </div>
         </div>
       )}
+      {cmp && <CompareView r={cmp} />}
       {detail.cases.length > 0 && <ul className="mt-3 flex flex-wrap gap-1.5 text-xs">{detail.cases.map((c) => <li key={c.id} className="flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5">{c.name}<button type="button" aria-label={`Delete ${c.name}`} className="text-slate-400 hover:text-bared-600" onClick={() => delCase.mutate(c.id)}>×</button></li>)}</ul>}
     </section>
+  );
+}
+
+function CapField({ value, editable, onChange }: { value: number | null; editable: boolean; onChange: (v: number | null) => void }) {
+  const [text, setText] = useState(value ? String(value) : '');
+  const [err, setErr] = useState('');
+  useEffect(() => { setText(value ? String(value) : ''); }, [value]);
+  return (
+    <label className="block font-semibold text-slate-600">Token cap per run <span className="font-normal text-slate-400">(optional)</span>
+      <input data-testid="v2-engine-cap" inputMode="numeric" className={`${field} mt-1 font-normal`} disabled={!editable} value={text} placeholder={`Platform limit, ${TOKEN_CAP.max.toLocaleString()}`}
+        onChange={(e) => { setText(e.target.value); const r = parseCap(e.target.value); if (r.ok) { setErr(''); onChange(r.value); } else setErr(r.error); }} />
+      {err ? <span className="mt-0.5 block font-normal text-bared-700" role="alert" data-testid="v2-engine-cap-error">{err}</span>
+        : <span className="mt-0.5 block font-normal text-slate-400">The most this agent, with the agents it hands work to, may spend in one run. It is checked between agents, so one long answer can finish.</span>}
+    </label>
+  );
+}
+
+function UsageCard({ defId }: { defId: string }) {
+  const q = useQuery({ queryKey: ['agent-usage', defId], queryFn: () => api.get<DefUsage>(`/api/agent-defs/${defId}/usage`), retry: false });
+  const u = q.data;
+  if (!u) return null;
+  const max = Math.max(1, ...u.daily.map((d) => d.tokens));
+  return (
+    <div className="rounded-lg border border-slate-200 p-2" data-testid="v2-def-usage">
+      <div className="flex items-center justify-between"><b>Last {u.days} days</b><span className="text-slate-500">{u.runs} run{u.runs === 1 ? '' : 's'} · {tokensLabel(u.tokens)} tokens</span></div>
+      {u.daily.length > 0 ? <div className="mt-1 flex h-10 items-end gap-0.5" aria-label="Tokens per day">{u.daily.map((d) => <span key={d.day} title={`${d.day}: ${d.tokens.toLocaleString()} tokens`} className="w-2 rounded-sm bg-brand-400" style={{ height: `${Math.max(8, (d.tokens / max) * 100)}%` }} />)}</div>
+        : <div className="mt-1 text-slate-400">Not run yet.</div>}
+      {Object.keys(u.bySource).length > 0 && <div className="mt-1 text-slate-500">{Object.entries(u.bySource).map(([k, v]) => `${k} ${tokensLabel(v)}`).join(' · ')}</div>}
+    </div>
+  );
+}
+
+function CompareView({ r }: { r: CompareResult }) {
+  const sc = (n: number | null) => (n === null ? '–' : n.toFixed(1));
+  return (
+    <div className="mt-3 space-y-2 rounded-lg border border-slate-200 p-3" data-testid="v2-compare-result" data-verdict={r.summary.verdict}>
+      <div className="flex flex-wrap items-center gap-2"><Pill tone={VERDICT_TONE[r.summary.verdict]}>{r.summary.verdict === 'better' ? 'Better' : r.summary.verdict === 'worse' ? 'Worse' : r.summary.verdict === 'same' ? 'About the same' : 'Not scored'}</Pill>
+        <span className="text-sm text-slate-700" data-testid="v2-compare-message">{r.summary.message}</span></div>
+      <div className="text-xs text-slate-500">v{r.b} wins {r.summary.winsB}, v{r.a} wins {r.summary.winsA}, ties {r.summary.ties}{r.usedSample ? ' · compared on a made-up sample because no test cases are saved' : ''} · {(r.tokens.promptTokens + r.tokens.completionTokens).toLocaleString()} tokens</div>
+      <ul className="space-y-1.5">{r.cases.map((c, i) => (
+        <li key={i} className="rounded border border-slate-200 p-2 text-xs" data-testid="v2-compare-case">
+          <div className="flex flex-wrap items-center justify-between gap-2"><b>{c.name}</b><span>v{r.a} {sc(c.scoreA)} · v{r.b} {sc(c.scoreB)}{c.winner && c.winner !== 'tie' ? ` · v${c.winner === 'a' ? r.a : r.b} is better` : c.winner === 'tie' ? ' · tie' : ''}</span></div>
+          {c.reason && <div className="text-slate-500">{c.reason}</div>}
+          {(c.errorA || c.errorB) && <div className="text-bared-700">{c.errorA && `v${r.a}: ${c.errorA} `}{c.errorB && `v${r.b}: ${c.errorB}`}</div>}
+          <details className="mt-1"><summary className="cursor-pointer text-slate-500">Both answers</summary>
+            <div className="mt-1 grid gap-2 md:grid-cols-2"><pre className="max-h-40 overflow-auto rounded bg-slate-50 p-1.5">{JSON.stringify(c.a, null, 2)}</pre><pre className="max-h-40 overflow-auto rounded bg-slate-50 p-1.5">{JSON.stringify(c.b, null, 2)}</pre></div></details>
+        </li>))}</ul>
+    </div>
   );
 }

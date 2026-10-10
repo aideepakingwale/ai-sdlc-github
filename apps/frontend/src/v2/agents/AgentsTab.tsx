@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '../../api/client';
-import { statusChip, type Card, type DefDetail, type DefKind, type Rights } from '../../lib/agents';
+import { spentPercent, statusChip, tokensLabel, type Card, type DefDetail, type DefKind, type ProjectUsage, type Rights } from '../../lib/agents';
 import type { ProjectMember } from '../../api/types';
 import { Pill } from '../bits';
 import AgentBuilder from './AgentBuilder';
@@ -15,7 +15,7 @@ type ListResp = { rights: Rights; mine: Card[]; open: Card[]; pending: number };
 export default function AgentsTab({ projectId, userId, onBuilder }: { projectId: string; userId: string; onBuilder?: (open: boolean) => void }) {
   const qc = useQueryClient();
   const [kind, setKind] = useState<DefKind>('agent');
-  const [view, setView] = useState<'mine' | 'open' | 'approvals' | 'people'>('mine');
+  const [view, setView] = useState<'mine' | 'open' | 'approvals' | 'people' | 'usage'>('mine');
   const [editing, setEditing] = useState<string | null>(null);
   const [msg, setMsg] = useState('');
   const q = useQuery({ queryKey: ['agent-lists', projectId, kind], queryFn: () => api.get<ListResp>(`/api/projects/${projectId}/agents?kind=${kind}`) });
@@ -30,7 +30,7 @@ export default function AgentsTab({ projectId, userId, onBuilder }: { projectId:
   });
   if (editing) return <AgentBuilder defId={editing} projectId={projectId} onBack={() => open(null)} />;
   const rights = q.data?.rights;
-  const views: Array<['mine' | 'open' | 'approvals' | 'people', string]> = [['mine', 'Mine'], ['open', 'Open library'], ...(rights?.approve ? [['approvals', `Approvals${q.data?.pending ? ` (${q.data.pending})` : ''}`] as ['approvals', string]] : []), ...(rights?.manage ? [['people', 'Who can edit and approve'] as ['people', string]] : [])];
+  const views: Array<['mine' | 'open' | 'approvals' | 'people' | 'usage', string]> = [['mine', 'Mine'], ['open', 'Open library'], ...(rights?.approve ? [['approvals', `Approvals${q.data?.pending ? ` (${q.data.pending})` : ''}`] as ['approvals', string]] : []), ...(rights?.edit || rights?.approve || rights?.manage ? [['usage', 'Usage'] as ['usage', string]] : []), ...(rights?.manage ? [['people', 'Who can edit and approve'] as ['people', string]] : [])];
   const cards = view === 'mine' ? q.data?.mine ?? [] : q.data?.open ?? [];
   return (
     <div data-testid="v2-agents-tab">
@@ -42,6 +42,7 @@ export default function AgentsTab({ projectId, userId, onBuilder }: { projectId:
       {msg && <div className="mb-2 rounded-lg bg-slate-100 px-3 py-1.5 text-xs text-slate-700" role="status">{msg}</div>}
       {view === 'approvals' && <ApprovalsView projectId={projectId} userId={userId} onOpen={(id) => open(id)} />}
       {view === 'people' && <People projectId={projectId} />}
+      {view === 'usage' && <Usage projectId={projectId} />}
       {(view === 'mine' || view === 'open') && (
         q.isLoading ? <div className="animate-pulse text-sm text-slate-400">Loading…</div> :
         !cards.length ? <div className="rounded-xl border border-slate-300 bg-white p-6 text-center text-sm text-slate-500" data-testid="v2-agents-empty">{view === 'mine' ? `No ${kind}s built for this project yet.` : `The organisation has not opened any ${kind}s to projects yet.`}</div> :
@@ -85,6 +86,43 @@ function People({ projectId }: { projectId: string }) {
           <tr key={m.userId} className="border-t border-slate-100"><td className="py-1.5">{m.displayName || m.email}<span className="ml-2 text-xs text-slate-400">{m.role}</span></td>
             <td><input type="checkbox" aria-label={`${m.displayName || m.email} can edit`} checked={Boolean(x?.canEdit)} onChange={(e) => set.mutate({ userId: m.userId, canEdit: e.target.checked, canApprove: Boolean(x?.canApprove) && e.target.checked })} /></td>
             <td><input type="checkbox" aria-label={`${m.displayName || m.email} can approve`} checked={Boolean(x?.canApprove)} onChange={(e) => set.mutate({ userId: m.userId, canEdit: Boolean(x?.canEdit) || e.target.checked, canApprove: e.target.checked })} /></td></tr>); })}
+      </tbody></table>
+    </div>
+  );
+}
+
+function Usage({ projectId }: { projectId: string }) {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ['agent-project-usage', projectId], queryFn: () => api.get<ProjectUsage>(`/api/projects/${projectId}/agent-usage`) });
+  const [text, setText] = useState<string | null>(null);
+  const [err, setErr] = useState('');
+  const save = useMutation({
+    mutationFn: (monthlyTokens: number | null) => api.put<ProjectUsage>(`/api/projects/${projectId}/agent-limits`, { monthlyTokens }),
+    onSuccess: (d) => { setErr(''); setText(null); qc.setQueryData(['agent-project-usage', projectId], d); }, onError: (e) => setErr(e instanceof Error ? e.message : 'Could not save'),
+  });
+  const u = q.data;
+  if (!u) return <div className="animate-pulse text-sm text-slate-400">Loading…</div>;
+  const pct = spentPercent(u.used, u.limit);
+  const shown = text ?? (u.limit === null ? '' : String(u.limit));
+  const apply = () => { const n = shown.trim() === '' ? null : Number(shown.replace(/[,_\s]/g, '')); if (n !== null && (!Number.isInteger(n) || n < 0)) { setErr('Use a whole number of tokens, or leave it empty for no limit'); return; } save.mutate(n); };
+  return (
+    <div className="rounded-xl border border-slate-300 bg-white p-4" data-testid="v2-agent-usage">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Custom agent tokens, {u.month}</div>
+          <div className="font-display text-2xl font-bold text-navy" data-testid="v2-usage-used">{tokensLabel(u.used)}{u.limit !== null && <span className="text-base font-normal text-slate-500"> of {tokensLabel(u.limit)}</span>}</div>
+          <div className="text-xs text-slate-500">{u.runs} run{u.runs === 1 ? '' : 's'} this month. Tokens are counted, not money: the price depends on the models your administrator routes to.</div></div>
+        {u.rights.manage ? (
+          <div className="flex items-end gap-2"><label className="text-xs font-semibold text-slate-600">Monthly budget (tokens)
+            <input data-testid="v2-usage-limit" inputMode="numeric" className="mt-1 block w-40 rounded-lg border border-slate-300 px-2 py-1 text-sm font-normal" value={shown} placeholder="No limit" onChange={(e) => setText(e.target.value)} /></label>
+            <button type="button" className={primary} disabled={save.isPending} data-testid="v2-usage-save" onClick={apply}>Save</button></div>
+        ) : <div className="text-xs text-slate-500">{u.limit === null ? 'No monthly budget is set.' : 'The project manager sets the budget.'}</div>}
+      </div>
+      {err && <div className="mt-2 text-xs text-bared-700" role="alert">{err}</div>}
+      {u.limit !== null && <div className="mt-3"><div className="h-2 overflow-hidden rounded-full bg-slate-200" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}><div className={`h-full ${u.exceeded ? 'bg-bared-500' : pct >= 80 ? 'bg-amber-500' : 'bg-brand-500'}`} style={{ width: `${pct}%` }} /></div>
+        {u.exceeded && <div className="mt-1 text-xs text-bared-700" role="status" data-testid="v2-usage-exceeded">The budget is spent. Custom agents will not run until the budget is raised or the month ends.</div>}</div>}
+      <table className="mt-4 w-full text-sm"><thead><tr className="text-left text-xs text-slate-500"><th>Agent or skill</th><th>Runs</th><th className="text-right">Tokens</th></tr></thead><tbody>
+        {u.byAgent.map((a) => <tr key={a.defId} className="border-t border-slate-100" data-testid="v2-usage-row"><td className="py-1.5">{a.name} <span className="text-xs text-slate-400">{a.kind}</span></td><td>{a.runs}</td><td className="text-right">{a.tokens.toLocaleString()}</td></tr>)}
+        {!u.byAgent.length && <tr><td colSpan={3} className="py-3 text-center text-slate-400">Nothing has run this month.</td></tr>}
       </tbody></table>
     </div>
   );

@@ -9,9 +9,11 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.domain.errors import SdlcError
+from app.services.agent_assist import Draft, Judgement
 from app.services.agent_audit import AgentAuditor, ModelReport
 from app.services.agent_defs import AgentDefService
 from app.services.agent_runtime import AgentOutputs, AgentRuntime
+from app.services.agent_usage import AgentUsage
 
 from .conftest import FakeAudit, make_user
 
@@ -51,6 +53,8 @@ class MemRepo:
         self.grants: dict[tuple, dict] = {}
         self.guard: dict[str, str] = {}
         self.cases: dict[str, dict] = {}
+        self.usage: list[dict] = []
+        self.limits: dict[str, int] = {}
 
     async def insert_def(self, d):
         r = {"open": False, "retired": False, "source_kind": None, "source_id": None, "source_name": None, "source_version": None, "project_id": None, "created_at": NOW, "updated_at": NOW, **d}
@@ -150,6 +154,50 @@ class MemRepo:
         self.cases.pop(case_id, None)
 
 
+
+
+async def _record_usage(self, rows):
+    for r in rows:
+        self.usage.append({**r, "at": NOW})
+
+
+async def _usage_for_def(self, def_id, days=30):
+    out: dict[tuple, dict] = {}
+    for u in self.usage:
+        if u["def_id"] == def_id:
+            k = (NOW.date(), u["source"])
+            o = out.setdefault(k, {"day": NOW.date(), "source": u["source"], "runs": 0, "prompt": 0, "completion": 0})
+            o["runs"] += 1
+            o["prompt"] += u["prompt"]
+            o["completion"] += u["completion"]
+    return list(out.values())
+
+
+async def _usage_for_project(self, project_id, since):
+    out: dict[str, dict] = {}
+    for u in self.usage:
+        if u["project_id"] == project_id:
+            o = out.setdefault(u["def_id"], {"def_id": u["def_id"], "runs": 0, "prompt": 0, "completion": 0})
+            o["runs"] += 1
+            o["prompt"] += u["prompt"]
+            o["completion"] += u["completion"]
+    return list(out.values())
+
+
+async def _get_limit(self, project_id):
+    return self.limits.get(project_id)
+
+
+async def _set_limit(self, project_id, monthly, user_id):
+    if monthly is None:
+        self.limits.pop(project_id, None)
+    else:
+        self.limits[project_id] = monthly
+
+
+MemRepo.record_usage, MemRepo.usage_for_def, MemRepo.usage_for_project, MemRepo.get_limit, MemRepo.set_limit = _record_usage, _usage_for_def, _usage_for_project, _get_limit, _set_limit
+
+
 class FakeLlm:
     """Answers declared outputs; can be told to leak, to follow injected instructions, to fail, or to report audit findings."""
     def __init__(self) -> None:
@@ -160,10 +208,13 @@ class FakeLlm:
         self.calls: list[dict] = []
         self.outputs: dict[str, Any] | None = None
         self.provider = "fake"
+        self.tokens = (100, 20)                # (prompt, completion) reported for every call
+        self.by_marker: dict[str, dict] = {}   # a marker in the system prompt -> the outputs an agent with that prompt returns
+        self.draft: dict | None = None         # what the drafter returns
+        self.prefer: str | None = None         # the judge gives 9 to the answer containing this text and 3 to the other
 
-    @staticmethod
-    def _res(content: str):
-        return SimpleNamespace(provider="fake", model="fake-1", content=content, usage={"promptTokens": 100, "completionTokens": 20}, truncated=False)
+    def _res(self, content: str):
+        return SimpleNamespace(provider="fake", model="fake-1", content=content, usage={"promptTokens": self.tokens[0], "completionTokens": self.tokens[1]}, truncated=False)
 
     async def generate_json(self, *, schema, messages, model=None, role=None, tag=None, **kw):
         self.calls.append({"tag": tag, "role": role, "model": model, "messages": messages})
@@ -171,11 +222,22 @@ class FakeLlm:
             raise SdlcError("PROVIDER_ERROR", "model down")
         if schema is ModelReport:
             return ModelReport.model_validate({"findings": self.model_findings}), self._res("{}")
+        if schema is Draft:
+            return Draft.model_validate(self.draft or {}), self._res("{}")
+        if schema is Judgement:
+            text = messages[-1]["content"]
+            a1 = re.search(r"<answer_1>(.*?)</answer_1>", text, re.S).group(1)
+            hit1 = bool(self.prefer) and self.prefer in a1
+            hit2 = bool(self.prefer) and self.prefer in re.search(r"<answer_2>(.*?)</answer_2>", text, re.S).group(1)
+            scores = (9, 3) if hit1 and not hit2 else (3, 9) if hit2 and not hit1 else (7, 7)
+            return Judgement(winner="1" if scores[0] > scores[1] else "2" if scores[1] > scores[0] else "tie", score_1=scores[0], score_2=scores[1], reason="because"), self._res("{}")
         user = messages[-1]["content"]
         m = re.search(r"OUTPUT_SCHEMA:\s*(\{.*\})", user)
         spec = json.loads(m.group(1)) if m else {}
         sample = {"string": "text result", "number": 0.9, "boolean": True, "object": {"k": "v"}, "list": ["a", "b"]}
         outs = self.outputs if self.outputs is not None else {k: sample[t] for k, t in spec.items()}
+        marked = next((v for k, v in self.by_marker.items() if k in messages[0]["content"]), None)
+        outs = marked if marked is not None else outs
         res = self._res(json.dumps({"outputs": outs}))
         res.provider = self.provider
         return AgentOutputs.model_validate({"outputs": outs}), res
@@ -205,8 +267,8 @@ class Canon:
 def make(llm: FakeLlm | None = None):
     llm = llm or FakeLlm()
     repo, audit = MemRepo(), FakeAudit()
-    runtime = AgentRuntime(llm, audit)
-    svc = AgentDefService(Db(), repo, Authz(), audit, AgentAuditor(llm, runtime), runtime, canon=Canon(),
+    runtime = AgentRuntime(llm, audit, AgentUsage(repo))
+    svc = AgentDefService(Db(), repo, Authz(), audit, AgentAuditor(llm, runtime), runtime, canon=Canon(), usage=AgentUsage(repo), llm=llm,
                           skill_packs=lambda: [{"id": "draft_adr", "name": "Draft ADR", "description": "d", "version": 2, "body": "Draft an ADR", "tier": "frontier", "roles": ["SA"], "phase": 2}])
     return svc, repo, llm, audit
 

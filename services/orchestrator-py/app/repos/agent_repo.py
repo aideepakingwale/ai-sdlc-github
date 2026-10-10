@@ -164,3 +164,33 @@ class AgentRepo:
 
     async def delete_case(self, def_id: str, case_id: str) -> None:
         await self._p.execute("DELETE FROM agent_test_cases WHERE id=$1 AND def_id=$2", case_id, def_id)
+
+    # ------------------------------------------------------------ usage and limits (migration 0048)
+    async def record_usage(self, rows: list[dict[str, Any]]) -> None:
+        if rows:
+            await self._p.executemany(
+                "INSERT INTO agent_usage (def_id, project_id, source, prompt_tokens, completion_tokens) VALUES ($1,$2,$3,$4,$5)",
+                [(r["def_id"], r.get("project_id"), r.get("source", ""), int(r["prompt"]), int(r["completion"])) for r in rows])
+
+    async def usage_for_def(self, def_id: str, days: int = 30) -> list[dict[str, Any]]:
+        rows = await self._p.fetch(
+            "SELECT date_trunc('day', created_at)::date AS day, source, count(*)::int AS runs, sum(prompt_tokens)::int AS prompt, sum(completion_tokens)::int AS completion "
+            "FROM agent_usage WHERE def_id=$1 AND created_at > now() - make_interval(days => $2) GROUP BY 1, 2 ORDER BY 1", def_id, days)
+        return [dict(r) for r in rows]
+
+    async def usage_for_project(self, project_id: str, since: Any) -> list[dict[str, Any]]:
+        rows = await self._p.fetch(
+            "SELECT def_id, count(*)::int AS runs, sum(prompt_tokens)::int AS prompt, sum(completion_tokens)::int AS completion "
+            "FROM agent_usage WHERE project_id=$1 AND created_at >= $2 GROUP BY def_id", project_id, since)
+        return [dict(r) for r in rows]
+
+    async def get_limit(self, project_id: str) -> int | None:
+        return await self._p.fetchval("SELECT monthly_tokens FROM agent_project_limits WHERE project_id=$1", project_id)
+
+    async def set_limit(self, project_id: str, monthly_tokens: int | None, user_id: str) -> None:
+        if monthly_tokens is None:
+            await self._p.execute("DELETE FROM agent_project_limits WHERE project_id=$1", project_id)
+            return
+        await self._p.execute(
+            "INSERT INTO agent_project_limits (project_id, monthly_tokens, updated_by) VALUES ($1,$2,$3) "
+            "ON CONFLICT (project_id) DO UPDATE SET monthly_tokens=$2, updated_by=$3, updated_at=now()", project_id, int(monthly_tokens), user_id)

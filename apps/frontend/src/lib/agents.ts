@@ -12,7 +12,7 @@ export interface OutputDef { name: string; type: ValueType; artefact_type: strin
 export interface ChildDef { agent_id: string; version?: number | null; when: string }
 export interface AgentBody {
   description: string; prompt: string; role: ModelRole; model: string | null; fallback: string | null; temperature: number; icon: string;
-  execution_mode: 'native_llm'; tools: string[]; inputs: InputDef[]; outputs: OutputDef[];
+  execution_mode: 'native_llm'; tools: string[]; inputs: InputDef[]; outputs: OutputDef[]; budget_tokens?: number | null;
   stage_kind?: 'specialist' | 'stage'; children?: ChildDef[]; roles?: string[]; stages?: number[];
 }
 export interface Finding {
@@ -171,6 +171,7 @@ export function toDeveloperJson(name: string, b: AgentBody): string {
       inputs: Object.fromEntries(b.inputs.map((i) => [i.name, { type: i.type, required: i.required, source: i.source }])),
       outputs: Object.fromEntries(b.outputs.map((o) => [o.name, { type: o.type, artefact: o.artefact_type, format: o.format }])),
     },
+    limits: { max_tokens_per_run: b.budget_tokens ?? null },
     delegation: (b.children ?? []).map((c) => ({ agent: c.agent_id, when: c.when })), ...(b.roles ? { access: { roles: b.roles, stages: b.stages ?? [] } } : {}),
   }, null, 2);
 }
@@ -188,7 +189,7 @@ export function fromDeveloperJson(text: string, base: AgentBody): { ok: true; na
   return {
     ok: true, name: String(o.identity.name ?? ''),
     body: { ...base, description: String(o.identity.description ?? ''), prompt: o.identity.system_prompt, role: eng.role ?? base.role, model: eng.model ?? null, temperature: typeof eng.temperature === 'number' ? eng.temperature : base.temperature,
-            fallback: o.cognitive_engines?.fallback ?? null, inputs, outputs, ...(base.children !== undefined ? { children } : {}),
+            fallback: o.cognitive_engines?.fallback ?? null, budget_tokens: o.limits?.max_tokens_per_run ? Number(o.limits.max_tokens_per_run) : null, inputs, outputs, ...(base.children !== undefined ? { children } : {}),
             ...(o.access ? { roles: o.access.roles ?? [], stages: o.access.stages ?? [] } : {}) },
   };
 }
@@ -209,4 +210,31 @@ export function delegationMeters(children: number): Array<{ label: string; value
 export function lineDiff(before: string, after: string): Array<{ kind: 'same' | 'add' | 'del'; text: string }> {
   const a = before.split('\n').filter(Boolean), b = after.split('\n').filter(Boolean);
   return [...a.filter((l) => !b.includes(l)).map((text) => ({ kind: 'del' as const, text })), ...b.map((text) => ({ kind: (a.includes(text) ? 'same' : 'add') as 'same' | 'add', text }))];
+}
+
+
+// ---- comparing versions, usage and budgets
+export interface CompareCase { name: string; a: Record<string, unknown> | null; b: Record<string, unknown> | null; errorA: string; errorB: string; scoreA: number | null; scoreB: number | null; winner: '' | 'a' | 'b' | 'tie'; reason: string }
+export interface CompareResult {
+  a: number; b: number; cases: CompareCase[]; usedSample: boolean; tokens: { promptTokens: number; completionTokens: number };
+  summary: { verdict: 'better' | 'same' | 'worse' | 'unknown'; avgA: number | null; avgB: number | null; winsA: number; winsB: number; ties: number; message: string };
+}
+export interface DefUsage { days: number; runs: number; tokens: number; promptTokens: number; completionTokens: number; bySource: Record<string, number>; daily: Array<{ day: string; tokens: number }>; cap: number | null }
+export interface ProjectUsage {
+  rights: Rights; month: string; used: number; limit: number | null; runs: number; exceeded: boolean;
+  byAgent: Array<{ defId: string; name: string; kind: DefKind; runs: number; tokens: number }>;
+}
+/** How much of a budget is spent, as a percentage that never passes 100. */
+export const spentPercent = (used: number, limit: number | null): number => (limit && limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0);
+export const tokensLabel = (n: number): string => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 10_000 ? `${Math.round(n / 1000)}k` : n.toLocaleString());
+export const VERDICT_TONE: Record<CompareResult['summary']['verdict'], 'green' | 'slate' | 'red' | 'amber'> = { better: 'green', same: 'slate', worse: 'red', unknown: 'amber' };
+export const TOKEN_CAP = { min: 1_000, max: 40_000 } as const;
+/** Read a token cap typed into the form: empty means the platform limit, anything outside the allowed range is refused. */
+export function parseCap(text: string): { ok: true; value: number | null } | { ok: false; error: string } {
+  const t = text.trim();
+  if (!t) return { ok: true, value: null };
+  const n = Number(t.replace(/[,_\s]/g, ''));
+  if (!Number.isInteger(n)) return { ok: false, error: 'Use a whole number of tokens' };
+  if (n < TOKEN_CAP.min || n > TOKEN_CAP.max) return { ok: false, error: `Between ${TOKEN_CAP.min.toLocaleString()} and ${TOKEN_CAP.max.toLocaleString()} tokens` };
+  return { ok: true, value: n };
 }

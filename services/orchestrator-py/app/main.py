@@ -140,7 +140,10 @@ async def lifespan(app: FastAPI):
     from .services.agent_audit import AgentAuditor
     from .services.agent_defs import AgentDefService
     from .services.agent_runtime import AgentRuntime
-    agent_runtime = AgentRuntime(llm, audit)
+    from .services.agent_usage import AgentUsage
+    agent_repo = AgentRepo(db)
+    agent_usage = AgentUsage(agent_repo)
+    agent_runtime = AgentRuntime(llm, audit, agent_usage)
     agent_deps = AgentDeps(
         llm=llm, mcp=mcp, db=db, audit=audit, rag=rag, content=content, monitor=monitor,
         settings=settings, telemetry=telemetry, canon=canon, formworks=formworks, memory=memory,
@@ -186,7 +189,7 @@ async def lifespan(app: FastAPI):
     container.content, container.flow = content, flow
     container.skills = SkillService(db, authz, agent_deps, workflow)
     from .services.skills import SKILL_PACKS
-    agent_defs = AgentDefService(db, AgentRepo(db), authz, audit, AgentAuditor(llm, agent_runtime), agent_runtime, canon=canon,
+    agent_defs = AgentDefService(db, agent_repo, authz, audit, AgentAuditor(llm, agent_runtime), agent_runtime, canon=canon, usage=agent_usage, llm=llm,
                                  project_config=project_config, workflow=workflow, skill_packs=lambda: SKILL_PACKS)
     container.agent_defs = agent_defs
     container.skills.custom = agent_defs

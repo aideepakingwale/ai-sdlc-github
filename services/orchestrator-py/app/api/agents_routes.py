@@ -58,6 +58,19 @@ class CaseBody(BaseModel):
     inputs: dict[str, Any] = {}
 
 
+class DraftTextBody(BaseModel):
+    text: str
+
+
+class CompareBody(BaseModel):
+    versionA: int | None = None
+    versionB: int | None = None
+
+
+class LimitBody(BaseModel):
+    monthlyTokens: int | None = None
+
+
 class StageItem(BaseModel):
     defId: str
     pinnedVersion: int | None = None
@@ -183,6 +196,21 @@ async def test_run(def_id: str, body: TestBody, user: UserPublic = Depends(curre
     return await c.agent_defs.run_test(user, def_id, body.inputs, body.version)
 
 
+@router.post("/api/agent-defs/{def_id}/draft-from-text")
+async def draft_from_text(def_id: str, body: DraftTextBody, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    return await c.agent_defs.draft_from_text(user, def_id, body.text)
+
+
+@router.post("/api/agent-defs/{def_id}/compare")
+async def compare(def_id: str, body: CompareBody, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    return await c.agent_defs.run_compare(user, def_id, body.versionA, body.versionB)
+
+
+@router.get("/api/agent-defs/{def_id}/usage")
+async def def_usage(def_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    return await c.agent_defs.def_usage(user, def_id)
+
+
 @router.post("/api/agent-defs/{def_id}/cases")
 async def add_case(def_id: str, body: CaseBody, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     return await c.agent_defs.add_case(user, def_id, body.name, body.inputs)
@@ -222,3 +250,13 @@ async def stage_agents(project_id: str, stage_key: str, user: UserPublic = Depen
 @router.put("/api/projects/{project_id}/stages/{stage_key}/agents")
 async def set_stage_agents(project_id: str, stage_key: str, body: StageBody, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     return await c.agent_defs.set_stage_items(user, project_id, stage_key, [i.model_dump() for i in body.items])
+
+
+@router.get("/api/projects/{project_id}/agent-usage")
+async def project_usage(project_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    return await c.agent_defs.project_usage(user, project_id)
+
+
+@router.put("/api/projects/{project_id}/agent-limits")
+async def put_limit(project_id: str, body: LimitBody, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    return await c.agent_defs.set_limit(user, project_id, body.monthlyTokens)

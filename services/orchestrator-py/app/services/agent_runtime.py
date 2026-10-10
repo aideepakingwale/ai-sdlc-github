@@ -135,9 +135,10 @@ def _clip(s: Any, n: int) -> str:
 
 
 class AgentRuntime:
-    def __init__(self, llm: Any, audit: Any = None) -> None:
+    def __init__(self, llm: Any, audit: Any = None, usage: Any = None) -> None:
         self._llm = llm
         self._audit = audit
+        self._usage = usage      # AgentUsage: counts what a run spends and enforces a project's monthly budget
 
     # ------------------------------------------------------------ prompts
     def _system(self, name: str, body: dict[str, Any], variables: dict[str, Any], project_context: str) -> str:
@@ -160,6 +161,22 @@ class AgentRuntime:
     # ------------------------------------------------------------ the run
     async def run(
         self, *, agent_id: str, name: str, body: dict[str, Any], inputs: dict[str, Any], project_context: str = "",
+        resolve_child: ResolveChild | None = None, budget: Budget | None = None, tag: str = "custom_agent",
+        project_id: str | None = None, source: str = "",
+    ) -> RunResult:
+        """Run an agent (and whatever it delegates to). The tree may spend at most the agent's own token cap, and never more than the platform
+        limit; a project with a monthly budget cannot start a run once the budget is spent."""
+        if self._usage is not None:
+            await self._usage.check(project_id)
+        cap = int(body.get("budget_tokens") or 0)
+        res = await self._run(agent_id=agent_id, name=name, body=body, inputs=inputs, project_context=project_context, resolve_child=resolve_child,
+                              budget=budget or Budget(tokens=min(MAX_TOKENS, cap) if cap else MAX_TOKENS), tag=tag)
+        if self._usage is not None:
+            await self._usage.record(res, project_id, source)
+        return res
+
+    async def _run(
+        self, *, agent_id: str, name: str, body: dict[str, Any], inputs: dict[str, Any], project_context: str = "",
         resolve_child: ResolveChild | None = None, depth: int = 0, path: tuple[str, ...] = (), budget: Budget | None = None,
         tag: str = "custom_agent",
     ) -> RunResult:
@@ -169,7 +186,7 @@ class AgentRuntime:
         if budget.agents >= MAX_AGENTS:
             raise SdlcError("VALIDATION_FAILED", f"An agent tree runs at most {MAX_AGENTS} agents")
         if budget.tokens <= 0:
-            raise SdlcError("VALIDATION_FAILED", "The agent tree used up its token budget")
+            raise SdlcError("VALIDATION_FAILED", "The agent used up its token cap for this run")
         budget.agents += 1
         variables = self._variables(body, inputs)
         res = RunResult(agent_id=agent_id, name=name)
@@ -195,7 +212,7 @@ class AgentRuntime:
                 continue
             try:
                 cinputs = {i["name"]: variables[i["name"]] for i in child["body"].get("inputs", []) if i["name"] in variables}
-                res.children.append(await self.run(agent_id=cid, name=child["name"], body=child["body"], inputs=cinputs, project_context=project_context,
+                res.children.append(await self._run(agent_id=cid, name=child["name"], body=child["body"], inputs=cinputs, project_context=project_context,
                                                     resolve_child=resolve_child, depth=depth + 1, path=(*path, agent_id), budget=budget, tag=tag))
             except SdlcError as err:
                 res.skipped.append({"agent": cid, "why": err.message if hasattr(err, "message") else str(err)})
@@ -208,6 +225,8 @@ class AgentRuntime:
             {"layer": "upstream" if i["source"].startswith("upstream:") else "input", "label": f"Input {i['name']} ({i['source']})", "chars": len(json.dumps(variables.get(i['name']), default=str))}
             for i in body.get("inputs", [])] + [{"layer": "sibling", "label": f"Delegate {c.name}", "chars": len(json.dumps(c.outputs, default=str))} for c in res.children]
         role = body.get("role", "generate")
+        if budget.tokens <= 0:      # a delegate may have spent the cap: the agent that asked for it does not make its own call
+            raise SdlcError("VALIDATION_FAILED", f"'{name}' did not run: the agents it delegates to used up the token cap for this run")
         data, llm = await self._ask(body, role, system, user, tag)
         res.provider, res.model, res.usage = llm.provider, llm.model, {"promptTokens": int(llm.usage.get("promptTokens", 0)), "completionTokens": int(llm.usage.get("completionTokens", 0))}
         budget.take(llm.usage)

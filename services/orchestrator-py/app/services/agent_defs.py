@@ -23,9 +23,10 @@ from ..domain.errors import SdlcError
 from ..domain.models import UserPublic
 from ..repos.pg import new_id
 from . import agent_catalog, safe_expr
+from .agent_assist import AgentAssist, sample_inputs
 from .agent_audit import AgentAuditor, blocks, catalogue, warns
 from .agent_body import KINDS, MODEL_ROLES, RUNS, ROLE_LABEL, clean_name, core_to_body, default_body, normalise_body, summary
-from .agent_runtime import AgentRuntime, Budget, RunResult
+from .agent_runtime import AgentRuntime, RunResult
 
 log = logging.getLogger("agent_defs")
 
@@ -43,8 +44,11 @@ def _iso(v: Any) -> str | None:
 
 class AgentDefService:
     def __init__(self, db: Any, repo: Any, authz: Any, audit: Any, auditor: AgentAuditor, runtime: AgentRuntime, *, canon: Any = None,
-                 project_config: Any = None, workflow: Any = None, skill_packs: Callable[[], list[dict[str, Any]]] | None = None) -> None:
+                 project_config: Any = None, workflow: Any = None, skill_packs: Callable[[], list[dict[str, Any]]] | None = None,
+                 usage: Any = None, llm: Any = None) -> None:
         self._db, self._repo, self._authz, self._audit = db, repo, authz, audit
+        self._usage = usage
+        self._assist = AgentAssist(llm, runtime) if llm is not None else None
         self._auditor, self._runtime, self._canon, self._config, self._workflow = auditor, runtime, canon, project_config, workflow
         self._skill_packs = skill_packs or (lambda: [])
 
@@ -605,7 +609,7 @@ class AgentDefService:
         if v is None:
             raise SdlcError("NOT_FOUND", "Version not found")
         res = await self._runtime.run(agent_id=d["id"], name=d["name"], body=v["body"], inputs=inputs or {}, project_context=await self.context_text(d.get("project_id")),
-                                      resolve_child=self.child_resolver(d.get("project_id")), budget=Budget(), tag="custom_agent_test")
+                                      resolve_child=self.child_resolver(d.get("project_id")), tag="custom_agent_test", project_id=d.get("project_id"), source="test")
         self._event(d, user, "custom_agent.test_run", version=v["version"], tokens=res.total_tokens())
         return self.result_view(res, show_prompts=True)
 
@@ -628,7 +632,88 @@ class AgentDefService:
     async def run_skill_body(self, project_id: str, d: dict[str, Any], ver: dict[str, Any], text: str) -> dict[str, Any]:
         body = ver["body"]
         first = (body.get("inputs") or [{"name": "input"}])[0]["name"]
-        res = await self._runtime.run(agent_id=d["id"], name=d["name"], body=body, inputs={first: text}, project_context=await self.context_text(project_id), tag="custom_skill")
+        res = await self._runtime.run(agent_id=d["id"], name=d["name"], body=body, inputs={first: text}, project_context=await self.context_text(project_id), tag="custom_skill",
+                                      project_id=project_id, source="skill")
         out = body["outputs"][0]["name"] if body.get("outputs") else next(iter(res.outputs), "result")
         value = res.outputs.get(out, "")
         return {"output": value if isinstance(value, str) else __import__("json").dumps(value, ensure_ascii=False, indent=2), "meta": {"provider": res.provider, "model": res.model, "tokens": res.total_tokens(), "version": ver["version"], "custom": True}}
+
+    # ================================================================== help while building
+    async def draft_from_text(self, user: UserPublic, def_id: str, text: str) -> dict[str, Any]:
+        """Fill the editable draft from a runbook or document. What the person already set for the model, delegates and access stays."""
+        if self._assist is None:
+            raise SdlcError("PROVIDER_ERROR", "Drafting is not available")
+        d, _ = await self._load(def_id, user, "edit")
+        latest = (await self._repo.list_versions(def_id))[0]
+        if latest["status"] == "pending":
+            raise SdlcError("GATE_CONFLICT", "It is waiting for approval and cannot be edited. Withdraw it first.")
+        draft, tokens = await self._assist.draft(d["kind"], text)
+        merged = {**latest["body"], **{k: draft[k] for k in ("description", "prompt", "role", "inputs", "outputs")}}
+        keep_name = None if not d["name"].startswith("New ") else (draft["name"] or None)
+        out = await self.save_draft(user, def_id, name=keep_name, body=merged)
+        self._event(d, user, "custom_agent.drafted", chars=len(text), tokens=tokens)
+        return out
+
+    async def run_compare(self, user: UserPublic, def_id: str, version_a: int | None = None, version_b: int | None = None) -> dict[str, Any]:
+        """Run two versions on the saved test cases (or a sample) and have a judge say whether the newer one is better, worse or the same."""
+        if self._assist is None:
+            raise SdlcError("PROVIDER_ERROR", "Comparing is not available")
+        d, _ = await self._load(def_id, user, "edit")
+        versions = await self._repo.list_versions(def_id)          # newest first
+        b = next((v for v in versions if v["version"] == version_b), None) if version_b else versions[0]
+        if b is None:
+            raise SdlcError("NOT_FOUND", "Version not found")
+        older = [v for v in versions if v["version"] < b["version"]]
+        a = next((v for v in versions if v["version"] == version_a), None) if version_a else (older[0] if older else None)
+        if a is None or a["version"] == b["version"]:
+            raise SdlcError("VALIDATION_FAILED", "There is no earlier version to compare with yet. Edit an approved version to start the next one")
+        saved = await self._repo.list_cases(d["id"])
+        cases = [{"name": c["name"], "inputs": c["inputs"]} for c in saved] or [{"name": "Sample input", "inputs": sample_inputs(b["body"])}]
+        out = await self._assist.compare(name=d["name"], a={"version": a["version"], "body": a["body"]}, b={"version": b["version"], "body": b["body"]}, cases=cases,
+                                         project_context=await self.context_text(d.get("project_id")), resolve_child=self.child_resolver(d.get("project_id")),
+                                         def_id=d["id"], project_id=d.get("project_id"))
+        out["usedSample"] = not saved
+        self._event(d, user, "custom_agent.compared", a=a["version"], b=b["version"], verdict=out["summary"]["verdict"], tokens=out["tokens"])
+        return out
+
+    # ================================================================== usage and budgets
+    async def def_usage(self, user: UserPublic, def_id: str) -> dict[str, Any]:
+        d, _ = await self._load(def_id, user, "edit")
+        rows = await self._repo.usage_for_def(d["id"], 30)
+        by_source: dict[str, int] = {}
+        daily: dict[str, int] = {}
+        runs = prompt = completion = 0
+        for r in rows:
+            t = r["prompt"] + r["completion"]
+            by_source[r["source"] or "other"] = by_source.get(r["source"] or "other", 0) + t
+            daily[str(r["day"])] = daily.get(str(r["day"]), 0) + t
+            runs, prompt, completion = runs + r["runs"], prompt + r["prompt"], completion + r["completion"]
+        return {"days": 30, "runs": runs, "tokens": prompt + completion, "promptTokens": prompt, "completionTokens": completion,
+                "bySource": by_source, "daily": [{"day": k, "tokens": v} for k, v in sorted(daily.items())], "cap": ((await self._repo.list_versions(d["id"]))[0]["body"]).get("budget_tokens")}
+
+    async def project_usage(self, user: UserPublic, project_id: str) -> dict[str, Any]:
+        r = await self.rights(project_id, user)
+        if not (r["edit"] or r["approve"] or r["manage"]):
+            raise SdlcError("FORBIDDEN", "Ask the project manager for permission to see custom agent usage")
+        from .agent_usage import month_start
+        start = month_start()
+        rows = await self._repo.usage_for_project(project_id, start)
+        by_agent = []
+        for x in rows:
+            d = await self._repo.get_def(x["def_id"])
+            by_agent.append({"defId": x["def_id"], "name": d["name"] if d else "(deleted)", "kind": d["kind"] if d else "agent", "runs": x["runs"],
+                             "tokens": x["prompt"] + x["completion"]})
+        by_agent.sort(key=lambda a: -a["tokens"])
+        limit = await self._repo.get_limit(project_id)
+        used = sum(a["tokens"] for a in by_agent)
+        return {"rights": r, "month": start.strftime("%Y-%m"), "used": used, "limit": limit, "byAgent": by_agent,
+                "runs": sum(a["runs"] for a in by_agent), "exceeded": limit is not None and used >= limit}
+
+    async def set_limit(self, user: UserPublic, project_id: str, monthly_tokens: int | None) -> dict[str, Any]:
+        if not (await self.rights(project_id, user))["manage"]:
+            raise SdlcError("FORBIDDEN", "Only the managing project manager or a super-admin sets the budget")
+        if monthly_tokens is not None and not 0 <= int(monthly_tokens) <= 1_000_000_000:
+            raise SdlcError("VALIDATION_FAILED", "The monthly budget is a number of tokens, or empty for no limit")
+        await self._repo.set_limit(project_id, None if monthly_tokens is None else int(monthly_tokens), user.id)
+        self._event(None, user, "custom_agent.budget", project=project_id, monthly_tokens=monthly_tokens)
+        return await self.project_usage(user, project_id)

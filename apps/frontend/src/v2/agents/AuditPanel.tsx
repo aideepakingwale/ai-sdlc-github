@@ -20,6 +20,9 @@ export default function AuditPanel({ version, running, canEdit, onRun, onFix, on
     return () => clearInterval(t);
   }, [running]);
   const report: AuditReport | null | undefined = version?.auditReport;
+  // the box answers the click at once; the server's answer then confirms or corrects it
+  const [ack, setAck] = useState(Boolean(report?.ack));
+  useEffect(() => { setAck(Boolean(report?.ack)); }, [report?.ack, report?.ran_at]);
   if (running) {
     return (
       <div data-testid="v2-audit-running" role="status">
@@ -55,10 +58,10 @@ export default function AuditPanel({ version, running, canEdit, onRun, onFix, on
       <ul className="space-y-2">{report.findings.map((f) => <FindingCard key={f.id} f={f} canEdit={canEdit} fixing={fixing} onFix={onFix} onShow={onShow} />)}</ul>
       {warn > 0 && block === 0 && !report.stale && (
         <label className="mt-3 flex items-center gap-2 text-xs text-slate-700">
-          <input type="checkbox" data-testid="v2-audit-ack" checked={report.ack} disabled={!canEdit} onChange={(e) => onAck(e.target.checked)} /> I have read the warnings and accept them
+          <input type="checkbox" data-testid="v2-audit-ack" checked={ack} disabled={!canEdit} onChange={(e) => { setAck(e.target.checked); onAck(e.target.checked); }} /> I have read the warnings and accept them
         </label>
       )}
-      {block === 0 && !report.stale && (warn === 0 || report.ack) && <div className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-800" data-testid="v2-audit-ready">Ready. Submit it for approval from the top right.</div>}
+      {block === 0 && !report.stale && (warn === 0 || ack) && <div className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-800" data-testid="v2-audit-ready">Ready. Submit it for approval from the top right.</div>}
     </div>
   );
 }

@@ -13,7 +13,7 @@ from typing import Any, Awaitable, Callable
 
 from ..domain.errors import SdlcError
 from . import safe_expr
-from .agent_runtime import AgentRuntime, Budget, render_output, resolve_inputs
+from .agent_runtime import AgentRuntime, render_output, resolve_inputs
 
 log = logging.getLogger("agent_stage")
 
@@ -78,7 +78,7 @@ async def run_stage_agents(
         emit({"type": "node", "node": "agent", "label": f"Custom agent '{name}' (v{it['version']}) working"})
         try:
             res = await runtime.run(agent_id=it["def_id"], name=name, body=body, inputs=vals, project_context=project_context,
-                                    resolve_child=_resolver(it.get("resolved") or {}), budget=Budget(), tag="custom_agent_stage")
+                                    resolve_child=_resolver(it.get("resolved") or {}), tag="custom_agent_stage", project_id=project_id or None, source="stage")
         except SdlcError as err:
             out.failed.append(f"{name}: {err.message}")
             emit({"type": "node", "node": "guardrail", "status": "error", "label": f"✗ Custom agent '{name}' failed: {err.message[:160]}"})
