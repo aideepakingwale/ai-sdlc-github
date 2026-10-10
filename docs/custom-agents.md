@@ -7,9 +7,22 @@ A definition is data (a JSON document); the platform interprets it. No code from
 
 | Tier | Where | Who | Notes |
 |---|---|---|---|
-| **Built-in** | the `agents/` and `skills/` files | super-admins only | Read-only. Hidden from everyone else at the API (`/api/agents`, `/api/governance/prompts`, `/api/governance/skills` answer super-admins only). A super-admin can **Copy and extend** one. |
+| **Built-in** | the `agents/` and `skills/` files | the full inventory (files, notes, prompts) is for super-admins; the **copyable** ones are shared with every project | Read-only. The inventory routes (`/api/agents`, `/api/governance/prompts`, `/api/governance/skills`) answer super-admins only. See *Built-in starters* below. |
 | **Organisation** | Governance -> **Agent library** | super-admins build; **Open to projects** shares the approved version | A project sees only the open ones, read-only. **Copy to project** makes a private fork at that moment; the copy does not follow the original (it shows "a newer version exists"). |
 | **Project** | Project Context -> **Agents and skills** | the project's authors | Private to the project. |
+
+### Built-in starters
+
+A project's **Agents and skills -> Library** lists the built-in agents and skills it can copy, next to anything the organisation has opened. **View definition**
+shows the built-in's current instructions, what it reads and what it writes, read-only; **Copy to project** makes an ordinary draft in the project with that
+definition, remembering where it came from. The copy does not follow the built-in; the built-in is never changed.
+
+* **What can be copied:** the 29 specialist agents (the ones that write each stage's documents) and the skills that are only a prompt (11). Agents that run
+  inside the platform's own code (planners, checkers, fixers, the code assistant) and skills that call tools cannot be copied, and say so in the admin view.
+* **Who decides:** every copyable built-in is shared with projects by default. A super-admin can stop sharing one under **Governance -> Agent library ->
+  Built-in** (`PUT /api/agent-library/core/{kind}/{id}/public`, migration `0050`). A super-admin can still copy anything.
+* **Who can copy:** people who may build agents in that project. A copy goes through the audit and approval like any other agent.
+* Endpoints: `GET /api/projects/{id}/agent-starters?kind=`, `GET .../agent-starters/{kind}/{core_id}`, then `POST /api/agent-defs/fork` with `sourceKind: core`.
 
 ## Lifecycle
 

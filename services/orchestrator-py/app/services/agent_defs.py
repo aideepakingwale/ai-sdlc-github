@@ -124,20 +124,67 @@ class AgentDefService:
                 **summary(body), "roleLabel": ROLE_LABEL.get(body.get("role", "generate"), "Generation")}
 
     # ================================================================== core (read-only)
-    def _core_list(self, kind: str) -> list[dict[str, Any]]:
+    @staticmethod
+    def _copyable(kind: str, raw: dict[str, Any]) -> bool:
+        """A built-in can be copied when its definition is a plain instruction a model follows: a specialist agent, or a skill that is only a prompt.
+        The agents that run inside the platform's own code (planners, checkers, fixers) and the skills that call tools are not."""
+        return raw.get("runtime") == "specialist" if kind == "agent" else raw.get("executor") == "llm"
+
+    def _core_list(self, kind: str, vis: dict[tuple[str, str], bool] | None = None) -> list[dict[str, Any]]:
+        vis = vis or {}
         if kind == "skill":
-            return [{"id": p["id"], "kind": "skill", "source": "core", "name": p["name"], "description": p.get("description", ""), "version": int(p.get("version", 1)),
-                     "role": "light" if p.get("tier") == "local" else "generate", "roleLabel": ROLE_LABEL["light" if p.get("tier") == "local" else "generate"],
-                     "stage": p.get("phase"), "roles": p.get("roles", []), "executor": p.get("executor", ""), "inputs": [], "outputs": []} for p in self._skill_packs()]
+            out = []
+            for p in self._skill_packs():
+                role = "light" if p.get("tier") == "local" else "generate"
+                cp = self._copyable("skill", p)
+                out.append({"id": p["id"], "kind": "skill", "source": "core", "name": p["name"], "description": p.get("description", ""), "version": int(p.get("version", 1)),
+                            "role": role, "roleLabel": ROLE_LABEL[role], "stage": p.get("phase"), "roles": p.get("roles", []), "executor": p.get("executor", ""), "inputs": [], "outputs": [],
+                            "copyable": cp, "public": cp and vis.get(("skill", p["id"]), True)})
+            return out
         out = []
         for a in agent_catalog.catalog():
             if a["runtime"] == "proposed":
                 continue
             role = a["role"] if a["role"] in MODEL_ROLES else "generate"
+            cp = self._copyable("agent", a)
             out.append({"id": a["id"], "kind": "agent", "source": "core", "name": a["name"], "description": a.get("description", ""), "version": int(a["version"]),
                         "role": role, "roleLabel": ROLE_LABEL.get(role, "Generation"), "stage": a.get("stage"), "category": a.get("category"), "runtime": a["runtime"],
-                        "inputs": list(a.get("upstream") or []), "outputs": list(a.get("fields") or a.get("artifacts") or []), "file": a.get("path")})
+                        "inputs": list(a.get("upstream") or []), "outputs": list(a.get("fields") or a.get("artifacts") or []), "file": a.get("path"),
+                        "copyable": cp, "public": cp and vis.get(("agent", a["id"]), True)})
         return out
+
+    def _raw_core(self, kind: str, core_id: str) -> dict[str, Any] | None:
+        return agent_catalog.get(core_id) if kind == "agent" else next((p for p in self._skill_packs() if p["id"] == core_id), None)
+
+    async def starters(self, user: UserPublic, project_id: str, kind: str) -> dict[str, Any]:
+        """The built-in agents or skills a project may copy: shared by default, each with what it reads and writes, but not its instructions
+        (those are shown by `starter_detail`, for the one being looked at)."""
+        if kind not in KINDS:
+            raise SdlcError("VALIDATION_FAILED", "kind is agent or skill")
+        r = await self.rights(project_id, user)
+        vis = await self._repo.core_visibility()
+        return {"rights": r, "items": [c for c in self._core_list(kind, vis) if c["public"]]}
+
+    async def starter_detail(self, user: UserPublic, project_id: str, kind: str, core_id: str) -> dict[str, Any]:
+        """What a copy would start from: the built-in's current definition, as an ordinary editable definition."""
+        await self.rights(project_id, user)
+        vis = await self._repo.core_visibility()
+        item = next((c for c in self._core_list(kind, vis) if c["id"] == core_id and c["public"]), None)
+        raw = self._raw_core(kind, core_id)
+        if item is None or raw is None:
+            raise SdlcError("NOT_FOUND", "Agent or skill not found")
+        body = core_to_body(raw, kind)
+        return {**item, "definition": body, "reads": list(raw.get("upstream") or []), "writes": list(raw.get("artifacts") or raw.get("fields") or [])}
+
+    async def set_core_public(self, user: UserPublic, kind: str, core_id: str, public: bool) -> dict[str, Any]:
+        if not self._super(user):
+            raise SdlcError("FORBIDDEN", "Only a super-admin chooses which built-in agents projects can copy")
+        item = next((c for c in self._core_list(kind) if c["id"] == core_id), None)
+        if item is None or not item["copyable"]:
+            raise SdlcError("VALIDATION_FAILED", "That built-in cannot be copied: it runs inside the platform's own code")
+        await self._repo.set_core_visibility(kind, core_id, bool(public), user.id)
+        self._event(None, user, "custom_agent.core_visibility", kind=kind, core=core_id, public=bool(public))
+        return {**item, "public": bool(public)}
 
     def core_detail(self, user: UserPublic, kind: str, core_id: str) -> dict[str, Any]:
         if not self._super(user):
@@ -160,7 +207,7 @@ class AgentDefService:
             d["_owner_view"] = True
             out.append(self._card(d, await self._repo.list_versions(d["id"]), await self._repo.attachments_for_def(d["id"])))
         owned = sum((await self._repo.count_defs_by_project()).values())
-        return {"core": self._core_list(kind), "org": out, "projectOwned": owned}
+        return {"core": self._core_list(kind, await self._repo.core_visibility()), "org": out, "projectOwned": owned}
 
     async def for_project(self, user: UserPublic, project_id: str, kind: str | None = None) -> dict[str, Any]:
         r = await self.rights(project_id, user)
@@ -231,11 +278,13 @@ class AgentDefService:
     async def fork(self, user: UserPublic, *, source_kind: str, source_id: str, kind: str, scope: str, project_id: str | None = None, name: str | None = None) -> dict[str, Any]:
         await self._target(user, scope, project_id)
         if source_kind == "core":
-            if not self._super(user):
-                raise SdlcError("NOT_FOUND", "Agent or skill not found")
-            raw = agent_catalog.get(source_id) if kind == "agent" else next((p for p in self._skill_packs() if p["id"] == source_id), None)
+            raw = self._raw_core(kind, source_id)
             if not raw:
                 raise SdlcError("NOT_FOUND", "Agent or skill not found")
+            if not self._super(user):          # a project author copies only what the administrator shares, and only what can be copied
+                item = next((c for c in self._core_list(kind, await self._repo.core_visibility()) if c["id"] == source_id), None)
+                if item is None or not item["public"]:
+                    raise SdlcError("NOT_FOUND", "Agent or skill not found")
             body, src = core_to_body(raw, kind), {"kind": "core", "id": source_id, "name": raw["name"], "version": int(raw.get("version", 1))}
         else:
             s, r = await self._load(source_id, user)

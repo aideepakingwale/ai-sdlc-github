@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   appendLine, auditSubmittable, decodePalette, delegationMeters, encodePalette, fromDeveloperJson, insertAt, lineDiff, sampleInputs, segments, statusChip, stepIndex,
-  agentOutputTypes, moveItem, outputFileName, outputText, parseCap, parseRunValue, spentPercent, tokensLabel, toDeveloperJson, uniqueName, variablesIn, type AgentBody,
+  agentOutputTypes, filterStarters, moveItem, outputFileName, outputText, parseCap, starterStages, parseRunValue, spentPercent, tokensLabel, toDeveloperJson, uniqueName, variablesIn, type AgentBody,
 } from './agents';
 
 const body: AgentBody = {
@@ -124,5 +124,19 @@ describe('running and ordering', () => {
   it('lists the artefact types a stage of agents writes, once each', () => {
     const o = (t: string) => ({ name: 'x', type: 'string' as const, artefact_type: t, format: 'Markdown' as const });
     expect(agentOutputTypes([{ outputsDetail: [o('REPORT'), o('CHECKLIST')] }, { outputsDetail: [o('REPORT')] }])).toEqual(['REPORT', 'CHECKLIST']);
+  });
+});
+
+describe('built-in starters', () => {
+  const items = [{ name: 'PRD writer', description: 'Writes the Product Requirements Document.', stage: 1, outputs: ['PRD'] }, { name: 'HLD writer', description: 'High-level design.', stage: 2, outputs: ['HLD'] }, { name: 'Test strategy', description: 'Plans testing.', stage: 4, outputs: ['TEST_STRATEGY'] }];
+  it('filters by what is typed, in the name, the description or what it writes', () => {
+    expect(filterStarters(items, 'prd', 0).map((i) => i.name)).toEqual(['PRD writer']);
+    expect(filterStarters(items, 'design', 0).map((i) => i.name)).toEqual(['HLD writer']);
+    expect(filterStarters(items, '  ', 0)).toHaveLength(3);
+  });
+  it('filters by stage and lists the stages there are', () => {
+    expect(filterStarters(items, '', 4).map((i) => i.name)).toEqual(['Test strategy']);
+    expect(filterStarters(items, 'prd', 2)).toEqual([]);
+    expect(starterStages([...items, { stage: null }, { stage: 2 }])).toEqual([1, 2, 4]);
   });
 });

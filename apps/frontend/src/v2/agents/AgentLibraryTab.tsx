@@ -27,6 +27,13 @@ export default function AgentLibraryTab({ userId, onBuilder }: { userId: string;
     mutationFn: (v: { sourceKind: 'core' | 'def'; sourceId: string; kind: DefKind }) => api.post<DefDetail>('/api/agent-defs/fork', { ...v, scope: 'org' }),
     onSuccess: (d) => { void qc.invalidateQueries({ queryKey: ['agent-lists'] }); setCore(null); open(d.def.id); }, onError: (e) => setMsg(e instanceof Error ? e.message : 'Could not copy it'),
   });
+  const share = useMutation({
+    mutationFn: (v: { id: string; public: boolean }) => api.put(`/api/agent-library/core/${kind}/${v.id}/public`, { public: v.public }),
+    onMutate: (v) => {            // the box answers the click at once; the server's answer follows
+      qc.setQueryData<{ core: CoreCard[]; org: Card[]; projectOwned: number }>(['agent-lists', 'org', kind], (d) => (d ? { ...d, core: d.core.map((c) => (c.id === v.id ? { ...c, public: v.public } : c)) } : d));
+    },
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['agent-lists'] }); void qc.invalidateQueries({ queryKey: ['agent-starters'] }); }, onError: (e) => { setMsg(e instanceof Error ? e.message : 'Could not change that'); void qc.invalidateQueries({ queryKey: ['agent-lists'] }); },
+  });
   const toggleOpen = useMutation({
     mutationFn: (v: { id: string; open: boolean }) => api.put(`/api/agent-defs/${v.id}/open`, { open: v.open }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['agent-lists'] }), onError: (e) => setMsg(e instanceof Error ? e.message : 'Could not change that'),
@@ -64,13 +71,19 @@ export default function AgentLibraryTab({ userId, onBuilder }: { userId: string;
       ))}
       {view === 'core' && (core ? <CoreViewer id={core.id} kind={core.kind} onBack={() => setCore(null)} onFork={() => fork.mutate({ sourceKind: 'core', sourceId: core.id, kind: core.kind })} busy={fork.isPending} /> : (
         <>
-          <p className="mb-2 text-xs text-slate-500">Built-in {kind}s ship with the platform and cannot be edited. Copy one to make your own version.</p>
+          <p className="mb-2 text-xs text-slate-500">Built-in {kind}s ship with the platform and cannot be edited. Those marked as shared can be copied by every project, which can read the definition and extend it; copy one here to make an organisation version.</p>
           <ul className="grid gap-2 md:grid-cols-2" data-testid="v2-lib-core">
             {(lib.data?.core ?? []).map((c) => (
-              <li key={c.id}><button type="button" onClick={() => setCore({ id: c.id, kind })} className="w-full rounded-xl border border-slate-300 bg-white p-3 text-left hover:border-brand-400" data-testid="v2-lib-core-card">
-                <div className="flex items-start justify-between gap-2"><span className="font-semibold text-slate-800">{c.name}</span><Pill>🔒 Built-in</Pill></div>
-                <div className="mt-0.5 line-clamp-2 text-xs text-slate-500">{c.description}</div><div className="mt-1 flex gap-1 text-xs"><Pill>{c.roleLabel}</Pill>{c.stage != null && <Pill tone="brand">Stage {c.stage}</Pill>}</div>
-              </button></li>))}
+              <li key={c.id} className="rounded-xl border border-slate-300 bg-white p-3" data-testid="v2-lib-core-card">
+                <button type="button" onClick={() => setCore({ id: c.id, kind })} className="w-full text-left">
+                  <div className="flex items-start justify-between gap-2"><span className="font-semibold text-slate-800">{c.name}</span><Pill>🔒 Built-in</Pill></div>
+                  <div className="mt-0.5 line-clamp-2 text-xs text-slate-500">{c.description}</div><div className="mt-1 flex gap-1 text-xs"><Pill>{c.roleLabel}</Pill>{c.stage != null && <Pill tone="brand">Stage {c.stage}</Pill>}</div>
+                </button>
+                <div className="mt-2 border-t border-slate-100 pt-2 text-xs">
+                  {c.copyable ? <label className="flex items-center gap-2 text-slate-600"><input type="checkbox" data-testid="v2-core-public-toggle" checked={Boolean(c.public)} disabled={share.isPending} onChange={(e) => share.mutate({ id: c.id, public: e.target.checked })} /> Shared with projects, who can copy it</label>
+                    : <span className="text-slate-400">Runs inside the platform, so it cannot be copied</span>}
+                </div>
+              </li>))}
           </ul>
         </>))}
     </div>

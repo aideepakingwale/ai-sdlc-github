@@ -214,3 +214,13 @@ class AgentRepo:
         else:
             rows = await self._p.fetch("SELECT * FROM agent_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT $2", project_id, limit)
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------ built-ins shared with projects (migration 0050)
+    async def core_visibility(self) -> dict[tuple[str, str], bool]:
+        rows = await self._p.fetch("SELECT kind, core_id, public FROM agent_core_visibility")
+        return {(r["kind"], r["core_id"]): bool(r["public"]) for r in rows}
+
+    async def set_core_visibility(self, kind: str, core_id: str, public: bool, user_id: str) -> None:
+        await self._p.execute(
+            "INSERT INTO agent_core_visibility (kind, core_id, public, updated_by) VALUES ($1,$2,$3,$4) "
+            "ON CONFLICT (kind, core_id) DO UPDATE SET public=$3, updated_by=$4, updated_at=now()", kind, core_id, public, user_id)

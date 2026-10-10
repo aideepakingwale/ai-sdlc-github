@@ -45,7 +45,10 @@ export interface Card extends DefView {
 export interface CoreCard {
   id: string; kind: DefKind; source: 'core'; name: string; description: string; version: number; role: ModelRole; roleLabel: string; stage?: number | null;
   category?: string; runtime?: string; inputs: string[]; outputs: string[]; roles?: string[]; file?: string;
+  /** Can be copied (a specialist agent, an instruction-only skill) and whether the administrator shares it with projects. */
+  copyable?: boolean; public?: boolean;
 }
+export interface StarterDetail extends CoreCard { definition: AgentBody; reads: string[]; writes: string[] }
 export interface RunResultView {
   outputs: Record<string, unknown>; tokens: { promptTokens: number; completionTokens: number }; totalTokens: number; provider: string; model: string; mock: boolean;
   warnings: string[]; context: Array<{ label: string; chars: number }>; systemPrompt?: string; userPrompt?: string;
@@ -286,3 +289,11 @@ export const outputFileName = (agent: string, output: string, format: Format): s
 /** The artefact types a set of attached agents write, in the order they run, without repeats. */
 export const agentOutputTypes = (items: Array<{ outputsDetail: OutputDef[] }>): string[] => [...new Set(items.flatMap((i) => i.outputsDetail.map((o) => o.artefact_type)))];
 export const WIRE_TONE: Record<WireInput['status'], 'green' | 'red' | 'slate'> = { ok: 'green', missing: 'red', optional: 'slate' };
+
+/** Filter the built-in starters by what a person types and by stage (0 = every stage). */
+export function filterStarters<T extends { name: string; description: string; stage?: number | null; outputs: string[] }>(items: T[], query: string, stage: number): T[] {
+  const q = query.trim().toLowerCase();
+  return items.filter((i) => (stage === 0 || i.stage === stage) && (!q || `${i.name} ${i.description} ${i.outputs.join(' ')}`.toLowerCase().includes(q)));
+}
+/** The stages that have at least one starter, in order. */
+export const starterStages = (items: Array<{ stage?: number | null }>): number[] => [...new Set(items.map((i) => i.stage).filter((n): n is number => typeof n === 'number'))].sort((a, b) => a - b);

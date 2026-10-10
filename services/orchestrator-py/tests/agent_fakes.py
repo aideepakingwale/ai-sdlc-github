@@ -56,6 +56,7 @@ class MemRepo:
         self.usage: list[dict] = []
         self.limits: dict[str, int] = {}
         self.runs: list[dict] = []
+        self.core_vis: dict[tuple[str, str], bool] = {}
 
     async def insert_def(self, d):
         r = {"open": False, "retired": False, "source_kind": None, "source_id": None, "source_name": None, "source_version": None, "project_id": None, "created_at": NOW, "updated_at": NOW, **d}
@@ -204,6 +205,15 @@ async def _list_runs(self, project_id, def_id=None, limit=20):
     return [dict(r) for r in reversed(self.runs) if r["project_id"] == project_id and (def_id is None or r["def_id"] == def_id)][:limit]
 
 
+async def _core_visibility(self):
+    return dict(self.core_vis)
+
+
+async def _set_core_visibility(self, kind, core_id, public, user_id):
+    self.core_vis[(kind, core_id)] = public
+
+
+MemRepo.core_visibility, MemRepo.set_core_visibility = _core_visibility, _set_core_visibility
 MemRepo.insert_run, MemRepo.list_runs = _insert_run, _list_runs
 MemRepo.record_usage, MemRepo.usage_for_def, MemRepo.usage_for_project, MemRepo.get_limit, MemRepo.set_limit = _record_usage, _usage_for_def, _usage_for_project, _get_limit, _set_limit
 

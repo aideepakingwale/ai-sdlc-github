@@ -200,7 +200,7 @@ async def test_unpublished_definitions_can_be_deleted_and_published_ones_only_re
 
 
 # ---------------------------------------------------------------- forks
-async def test_a_copy_is_a_fork_at_that_moment_and_core_can_only_be_copied_by_a_super_admin():
+async def test_a_copy_is_a_fork_at_that_moment():
     svc, repo, *_ = make()
     org = (await svc.create(SUPER, kind="agent", name="Risk assessor", scope="org", body=GOOD))["def"]["id"]
     await publish(svc, SUPER, SUPER, org)
@@ -212,8 +212,6 @@ async def test_a_copy_is_a_fork_at_that_moment_and_core_can_only_be_copied_by_a_
     await publish(svc, SUPER, SUPER, org)
     again = await svc.detail(AUTHOR, fork["def"]["id"])
     assert again["current"]["body"]["description"] == GOOD["description"] and again["newerSource"] == {"name": "Risk assessor", "version": 2}
-    with pytest.raises(SdlcError):
-        await svc.fork(PM, source_kind="core", source_id="prd", kind="agent", scope="project", project_id="p1")
     core = await svc.fork(SUPER, source_kind="core", source_id="prd", kind="agent", scope="org")
     assert core["def"]["source"]["kind"] == "core" and core["current"]["body"]["prompt"]
     other = (await svc.create(OTHER_PM, kind="agent", name="Elsewhere", scope="project", project_id="p2", body=GOOD))["def"]["id"]
@@ -701,3 +699,62 @@ async def test_a_stage_run_over_the_monthly_budget_is_reported_and_does_not_fail
     res = await run_stage_agents(runtime=svc._runtime, items=items, brief="b", upstream=lambda t: None, rules="", stack="", project_context="", save=save, emit=lambda e: None,
                                  project_id="p1")
     assert not saved and res.failed and "monthly budget" in res.failed[0]
+
+
+# ---------------------------------------------------------------- built-in agents a project may copy
+async def test_a_project_author_sees_the_built_in_specialists_and_copies_one_with_its_current_definition():
+    svc, repo, *_ = make()
+    items = (await svc.starters(PM, "p1", "agent"))["items"]
+    ids = {i["id"] for i in items}
+    assert "prd" in ids and len(items) == 29 and all(i["runtime"] == "specialist" and i["public"] for i in items)
+    assert "clarifier" not in ids and "security-reviewer" not in ids              # these run inside the platform's own code
+    detail = await svc.starter_detail(PM, "p1", "agent", "prd")
+    assert detail["definition"]["prompt"].startswith("# Role") and detail["definition"]["outputs"][0]["artefact_type"] == "PRD" and detail["writes"] == ["PRD"]
+    copy = await svc.fork(PM, source_kind="core", source_id="prd", kind="agent", scope="project", project_id="p1")
+    assert copy["def"]["scope"] == "project" and copy["def"]["source"] == {"kind": "core", "id": "prd", "name": "PRD writer", "version": 1}
+    assert copy["current"]["body"]["prompt"] == detail["definition"]["prompt"] and copy["current"]["status"] == "draft"
+    await svc.save_draft(PM, copy["def"]["id"], name=None, body={**copy["current"]["body"], "prompt": copy["current"]["body"]["prompt"] + "\n- Use the customer's glossary."})
+    assert (await svc.starter_detail(PM, "p1", "agent", "prd"))["definition"]["prompt"] == detail["definition"]["prompt"]      # the built-in is untouched
+
+
+async def test_every_shared_built_in_can_be_copied_and_passes_the_blocking_checks():
+    svc, repo, llm, _ = make()
+    auditor = AgentAuditor(llm, svc._runtime)
+    for c in (await svc.starters(PM, "p1", "agent"))["items"]:
+        d = await svc.starter_detail(PM, "p1", "agent", c["id"])
+        found = auditor.checks(kind="agent", name=c["name"], body=d["definition"])
+        assert not [f for f in found if f["severity"] == "block"], c["id"]
+
+
+async def test_only_what_the_administrator_shares_and_what_can_be_copied_reaches_a_project():
+    svc, repo, *_ = make()
+    for bad in ("clarifier", "no-such-agent"):
+        with pytest.raises(SdlcError, match="not found"):
+            await svc.fork(PM, source_kind="core", source_id=bad, kind="agent", scope="project", project_id="p1")
+        with pytest.raises(SdlcError, match="not found"):
+            await svc.starter_detail(PM, "p1", "agent", bad)
+    with pytest.raises(SdlcError, match="cannot be copied"):
+        await svc.set_core_public(SUPER, "agent", "clarifier", True)
+    with pytest.raises(SdlcError):
+        await svc.set_core_public(PM, "agent", "prd", False)                       # only a super-admin chooses
+    await svc.set_core_public(SUPER, "agent", "prd", False)
+    assert "prd" not in {i["id"] for i in (await svc.starters(PM, "p1", "agent"))["items"]}
+    with pytest.raises(SdlcError, match="not found"):
+        await svc.fork(PM, source_kind="core", source_id="prd", kind="agent", scope="project", project_id="p1")
+    assert (await svc.fork(SUPER, source_kind="core", source_id="prd", kind="agent", scope="org"))["def"]["source"]["kind"] == "core"     # a super-admin still can
+    lib = await svc.library(SUPER, "agent")
+    assert next(c for c in lib["core"] if c["id"] == "prd")["public"] is False and next(c for c in lib["core"] if c["id"] == "clarifier")["copyable"] is False
+    await svc.set_core_public(SUPER, "agent", "prd", True)
+    assert "prd" in {i["id"] for i in (await svc.starters(PM, "p1", "agent"))["items"]}
+
+
+async def test_copying_a_built_in_needs_the_right_to_build_in_that_project_and_the_inventory_stays_hidden():
+    svc, repo, *_ = make()
+    with pytest.raises(SdlcError):
+        await svc.fork(MEMBER, source_kind="core", source_id="prd", kind="agent", scope="project", project_id="p1")       # a member without edit rights
+    with pytest.raises(SdlcError):
+        await svc.starters(OTHER_PM, "p1", "agent")                                                                      # not on that project
+    with pytest.raises(SdlcError, match="not found"):
+        svc.core_detail(PM, "agent", "prd")                                       # the full inventory (files, notes) is still super-admin only
+    skills = await svc.starters(PM, "p1", "skill")
+    assert skills["items"] == []                                                  # the test catalogue's one skill is not an instruction-only skill

@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '../../api/client';
-import { spentPercent, statusChip, tokensLabel, WIRE_TONE, type Card, type DefDetail, type DefKind, type PipelineView, type ProjectUsage, type RunHistoryItem, type Rights } from '../../lib/agents';
+import { filterStarters, ROLE_LABEL, spentPercent, starterStages, statusChip, STAGE_NAMES, tokensLabel, WIRE_TONE, type Card, type CoreCard, type DefDetail, type DefKind, type PipelineView, type ProjectUsage, type RunHistoryItem, type Rights } from '../../lib/agents';
 import type { ProjectMember } from '../../api/types';
 import { Pill } from '../bits';
 import AgentBuilder from './AgentBuilder';
 import AgentRunPanel from './AgentRunPanel';
+import StarterView from './StarterView';
 import ApprovalsView from './ApprovalsView';
 
 const btn = 'rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:border-brand-400 disabled:opacity-50';
@@ -19,26 +20,35 @@ export default function AgentsTab({ projectId, userId, onBuilder }: { projectId:
   const [view, setView] = useState<'mine' | 'open' | 'approvals' | 'people' | 'usage' | 'runs' | 'pipeline'>('mine');
   const [editing, setEditing] = useState<string | null>(null);
   const [running, setRunning] = useState<string | null>(null);
+  const [starter, setStarter] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [stageFilter, setStageFilter] = useState(0);
   const [msg, setMsg] = useState('');
   const q = useQuery({ queryKey: ['agent-lists', projectId, kind], queryFn: () => api.get<ListResp>(`/api/projects/${projectId}/agents?kind=${kind}`) });
   const open = (id: string | null) => { setEditing(id); onBuilder?.(id !== null); };
+  const starters = useQuery({ queryKey: ['agent-starters', projectId, kind], queryFn: () => api.get<{ items: CoreCard[] }>(`/api/projects/${projectId}/agent-starters?kind=${kind}`), enabled: view === 'open' });
   const create = useMutation({
     mutationFn: () => api.post<DefDetail>('/api/agent-defs', { kind, name: kind === 'agent' ? 'New agent' : 'New skill', scope: 'project', projectId }),
     onSuccess: (d) => { void qc.invalidateQueries({ queryKey: ['agent-lists'] }); open(d.def.id); }, onError: (e) => setMsg(e instanceof Error ? e.message : 'Could not create it'),
+  });
+  const copyStarter = useMutation({
+    mutationFn: (id: string) => api.post<DefDetail>('/api/agent-defs/fork', { sourceKind: 'core', sourceId: id, kind, scope: 'project', projectId }),
+    onSuccess: (d) => { void qc.invalidateQueries({ queryKey: ['agent-lists'] }); setView('mine'); open(d.def.id); }, onError: (e) => setMsg(e instanceof Error ? e.message : 'Could not copy it'),
   });
   const copy = useMutation({
     mutationFn: (c: Card) => api.post<DefDetail>('/api/agent-defs/fork', { sourceKind: 'def', sourceId: c.id, kind: c.kind, scope: 'project', projectId }),
     onSuccess: (d) => { void qc.invalidateQueries({ queryKey: ['agent-lists'] }); setView('mine'); open(d.def.id); }, onError: (e) => setMsg(e instanceof Error ? e.message : 'Could not copy it'),
   });
+  if (starter && !editing) return <StarterView projectId={projectId} kind={kind} coreId={starter} canCopy={Boolean(q.data?.rights.edit)} onBack={() => setStarter(null)} onCopied={(id) => { setStarter(null); setView('mine'); void qc.invalidateQueries({ queryKey: ['agent-lists'] }); open(id); }} />;
   if (running) return <AgentRunPanel projectId={projectId} defId={running} onBack={() => setRunning(null)} />;
   if (editing) return <AgentBuilder defId={editing} projectId={projectId} onBack={() => open(null)} />;
   const rights = q.data?.rights;
-  const views: Array<['mine' | 'open' | 'approvals' | 'people' | 'usage' | 'runs' | 'pipeline', string]> = [['mine', 'Mine'], ['open', 'Open library'], ['runs', 'Runs'], ['pipeline', 'Pipeline'], ...(rights?.approve ? [['approvals', `Approvals${q.data?.pending ? ` (${q.data.pending})` : ''}`] as ['approvals', string]] : []), ...(rights?.edit || rights?.approve || rights?.manage ? [['usage', 'Usage'] as ['usage', string]] : []), ...(rights?.manage ? [['people', 'Who can edit and approve'] as ['people', string]] : [])];
-  const cards = view === 'mine' ? q.data?.mine ?? [] : q.data?.open ?? [];
+  const views: Array<['mine' | 'open' | 'approvals' | 'people' | 'usage' | 'runs' | 'pipeline', string]> = [['mine', 'Mine'], ['open', 'Library'], ['runs', 'Runs'], ['pipeline', 'Pipeline'], ...(rights?.approve ? [['approvals', `Approvals${q.data?.pending ? ` (${q.data.pending})` : ''}`] as ['approvals', string]] : []), ...(rights?.edit || rights?.approve || rights?.manage ? [['usage', 'Usage'] as ['usage', string]] : []), ...(rights?.manage ? [['people', 'Who can edit and approve'] as ['people', string]] : [])];
+  const cards = q.data?.mine ?? [];
   return (
     <div data-testid="v2-agents-tab">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex gap-1" role="group" aria-label="Agents or skills">{(['agent', 'skill'] as const).map((k) => <button key={k} type="button" aria-pressed={kind === k} data-testid={`v2-agents-kind-${k}`} onClick={() => setKind(k)} className={`rounded-lg px-3 py-1 text-xs font-semibold ${kind === k ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-600'}`}>{k === 'agent' ? 'Agents' : 'Skills'}</button>)}</div>
+        <div className="flex gap-1" role="group" aria-label="Agents or skills">{(['agent', 'skill'] as const).map((k) => <button key={k} type="button" aria-pressed={kind === k} data-testid={`v2-agents-kind-${k}`} onClick={() => { setKind(k); setQuery(''); setStageFilter(0); }} className={`rounded-lg px-3 py-1 text-xs font-semibold ${kind === k ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-600'}`}>{k === 'agent' ? 'Agents' : 'Skills'}</button>)}</div>
         <div className="flex gap-1" role="tablist" aria-label="Library view">{views.map(([id, l]) => <button key={id} role="tab" aria-selected={view === id} data-testid={`v2-agents-view-${id}`} onClick={() => setView(id)} className={`rounded-lg px-3 py-1 text-xs font-semibold ${view === id ? 'bg-navy text-white' : 'bg-slate-100 text-slate-600'}`}>{l}</button>)}</div>
         {rights?.edit ? <button type="button" className={primary} disabled={create.isPending} data-testid="v2-agents-new" onClick={() => create.mutate()}>+ New {kind}</button> : <span className="text-xs text-slate-500">Ask the project manager for permission to build agents.</span>}
       </div>
@@ -48,9 +58,11 @@ export default function AgentsTab({ projectId, userId, onBuilder }: { projectId:
       {view === 'usage' && <Usage projectId={projectId} />}
       {view === 'runs' && <Runs projectId={projectId} onOpen={(id) => setRunning(id)} />}
       {view === 'pipeline' && <Pipeline projectId={projectId} />}
-      {(view === 'mine' || view === 'open') && (
+      {view === 'open' && <Library kind={kind} org={q.data?.open ?? []} starters={starters.data?.items ?? []} loading={starters.isLoading} query={query} setQuery={setQuery} stage={stageFilter} setStage={setStageFilter} canCopy={Boolean(rights?.edit)} copyPending={copy.isPending}
+        onView={(id) => setStarter(id)} onOpenOrg={(id) => open(id)} onRunOrg={(id) => setRunning(id)} onCopyOrg={(c) => copy.mutate(c)} onCopyStarter={(id) => copyStarter.mutate(id)} />}
+      {view === 'mine' && (
         q.isLoading ? <div className="animate-pulse text-sm text-slate-400">Loading…</div> :
-        !cards.length ? <div className="rounded-xl border border-slate-300 bg-white p-6 text-center text-sm text-slate-500" data-testid="v2-agents-empty">{view === 'mine' ? `No ${kind}s built for this project yet.` : `The organisation has not opened any ${kind}s to projects yet.`}</div> :
+        !cards.length ? <div className="rounded-xl border border-slate-300 bg-white p-6 text-center text-sm text-slate-500" data-testid="v2-agents-empty">No {kind}s of your own yet. Start from a built-in or shared one in the <button type="button" className="font-semibold text-brand-700 underline" data-testid="v2-agents-browse" onClick={() => setView('open')}>Library</button>, or press + New {kind}.</div> :
         <ul className="grid gap-3 md:grid-cols-2" data-testid="v2-agents-list">
           {cards.map((c) => {
             const chip = statusChip(c.status, c.version);
@@ -166,6 +178,50 @@ function Pipeline({ projectId }: { projectId: string }) {
                   <div className="mt-0.5 flex flex-wrap gap-1 text-xs">{a.inputs.map((i) => <Pill key={i.name} tone={WIRE_TONE[i.status]} title={i.from}>{i.name} ← {i.from}</Pill>)}<span className="text-slate-400">→ {a.outputs.join(', ') || 'nothing'}</span></div></li>))}</ol>)}
           </li>))}
       </ol>
+    </div>
+  );
+}
+
+function Library({ kind, org, starters, loading, query, setQuery, stage, setStage, canCopy, copyPending, onView, onOpenOrg, onRunOrg, onCopyOrg, onCopyStarter }: {
+  kind: DefKind; org: Card[]; starters: CoreCard[]; loading: boolean; query: string; setQuery: (v: string) => void; stage: number; setStage: (n: number) => void; canCopy: boolean; copyPending: boolean;
+  onView: (id: string) => void; onOpenOrg: (id: string) => void; onRunOrg: (id: string) => void; onCopyOrg: (c: Card) => void; onCopyStarter: (id: string) => void;
+}) {
+  const shown = filterStarters(starters, query, stage);
+  const stages = starterStages(starters);
+  return (
+    <div className="space-y-5" data-testid="v2-agent-library-view">
+      {org.length > 0 && (
+        <section data-testid="v2-lib-shared">
+          <h3 className="font-display text-base font-bold text-navy">Shared by your organisation</h3>
+          <p className="mb-2 text-xs text-slate-500">Approved by an administrator and open to every project. A copy is yours to change.</p>
+          <ul className="grid gap-3 md:grid-cols-2">{org.map((c) => (
+            <li key={c.id} className="rounded-xl border border-slate-300 bg-white p-4" data-testid="v2-agent-card">
+              <div className="flex items-start justify-between gap-2"><div className="font-display text-base font-bold text-navy">{c.name}</div><Pill tone="amber">Shared · v{c.publishedVersion}</Pill></div>
+              <p className="mt-1 text-sm text-slate-600">{c.description || 'No description yet.'}</p>
+              <div className="mt-2 flex flex-wrap gap-1 text-xs"><Pill>{c.roleLabel}</Pill>{c.inputs.map((i) => <Pill key={i} tone="brand">● {i}</Pill>)}{c.outputs.map((o) => <Pill key={o} tone="green">{o} ●</Pill>)}</div>
+              <div className="mt-3 flex flex-wrap items-center gap-2"><button type="button" className={btn} onClick={() => onOpenOrg(c.id)}>View</button><button type="button" className={btn} data-testid="v2-agent-run" onClick={() => onRunOrg(c.id)}>▶ Run</button>
+                {canCopy && <button type="button" className={primary} disabled={copyPending} data-testid="v2-agent-copy" onClick={() => onCopyOrg(c)}>Copy to project</button>}</div>
+            </li>))}</ul>
+        </section>)}
+      <section data-testid="v2-lib-builtin">
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div><h3 className="font-display text-base font-bold text-navy">Built-in {kind === 'agent' ? 'agents' : 'skills'} you can copy</h3>
+            <p className="text-xs text-slate-500">{kind === 'agent' ? 'The specialists that write each stage\'s documents.' : 'Instruction-only skills.'} Open one to read its definition, or copy it into this project and extend it for your own case.</p></div>
+          <input aria-label="Search the library" data-testid="v2-lib-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by name or what it writes" className="w-64 rounded-lg border border-slate-300 px-2 py-1 text-sm" />
+        </div>
+        {stages.length > 1 && <div className="mt-2 flex flex-wrap gap-1.5" role="group" aria-label="Stage">{[0, ...stages].map((n) => <button key={n} type="button" aria-pressed={stage === n} onClick={() => setStage(n)} className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${stage === n ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{n === 0 ? `All (${starters.length})` : STAGE_NAMES[n] ?? `Stage ${n}`}</button>)}</div>}
+        {loading ? <div className="mt-3 animate-pulse text-sm text-slate-400">Loading…</div> : !shown.length ? (
+          <div className="mt-3 rounded-xl border border-slate-300 bg-white p-6 text-center text-sm text-slate-500" data-testid="v2-lib-none">{starters.length ? 'Nothing matches that search.' : `No built-in ${kind}s are shared with projects. An administrator can share them under Governance → Agent library.`}</div>
+        ) : (
+          <ul className="mt-3 grid gap-3 md:grid-cols-2" data-testid="v2-lib-starters">{shown.map((c) => (
+            <li key={c.id} className="rounded-xl border border-slate-300 bg-white p-4" data-testid="v2-starter-card">
+              <div className="flex items-start justify-between gap-2"><div className="font-display text-base font-bold text-navy">{c.name}</div><Pill>🔒 Built-in</Pill></div>
+              <p className="mt-1 text-sm text-slate-600">{c.description}</p>
+              <div className="mt-2 flex flex-wrap gap-1 text-xs"><Pill>{ROLE_LABEL[c.role] ?? c.role}</Pill>{c.stage != null && <Pill tone="brand">{STAGE_NAMES[c.stage] ?? `Stage ${c.stage}`}</Pill>}{c.outputs.slice(0, 3).map((o) => <Pill key={o} tone="green">{o} ●</Pill>)}</div>
+              <div className="mt-3 flex flex-wrap items-center gap-2"><button type="button" className={btn} data-testid="v2-starter-open" onClick={() => onView(c.id)}>View definition</button>
+                {canCopy && <button type="button" className={primary} disabled={copyPending} data-testid="v2-starter-quick-copy" onClick={() => onCopyStarter(c.id)}>Copy to project</button>}</div>
+            </li>))}</ul>)}
+      </section>
     </div>
   );
 }

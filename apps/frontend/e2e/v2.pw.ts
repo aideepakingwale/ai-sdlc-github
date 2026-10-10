@@ -995,6 +995,60 @@ test.describe('custom agents', () => {
     await expect(page.getByText('CHECKLIST').first()).toBeVisible();
   });
 
+  test('the library shows the built-in agents and skills, a definition can be read, and a copy opens in the builder to extend', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-nav-context').click();
+    await page.getByTestId('v2-context-tab-agents').click();
+    await expect(page.getByTestId('v2-agents-empty')).toContainText('Library');
+    await page.getByTestId('v2-agents-browse').click();
+    await expect(page.getByTestId('v2-lib-builtin')).toBeVisible();
+    await expect(page.getByTestId('v2-starter-card').first()).toBeVisible();
+    expect(await page.getByTestId('v2-starter-card').count()).toBeGreaterThan(20);
+    await page.getByTestId('v2-lib-search').fill('prd');
+    await expect(page.getByTestId('v2-starter-card')).toHaveCount(1);
+    await page.getByTestId('v2-starter-open').click();
+    await expect(page.getByTestId('v2-starter-prompt')).toContainText('Product Requirements Document');
+    await page.getByTestId('v2-starter-copy').click();
+    await expect(page.getByTestId('v2-builder')).toBeVisible();
+    await expect(page.getByTestId('v2-builder-name')).toHaveValue('Copy of PRD writer');
+    await expect(page.getByTestId('v2-builder-prompt')).toHaveValue(/Product Requirements Document/);
+    await page.getByTestId('v2-builder-desc').fill('Writes our PRD, with the customer glossary.');
+    await expect(page.getByTestId('v2-save-state')).toHaveText('Saved');
+    // the copy is a project agent that remembers where it came from; the built-in itself is unchanged
+    const mine = (await (await page.request.get(`/api/projects/${id}/agents?kind=agent`)).json()) as { mine: Array<{ name: string; source: { name: string } | null }> };
+    expect(mine.mine.map((m) => [m.name, m.source?.name])).toEqual([['Copy of PRD writer', 'PRD writer']]);
+    const again = (await (await page.request.get(`/api/projects/${id}/agent-starters/agent/prd`)).json()) as { definition: { description: string } };
+    expect(again.definition.description).toBe('Writes the Product Requirements Document.');
+    // skills have starters too
+    await page.getByTestId('v2-builder-back').click();
+    await page.getByTestId('v2-agents-kind-skill').click();
+    await page.getByTestId('v2-agents-view-open').click();
+    await expect(page.getByTestId('v2-starter-card').first()).toBeVisible();
+    expect(await page.getByTestId('v2-starter-card').count()).toBeGreaterThan(5);
+  });
+
+  test('an administrator chooses which built-in agents projects can copy', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { id } = await newProject(page);
+    await page.getByTestId('v2-nav-governance').click();
+    await page.getByTestId('v2-gov-library').click();
+    await page.getByTestId('v2-lib-view-core').click();
+    const card = page.getByTestId('v2-lib-core-card').filter({ hasText: 'PRD writer' });
+    const toggle = card.getByTestId('v2-core-public-toggle');
+    const shared = async () => ((await (await page.request.get(`/api/projects/${id}/agent-starters?kind=agent`)).json()) as { items: Array<{ id: string }> }).items.some((i) => i.id === 'prd');
+    await expect(toggle).toBeChecked();
+    await toggle.click();
+    await expect.poll(shared).toBe(false);
+    await expect(toggle).not.toBeChecked();
+    await toggle.click();
+    await expect.poll(async () => ((await (await page.request.get(`/api/projects/${id}/agent-starters?kind=agent`)).json()) as { items: Array<{ id: string }> }).items.some((i) => i.id === 'prd')).toBe(true);
+    // an agent that runs inside the platform cannot be copied, and says so
+    await expect(page.getByTestId('v2-lib-core-card').filter({ hasText: 'Clarification agent' }).first()).toContainText('cannot be copied');
+  });
+
   test('built-in agents are only for super-admins; a project cannot see them', async ({ page }) => {
     await login(page, '/?ui=v2');
     const { id } = await newProject(page);

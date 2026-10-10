@@ -76,6 +76,10 @@ class RunBody(BaseModel):
     stageKey: str | None = None
 
 
+class PublicBody(BaseModel):
+    public: bool
+
+
 class StageItem(BaseModel):
     defId: str
     pinnedVersion: int | None = None
@@ -112,6 +116,11 @@ async def library(kind: str = "agent", user: UserPublic = Depends(current_user),
 @router.get("/api/agent-library/core/{kind}/{core_id}")
 async def core_detail(kind: str, core_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     return c.agent_defs.core_detail(user, kind, core_id)
+
+
+@router.put("/api/agent-library/core/{kind}/{core_id}/public")
+async def core_public(kind: str, core_id: str, body: PublicBody, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    return await c.agent_defs.set_core_public(user, kind, core_id, body.public)
 
 
 @router.get("/api/agent-library/approvals")
@@ -286,3 +295,14 @@ async def agent_runs(project_id: str, defId: str | None = None, limit: int = 20,
 @router.get("/api/projects/{project_id}/agent-pipeline")
 async def agent_pipeline(project_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     return await c.agent_defs.pipeline(user, project_id)
+
+
+# ------------------------------------------------------------------ built-ins a project may copy
+@router.get("/api/projects/{project_id}/agent-starters")
+async def starters(project_id: str, kind: str = "agent", user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    return await c.agent_defs.starters(user, project_id, kind)
+
+
+@router.get("/api/projects/{project_id}/agent-starters/{kind}/{core_id}")
+async def starter_detail(project_id: str, kind: str, core_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    return await c.agent_defs.starter_detail(user, project_id, kind, core_id)
