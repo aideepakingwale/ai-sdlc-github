@@ -341,3 +341,28 @@ An independent review of the whole token work found the following; each is fixed
 * **CSV export** reads in a single query and ends with a `TRUNCATED` row when the row cap is hit.
 
 **Left as they are (low risk):** the first-metering millisecond race, the task ceiling counting cache reads at full weight, aggregate breakdowns visible to non-managers, and calls that fail before any token is billed (timeouts) which only reconciliation can see. `/metrics` exposes the organisation balance and must stay cluster-internal.
+
+## 20. Opening a failed request (what was asked, what came back)
+
+The ledger says that a request wasted tokens; this says why. On the Usage page, a project's manager (or an administrator) can open the request behind any row that went wrong: **The calls behind these numbers**, outcome **Anything that went wrong**, then **View request**.
+
+**What is shown.** Every attempt of the request (provider and model tried, what the provider said, tokens, time); the **messages that were sent** (system and user, each collapsible, with a Copy button); and **what came back** (the model's text, or the gateway's error body when nothing came back).
+
+**What counts as a failure and is kept** (`llm_failure_captures`, migration 0056, one row per request):
+
+| Reason | When |
+|---|---|
+| `error` | the gateway or every provider failed |
+| `unreachable` | the orchestrator could not reach the AI gateway (billed nothing, so it has no ledger row; it is listed under "Anything that went wrong" anyway) |
+| `refused` / `canceled` | the model refused, or the call was cancelled |
+| `truncated` | the answer was cut off at the output limit |
+| `failed_over` | a provider failed and another one answered (the failed attempt is the waste) |
+| `invalid_output` | the model answered and billed, but the application rejected the answer (not JSON, wrong shape); the rejected text is kept |
+
+A clean request leaves nothing behind.
+
+**Who can read it.** Only the project's manager and administrators. Members see the project total and their own lines, but no text: the prompt can contain the project's documents. The API is `GET /api/projects/{id}/usage/requests/{requestId}`; a request id from another project is "not found", and every open is written to the application log.
+
+**How long it is kept.** `FAILURE_CAPTURE_DAYS` (default 14), deleted hourly; also deleted with the project (the ledger is kept, the text is not). Each text is capped at `FAILURE_CAPTURE_MAX_CHARS` (default 100,000) and the page says when it was cut. Images in a prompt are replaced by a note. `FAILURE_CAPTURE=false` (or 0 days) stores nothing, and the page then says the server does not keep it. This is a deliberate exception to "prompts are never kept": it applies only to failures, for a short time, to the people who can already read the project's artefacts. If your data policy forbids it, switch it off.
+
+**Not covered.** A call that fails inside the gateway before it reports back leaves an attempt with the provider's short error, not its raw response body. The existing debug trace (`LLM_DEBUG_TRACE`, Observability) is separate: it records every call, not only failures, and stays off by default.

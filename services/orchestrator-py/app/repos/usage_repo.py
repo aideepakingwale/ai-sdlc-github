@@ -119,14 +119,47 @@ class UsageRepo:
 
     async def events(self, f: UsageFilter, *, activity: str | None, status: str | None, limit: int, offset: int) -> list[dict[str, Any]]:
         where, args = f.where(a="e.")
-        for col, val in (("activity", activity), ("status", status)):
-            if val:
-                args.append(val)
-                where += f" AND e.{col} = ${len(args)}"
-        args += [limit, offset]
+        act_idx = 0
+        if activity:
+            args.append(activity)
+            act_idx = len(args)
+            where += f" AND e.activity = ${act_idx}"
+        if status == "failed":
+            # Anything that went wrong, including a call the provider answered but the application rejected (it has a capture).
+            where += " AND (e.status <> 'ok' OR EXISTS (SELECT 1 FROM llm_failure_captures c WHERE c.request_id = e.request_id))"
+        elif status:
+            args.append(status)
+            where += f" AND e.status = ${len(args)}"
         sql = f"""SELECT e.ts, e.request_id, e.attempt_no, e.provider, e.model, e.region, e.provider_request_id, e.project_id, e.stage, e.user_id,
                          u.display_name, u.email, e.actor_type, e.activity, e.tag, e.agent_id, e.run_id, e.input_tokens, e.cache_read_tokens,
-                         e.cache_write_tokens, e.output_tokens, e.total_tokens, e.status, e.error_class, e.stop_reason, e.latency_ms, e.estimated, e.billable
+                         e.cache_write_tokens, e.output_tokens, e.total_tokens, e.status, e.error_class, e.stop_reason, e.latency_ms, e.estimated, e.billable,
+                         EXISTS (SELECT 1 FROM llm_failure_captures c WHERE c.request_id = e.request_id) AS has_capture
                   FROM llm_usage_events e LEFT JOIN users u ON u.id = e.user_id
-                  WHERE {where} ORDER BY e.ts DESC, e.attempt_no LIMIT ${len(args) - 1} OFFSET ${len(args)}"""
+                  WHERE {where}"""
+        if status == "failed" and f.project_id is not None and f.billable != "offline":
+            # A request that never reached a provider (the gateway was down, the call was rejected before sending) billed nothing, so the ledger
+            # has no row for it, but its text was kept: list it too, as one attempt that used no tokens. The project is always $3 here.
+            cond = ["c.created_at >= $1", "c.created_at < $2", "c.project_id = $3"]
+            if f.user_id is not None:
+                cond.append("c.user_id = $4")
+            if act_idx:
+                cond.append(f"c.activity = ${act_idx}")
+            sql += f"""
+                  UNION ALL
+                  SELECT c.created_at, c.request_id, 1, '', '', NULL, NULL, c.project_id, c.stage, c.user_id,
+                         u.display_name, u.email, CASE WHEN c.user_id IS NULL THEN 'system' ELSE 'user' END, c.activity, c.tag, NULL, NULL, 0, 0,
+                         0, 0, 0, 'error', c.reason, NULL, 0, FALSE, TRUE, TRUE
+                  FROM llm_failure_captures c LEFT JOIN users u ON u.id = c.user_id
+                  WHERE {' AND '.join(cond)} AND NOT EXISTS (SELECT 1 FROM llm_usage_events e2 WHERE e2.request_id = c.request_id)"""
+        args += [limit, offset]
+        sql = f"SELECT * FROM ({sql}) t ORDER BY ts DESC, attempt_no LIMIT ${len(args) - 1} OFFSET ${len(args)}"
         return [dict(r) for r in await self._p.fetch(sql, *args)]
+
+    async def request_rows(self, project_id: str, request_id: str) -> list[dict[str, Any]]:
+        """Every ledger row (attempt) of one request in a project, oldest first."""
+        sql = """SELECT e.ts, e.request_id, e.attempt_no, e.provider, e.model, e.region, e.provider_request_id, e.project_id, e.stage, e.user_id,
+                        u.display_name, u.email, e.actor_type, e.activity, e.tag, e.agent_id, e.run_id, e.input_tokens, e.cache_read_tokens, e.cache_write_tokens,
+                        e.output_tokens, e.total_tokens, e.status, e.error_class, e.stop_reason, e.latency_ms, e.estimated, e.billable
+                 FROM llm_usage_events e LEFT JOIN users u ON u.id = e.user_id
+                 WHERE e.project_id = $1 AND e.request_id = $2 ORDER BY e.attempt_no, e.ts"""
+        return [dict(r) for r in await self._p.fetch(sql, project_id, request_id)]

@@ -30,7 +30,7 @@ export interface OrgUsageReport {
 export interface UsageEvent {
   ts: string; requestId: string; attempt: number; provider: string; model: string; person: string; activity: string; tag: string | null; stage: number | null;
   inputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; outputTokens: number; totalTokens: number; status: string; estimated: boolean; billable: boolean;
-  stopReason: string | null; latencyMs: number; providerRequestId: string | null;
+  stopReason: string | null; latencyMs: number; providerRequestId: string | null; hasCapture: boolean;
 }
 export type UsageScope = 'billable' | 'offline' | 'all';
 
@@ -45,6 +45,7 @@ export const activityLabel = (a: string): string => ACTIVITY_LABEL[a] ?? a;
 
 export const STATUS_LABEL: Record<string, string> = {
   error: 'Failed', refused: 'Refused by the model', canceled: 'Cancelled', truncated: 'Cut off at the output limit', ok: 'Completed',
+  failed: 'Anything that went wrong',
 };
 export const statusLabel = (s: string): string => STATUS_LABEL[s] ?? s;
 
@@ -138,3 +139,24 @@ export function reconHeadline(l: ReconList): string {
   if (r.status === 'no_data') return `${r.day}: AWS returned no invocation log records for this day.`;
   return r.status === 'ok' ? `${r.day}: the ledger agrees with AWS (${driftLabel(r.drift)}).` : `${r.day}: the ledger differs from AWS by ${driftLabel(r.drift)}, more than the ${Math.round(r.threshold * 100)}% allowed.`;
 }
+
+/** One request behind a row of the ledger: its attempts and, when it went wrong, what was asked and what came back. */
+export interface RequestAttempt {
+  attempt: number; provider: string; model: string; region: string | null; providerRequestId: string | null; status: string; errorClass: string | null; stopReason: string | null;
+  latencyMs: number; inputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; outputTokens: number; totalTokens: number; estimated: boolean; billable: boolean;
+  error: string | null; errorKind: string | null;
+}
+export interface RequestCapture {
+  reason: string; error: string | null; capturedAt: string; expiresAt: string | null;
+  messages: Array<{ role: string; content: string }> | null; promptText: string | null; promptCut: boolean; response: string | null; responseCut: boolean;
+}
+export interface RequestDetail {
+  requestId: string; ts: string; person: string | null; activity: string; stage: number | null; tag: string | null; totalTokens: number;
+  attempts: RequestAttempt[]; capture: RequestCapture | null; captureNote?: string;
+}
+export const CAPTURE_REASON: Record<string, string> = {
+  error: 'The call failed', unreachable: 'The AI gateway could not be reached', refused: 'The model refused', canceled: 'The call was cancelled',
+  truncated: 'The answer was cut off at the output limit', failed_over: 'A provider failed and another one answered',
+  invalid_output: 'The model answered, but the answer was rejected',
+};
+export const captureReason = (r: string): string => CAPTURE_REASON[r] ?? r;

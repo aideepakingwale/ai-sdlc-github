@@ -5,6 +5,7 @@ import { tokensLabel } from '../../lib/agents';
 import { Pill } from '../bits';
 import BalanceMeter from './BalanceMeter';
 import PoolsPanel from './PoolsPanel';
+import RequestDialog from './RequestDialog';
 import {
   activityLabel, barWidths, calls, DIFF_LABEL, driftLabel, reconHeadline, RECON_STATUS, type ReconDiff, type ReconList, type ReconRun, fillDays, headline, percent, RANGES, rangeFor, SCOPE_LABEL, statusLabel, tokensFull, usageQuery,
   type OrgUsageReport, type ProjectUsageReport, type UsageEvent, type UsageScope, type UsageTotals, type WasteRow,
@@ -117,7 +118,7 @@ function ProjectView({ projectId, range, scope }: { projectId: string; range: { 
       </div>
 
       <Waste rows={r.waste} totals={r.totals} onPick={(w) => setShowCalls({ activity: w.activity, status: w.status })} />
-      <Calls projectId={projectId} range={range} scope={scope} person={person} filter={showCalls} onFilter={setShowCalls} activities={r.byActivity.map((a) => a.activity)} />
+      <Calls projectId={projectId} range={range} scope={scope} person={person} filter={showCalls} onFilter={setShowCalls} activities={r.byActivity.map((a) => a.activity)} canOpen={r.viewer.canSeeEveryone} />
     </div>
   );
 }
@@ -139,12 +140,13 @@ function Waste({ rows, totals, onPick }: { rows: WasteRow[]; totals: UsageTotals
   );
 }
 
-function Calls({ projectId, range, scope, person, filter, onFilter, activities }: {
-  projectId: string; range: { from: string; to: string }; scope: UsageScope; person: string;
+function Calls({ projectId, range, scope, person, filter, onFilter, activities, canOpen }: {
+  projectId: string; range: { from: string; to: string }; scope: UsageScope; person: string; canOpen: boolean;
   filter: { activity?: string; status?: string } | null; onFilter: (f: { activity?: string; status?: string } | null) => void; activities: string[];
 }) {
   const [open, setOpen] = useState(false);
   const [page, setPage] = useState(0);
+  const [openRequest, setOpenRequest] = useState<string | null>(null);
   const PAGE = 50;
   const isOpen = open || filter !== null;
   const qs = usageQuery({ ...range, billable: scope, person: person || null, activity: filter?.activity, status: filter?.status, limit: PAGE, offset: page * PAGE });
@@ -162,18 +164,20 @@ function Calls({ projectId, range, scope, person, filter, onFilter, activities }
               <option value="">All kinds of work</option>{activities.map((a) => <option key={a} value={a}>{activityLabel(a)}</option>)}
             </select>
             <select value={filter?.status ?? ''} onChange={(e) => { onFilter({ ...filter, status: e.target.value || undefined }); setPage(0); }} aria-label="Outcome" className="rounded-lg border border-slate-300 bg-white px-2 py-1">
-              <option value="">Any outcome</option>{['error', 'refused', 'canceled', 'truncated'].map((s) => <option key={s} value={s}>{statusLabel(s)}</option>)}
+              <option value="">Any outcome</option>{['failed', 'error', 'refused', 'canceled', 'truncated'].map((s) => <option key={s} value={s}>{statusLabel(s)}</option>)}
             </select>
           </div>
           {!q.data ? <div className="animate-pulse text-sm text-slate-400">Loading…</div> : q.data.events.length === 0 ? <p className="text-sm text-slate-500">No calls match.</p> : (
-            <div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr className="text-left uppercase tracking-wide text-slate-500"><th className="py-1">When</th><th>Person</th><th>Work</th><th>Model</th><th className="text-right">Input</th><th className="text-right">Cached</th><th className="text-right">Output</th><th className="text-right">Total</th><th>Outcome</th></tr></thead>
+            <div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr className="text-left uppercase tracking-wide text-slate-500"><th className="py-1">When</th><th>Person</th><th>Work</th><th>Model</th><th className="text-right">Input</th><th className="text-right">Cached</th><th className="text-right">Output</th><th className="text-right">Total</th><th>Outcome</th>{canOpen && <th />}</tr></thead>
               <tbody>{q.data.events.map((e, i) => (
                 <tr key={`${e.requestId}-${e.attempt}-${i}`} className="border-t border-slate-200">
                   <td className="whitespace-nowrap py-1">{new Date(e.ts).toLocaleString()}</td><td>{e.person}</td><td>{activityLabel(e.activity)}</td><td>{e.model || e.provider}</td>
                   <td className="text-right tabular-nums">{tokensFull(e.inputTokens)}</td><td className="text-right tabular-nums">{tokensFull(e.cacheReadTokens + e.cacheWriteTokens)}</td>
                   <td className="text-right tabular-nums">{tokensFull(e.outputTokens)}</td><td className="text-right font-medium tabular-nums">{tokensFull(e.totalTokens)}{e.estimated ? ' ~' : ''}</td>
-                  <td>{statusLabel(e.status)}{e.attempt > 1 ? ` (attempt ${e.attempt})` : ''}</td></tr>))}</tbody></table></div>
+                  <td>{statusLabel(e.status)}{e.attempt > 1 ? ` (attempt ${e.attempt})` : ''}</td>
+                  {canOpen && <td className="whitespace-nowrap text-right">{(e.hasCapture || e.status !== 'ok') && <button type="button" className="text-brand-600 hover:underline" onClick={() => setOpenRequest(e.requestId)} data-testid="v2-usage-open-request">{e.hasCapture ? 'View request' : 'Details'}</button>}</td>}</tr>))}</tbody></table></div>
           )}
+          {openRequest && <RequestDialog projectId={projectId} requestId={openRequest} onClose={() => setOpenRequest(null)} />}
           <div className="mt-2 flex items-center justify-between text-sm">
             <button type="button" disabled={page === 0} onClick={() => setPage(page - 1)} className="rounded-lg border border-slate-300 px-3 py-1 disabled:opacity-40">Newer</button>
             <span className="text-slate-500">Page {page + 1}</span>

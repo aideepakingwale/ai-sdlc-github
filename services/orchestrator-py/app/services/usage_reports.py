@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import csv
 import io
+import json
+import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -75,10 +77,15 @@ def _csv_cell(v: Any) -> Any:
     return v
 
 
+log = logging.getLogger("usage-reports")
+
+
 class UsageReports:
-    def __init__(self, repo: UsageRepo, authz: Any) -> None:
+    def __init__(self, repo: UsageRepo, authz: Any, captures: Any = None, capture_days: int = 0) -> None:
         self._repo = repo
         self._authz = authz
+        self._captures = captures          # CaptureRepo, or None when failed-call capture is not wired
+        self._capture_days = capture_days  # 0 = capture is off
 
     # ------------------------------------------------------------------ a project
     async def project(self, user: UserPublic, project_id: str, frm: str | None, to: str | None, billable: str = "billable", person: str | None = None) -> dict[str, Any]:
@@ -130,7 +137,67 @@ class UsageReports:
         who = self._who_filter(user, manager, person) or (None if manager else user.id)
         rows = await self._repo.events(_flt(start, end, billable, project_id, who), activity=activity, status=status,
                                        limit=max(1, min(limit, 500)), offset=max(0, offset))
-        return {"events": [self._event(r) for r in rows], "limit": limit, "offset": offset}
+        events = [self._event(r) for r in rows]
+        if not manager:                     # the text of a request is for the project's manager and administrators only
+            for e in events:
+                e["hasCapture"] = False
+        return {"events": events, "limit": limit, "offset": offset}
+
+    async def request_detail(self, user: UserPublic, project_id: str, request_id: str) -> dict[str, Any]:
+        """One request, attempt by attempt, with what was sent and what came back when it was captured (docs/token-governance.md, section 20)."""
+        await self._authz.assert_project_access(project_id, user)
+        if not await self._authz.is_project_manager(project_id, user):
+            raise SdlcError("FORBIDDEN", "The prompt and response of a request can contain the project's documents: the project's manager and administrators can open them")
+        rows = await self._repo.request_rows(project_id, request_id)
+        cap = await self._captures.get(project_id, request_id) if self._captures is not None else None
+        if not rows and not cap:
+            raise SdlcError("NOT_FOUND", "No such request in this project")
+        said = (cap or {}).get("attempts") or []
+        attempts = []
+        for r in rows:
+            e = self._event(r)
+            note = said[r["attempt_no"] - 1] if 0 < r["attempt_no"] <= len(said) else {}
+            attempts.append({**{k: e[k] for k in ("attempt", "provider", "model", "region", "providerRequestId", "status", "errorClass", "stopReason", "latencyMs",
+                                                    "inputTokens", "cacheReadTokens", "cacheWriteTokens", "outputTokens", "totalTokens", "estimated", "billable")},
+                             "error": note.get("error"), "errorKind": note.get("errorKind")})
+        first = rows[0] if rows else None
+        out: dict[str, Any] = {
+            "requestId": request_id, "ts": first["ts"].isoformat() if first else cap["created_at"].isoformat(),
+            "person": _who(first) if first else None, "activity": first["activity"] if first else cap["activity"], "stage": first["stage"] if first else cap["stage"],
+            "tag": first["tag"] if first else cap["tag"], "totalTokens": sum(a["totalTokens"] for a in attempts), "attempts": attempts, "capture": None,
+        }
+        if cap:
+            out["capture"] = {
+                "reason": cap["reason"], "error": cap["error"], "capturedAt": cap["created_at"].isoformat(),
+                "expiresAt": (cap["created_at"] + timedelta(days=self._capture_days)).isoformat() if self._capture_days else None,
+                **self._prompt(cap["request_body"]), "promptCut": cap["request_cut"],
+                "response": cap["response_body"], "responseCut": cap["response_cut"],
+            }
+        else:
+            out["captureNote"] = self._why_not(first["ts"] if first else None)
+        log.info("request %s of project %s opened by %s (%s)", request_id, project_id, user.id, "captured" if cap else "no capture")
+        return out
+
+    @staticmethod
+    def _prompt(body: str | None) -> dict[str, Any]:
+        """The messages sent, as a list when the stored text is whole JSON; the raw text when it was cut off."""
+        if not body:
+            return {"messages": None, "promptText": None}
+        try:
+            msgs = json.loads(body)
+            if isinstance(msgs, list):
+                return {"messages": [{"role": str(m.get("role", "")), "content": m["content"] if isinstance(m.get("content"), str) else json.dumps(m.get("content"), ensure_ascii=False, indent=2)}
+                                     for m in msgs if isinstance(m, dict)], "promptText": None}
+        except (ValueError, TypeError, KeyError):
+            pass
+        return {"messages": None, "promptText": body}
+
+    def _why_not(self, ts: datetime | None) -> str:
+        if self._captures is None or not self._capture_days:
+            return "This server does not keep the text of failed requests."
+        if ts is not None and datetime.now(timezone.utc) - ts > timedelta(days=self._capture_days):
+            return f"The text of a failed request is kept for {self._capture_days} days and has been deleted."
+        return "No text was kept for this request: it finished cleanly, or it ran before failed requests were captured."
 
     @staticmethod
     def _event(r: dict[str, Any]) -> dict[str, Any]:
@@ -141,6 +208,7 @@ class UsageReports:
             "inputTokens": r["input_tokens"], "cacheReadTokens": r["cache_read_tokens"], "cacheWriteTokens": r["cache_write_tokens"],
             "outputTokens": r["output_tokens"], "totalTokens": r["total_tokens"], "status": r["status"], "errorClass": r["error_class"],
             "stopReason": r["stop_reason"], "latencyMs": r["latency_ms"], "estimated": r["estimated"], "billable": r["billable"],
+            "hasCapture": bool(r.get("has_capture")),
         }
 
     async def project_csv(self, user: UserPublic, project_id: str, frm: str | None, to: str | None, billable: str, person: str | None) -> str:

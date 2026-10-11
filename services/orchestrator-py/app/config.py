@@ -180,6 +180,13 @@ class Settings(BaseSettings):
     LLM_DEBUG_TRACE: bool = False
     LLM_DEBUG_TRACE_MAX_CHARS: int = 200_000
 
+    # Failed-call capture (docs/token-governance.md, section 20): the prompt and the response of a call that failed, was refused,
+    # cut off, retried elsewhere or rejected by the application, kept for FAILURE_CAPTURE_DAYS so a manager can open the request behind a
+    # wasted-token row. Off = nothing is stored. The text can contain project documents: set 0 days or turn it off if policy forbids it.
+    FAILURE_CAPTURE: bool = True
+    FAILURE_CAPTURE_DAYS: int = 14
+    FAILURE_CAPTURE_MAX_CHARS: int = 100_000
+
     # Content-store tier for stage artifacts (D-23):
     #   filesystem = folder tree on a mounted volume (local); s3 = S3/MinIO (prod).
     CONTENT_STORE_MODE: Literal["filesystem", "s3"] = "filesystem"

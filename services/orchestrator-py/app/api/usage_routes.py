@@ -34,6 +34,12 @@ async def project_usage_events(project_id: str, frm: str | None = Query(None, al
     return await _svc(c).events(user, project_id, frm, to, billable, person, activity, status, limit, offset)
 
 
+@router.get("/api/projects/{project_id}/usage/requests/{request_id}")
+async def project_usage_request(project_id: str, request_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    """One request behind a row: its attempts and, for a failed one, what was asked and what came back (the project's manager and administrators)."""
+    return await _svc(c).request_detail(user, project_id, request_id)
+
+
 @router.get("/api/projects/{project_id}/usage/export.csv")
 async def project_usage_csv(project_id: str, frm: str | None = Query(None, alias="from"), to: str | None = None, billable: str = "billable", person: str | None = None,
                             user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> Response:

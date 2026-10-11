@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, request as pwRequest, test, type Page } from '@playwright/test';
@@ -1213,5 +1214,44 @@ test.describe('token usage', () => {
     await page.getByTestId('v2-gate-observe').click();                              // back, without a confirmation: loosening needs none
     await expect(page.getByTestId('v2-gate-observe')).toHaveAttribute('aria-pressed', 'true');
     await page.request.put('/api/token-gate', { data: { mode: 'enforce' } });
+  });
+
+  test('a manager opens a failed request and sees what was sent and what came back', async ({ page }) => {
+    // Seeds the ledger and the capture directly, so the test does not depend on the model failing on cue: set E2E_DATABASE_URL to the stack's database.
+    const dsn = process.env.E2E_DATABASE_URL;
+    test.skip(!dsn, 'E2E_DATABASE_URL is not set');
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    const req = `e2e-${Date.now()}`;
+    const prompt = JSON.stringify([{ role: 'system', content: 'You are a careful analyst.' }, { role: 'user', content: 'Summarise the Aurora payments specification.' }]);
+    const sql = `
+      INSERT INTO llm_usage_events (id, request_id, attempt_no, provider, model, project_id, stage, actor_type, activity, input_tokens, output_tokens, status, error_class)
+        VALUES ('${req}-1','${req}',1,'bedrock','claude-x','${id}',2,'system','stage.generate',4000,0,'error','rate_limit'),
+               ('${req}-2','${req}',2,'bedrock','claude-x','${id}',2,'system','stage.generate',4000,0,'refused',NULL);
+      INSERT INTO llm_failure_captures (request_id, project_id, activity, stage, reason, error, attempts, request_body, response_body)
+        VALUES ('${req}','${id}','stage.generate',2,'refused','Every provider failed',
+                '[{"provider":"bedrock","outcome":"error","error":"429 Too many requests"},{"provider":"bedrock","outcome":"refused","error":"Blocked by content policy"}]'::jsonb,
+                $q$${prompt}$q$, 'I am unable to help with that request.');`;
+    execFileSync('psql', [dsn!, '-v', 'ON_ERROR_STOP=1', '-c', sql]);
+
+    await openProject(page, name);
+    await page.getByTestId('v2-nav-usage').click();
+    await page.getByTestId('v2-usage-scope').selectOption('all');
+    await page.getByTestId('v2-usage-calls-toggle').click();
+    await page.getByLabel('Outcome').selectOption('failed');
+    await page.getByTestId('v2-usage-open-request').filter({ hasText: 'View request' }).first().click();
+    const dlg = page.getByTestId('v2-usage-request');
+    await expect(dlg).toBeVisible();
+    await expect(page.getByTestId('v2-usage-request-attempts')).toContainText('429 Too many requests');
+    await expect(page.getByTestId('v2-usage-request-attempts')).toContainText('Blocked by content policy');
+    await expect(page.getByTestId('v2-usage-request-reason')).toContainText('The model refused');
+    await expect(page.getByTestId('v2-usage-request-prompt')).toContainText('Summarise the Aurora payments specification.');
+    await expect(page.getByTestId('v2-usage-request-response')).toContainText('I am unable to help with that request.');
+    await page.getByTestId('v2-usage-request-close').click();
+    await expect(dlg).toHaveCount(0);
+
+    // the API answers an administrator, and an unknown request is simply not found (members and strangers are refused: see the backend tests)
+    expect((await page.request.get(`/api/projects/${id}/usage/requests/${req}`)).ok()).toBeTruthy();
+    expect((await page.request.get(`/api/projects/${id}/usage/requests/nope`)).status()).toBe(404);
   });
 });

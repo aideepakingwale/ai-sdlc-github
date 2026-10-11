@@ -40,8 +40,10 @@ from .services.publisher import PublishService
 from .services.rag import RagService
 from .services.skills import SkillService
 from .services.telemetry import TelemetryService
+from .repos.capture_repo import CaptureRepo
 from .repos.usage_repo import UsageRepo
 from .repos.recon_repo import ReconRepo
+from .services.failure_capture import FailureCapture
 from .services.bedrock_reconcile import BedrockReconciler, ReconcileScheduler, build_recon_source
 from .repos.pool_repo import PoolRepo
 from .services.token_gate import TokenGate
@@ -129,6 +131,11 @@ async def lifespan(app: FastAPI):
     monitor = BuildMonitor(dynamo, redis, mcp, db, audit, settings)
     telemetry = TelemetryService(db)  # AI observability (D-35)
     llm.telemetry = telemetry
+    capture_repo = CaptureRepo(db)
+    failure_capture = FailureCapture(capture_repo, enabled=settings.FAILURE_CAPTURE, days=settings.FAILURE_CAPTURE_DAYS,
+                                     max_chars=settings.FAILURE_CAPTURE_MAX_CHARS)
+    llm.captures = failure_capture                 # prompt + response of failed calls, kept briefly (section 20 of docs/token-governance.md)
+    failure_capture.start()
     token_pools = TokenPoolService(PoolRepo(db), authz, db, settings.TOKEN_ALERT_WEBHOOK_URL)
     llm.ledger = UsageLedger(db, token_pools)       # token ledger: one row per provider attempt (docs/token-governance.md)
     container.token_pools = token_pools
@@ -213,7 +220,7 @@ async def lifespan(app: FastAPI):
     chat.agent_defs = agent_defs
     container.workflow = workflow
     container.telemetry = telemetry
-    container.usage_reports = UsageReports(UsageRepo(db), authz)   # token ledger reports (phase 1)
+    container.usage_reports = UsageReports(UsageRepo(db), authz, capture_repo, failure_capture.days if failure_capture.enabled else 0)   # token ledger reports (phase 1)
     container.extras["publisher"] = publisher
     container.code_gen = code_gen
     code_gen.gate = token_gate
@@ -284,6 +291,7 @@ async def lifespan(app: FastAPI):
 
     await recon_scheduler.stop()
     await pool_scheduler.stop()
+    await failure_capture.stop()
     monitor.stop_polling()
     if container.gen_jobs is not None:
         await container.gen_jobs.stop_workers()

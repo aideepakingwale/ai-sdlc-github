@@ -17,6 +17,7 @@ from pydantic import BaseModel, ValidationError
 
 from ..domain.errors import SdlcError
 from ..services.prompt_library import render as render_prompt
+from ..services.failure_capture import attempts_of, failure_reason
 from ..services.usage_ledger import synthesize_log
 
 log = logging.getLogger("llm")
@@ -89,6 +90,14 @@ def _log_tokens(usage_log: list[dict[str, Any]]) -> tuple[int, int]:
     return p, c
 
 
+def _first_error(usage_log: list[dict[str, Any]]) -> str | None:
+    """The first attempt error text in a gateway usage log (short, never request content)."""
+    for a in usage_log:
+        if a.get("outcome") not in (None, "ok") and a.get("error"):
+            return str(a["error"])
+    return None
+
+
 class LlmResult(BaseModel):
     provider: str
     model: str
@@ -147,6 +156,26 @@ class LlmClient:
         self.ledger: Any = None
         # Token gate (phase 4): checked before every model call; a call from a task nobody admitted is admitted (or refused) here.
         self.gate: Any = None
+        # Failed-call capture (section 20 of docs/token-governance.md): the prompt and response of calls that went wrong.
+        self.captures: Any = None
+
+    async def _capture_failure(self, request_id: str | None, messages: list[dict[str, Any]], *, activity: str, tag: str | None,
+                               usage_log: list[dict[str, Any]] | None = None, reason: str | None = None, error: str | None = None,
+                               response: str | None = None) -> None:
+        """Keep what was asked and what came back for a request that went wrong. Never raises; renders the prompt only when capture is on."""
+        cap = self.captures
+        if cap is None or not cap.enabled or not request_id:
+            return
+        log_ = usage_log or []
+        why = reason or failure_reason(log_)
+        if why is None:
+            return
+        try:
+            await asyncio.shield(cap.record(
+                request_id=request_id, request_body=_sanitize_for_trace(messages), reason=why, error=error or _first_error(log_),
+                response=response, attempts=attempts_of(log_), activity=activity, tag=tag))
+        except Exception:  # noqa: BLE001 - never fail the call being diagnosed
+            log.warning("failure capture skipped", exc_info=True)
 
     async def _debug_enabled(self) -> bool:
         """Is request/response capture on? Env baseline OR the runtime setting in
@@ -325,6 +354,7 @@ class LlmClient:
             )
         except httpx.HTTPError as err:
             await _trace(tier=tier, status="error", error=f"ai-client unreachable: {err}")
+            await self._capture_failure(request_id, messages, activity=activity, tag=tag, reason="unreachable", error=f"ai-client unreachable: {err}")
             raise SdlcError("PROVIDER_ERROR", f"ai-client unreachable: {err}") from err
         if res.status_code != 200:
             detail = res.json().get("error", {}) if res.headers.get("content-type", "").startswith("application/json") else {}
@@ -334,11 +364,16 @@ class LlmClient:
             await self._record_usage(request_id=request_id, usage_log=failed_log, tag=tag, activity=activity, started=started)
             fp, fc = _log_tokens(failed_log)
             await _trace(tier=tier, status="error", error=message, prompt_tokens=fp, completion_tokens=fc)
+            await self._capture_failure(request_id, messages, activity=activity, tag=tag, usage_log=failed_log, reason=failure_reason(failed_log) or "error",
+                                        error=message, response=json.dumps(detail, ensure_ascii=False, indent=2) if detail else f"HTTP {res.status_code}")
             raise SdlcError("PROVIDER_ERROR", message)
         data = res.json()
         usage_log = list(data.get("usageLog") or []) or synthesize_log(data)
         await self._record_usage(request_id=request_id, usage_log=usage_log, tag=tag, activity=activity,
                                  started=started, truncated=bool(data.get("truncated", False)))
+        problem = failure_reason(usage_log, bool(data.get("truncated", False)))
+        if problem:                      # answered, but not cleanly: cut off, or another provider had to take over
+            await self._capture_failure(request_id, messages, activity=activity, tag=tag, usage_log=usage_log, reason=problem, response=data.get("content"))
         result = LlmResult(
             provider=data["provider"],
             model=data["model"],
@@ -414,6 +449,8 @@ class LlmClient:
             ) as res:
                 if res.status_code != 200:
                     body = await res.aread()
+                    await self._capture_failure(request_id, messages, activity=activity, tag=tag, reason="error",
+                                                error=f"ai-client stream returned {res.status_code}", response=body.decode("utf-8", "replace"))
                     raise SdlcError("PROVIDER_ERROR", f"ai-client stream returned {res.status_code}: {body[:200]!r}")
                 async for line in res.aiter_lines():
                     if not line.startswith("data:"):
@@ -439,14 +476,22 @@ class LlmClient:
                                                  tag=tag, activity=activity, started=started)
                         await self._stream_trace(tag, started, req_body, status="error", error=obj.get("message") or "stream error",
                                                  usage_log=list(obj.get("usageLog") or []))
+                        await self._capture_failure(request_id, messages, activity=activity, tag=tag, usage_log=list(obj.get("usageLog") or []),
+                                                    reason=failure_reason(list(obj.get("usageLog") or [])) or "error",
+                                                    error=obj.get("message") or "stream error", response="".join(parts) or json.dumps(obj, ensure_ascii=False, indent=2))
                         raise SdlcError("PROVIDER_ERROR", obj.get("message") or "stream error")
         except httpx.HTTPError as err:
             await self._stream_trace(tag, started, req_body, status="error", error=f"ai-client unreachable: {err}")
+            await self._capture_failure(request_id, messages, activity=activity, tag=tag, reason="unreachable", error=f"ai-client unreachable: {err}",
+                                        response="".join(parts) or None)
             raise SdlcError("PROVIDER_ERROR", f"ai-client unreachable: {err}") from err
         content = (final.get("content") if final.get("content") else "".join(parts)) or ""
         usage_log = list(final.get("usageLog") or []) or synthesize_log(final)
         await self._record_usage(request_id=request_id, usage_log=usage_log, tag=tag, activity=activity,
                                  started=started, truncated=bool(final.get("truncated", False)))
+        problem = failure_reason(usage_log, bool(final.get("truncated", False)))
+        if problem:
+            await self._capture_failure(request_id, messages, activity=activity, tag=tag, usage_log=usage_log, reason=problem, response=content)
         result = LlmResult(
             provider=final.get("provider", "unknown"),
             model=final.get("model", "unknown"),
@@ -529,6 +574,9 @@ class LlmClient:
                 return schema.model_validate(parse_json_loose(result.content)), result
             except (ValidationError, SdlcError) as err:
                 last_issues = str(err)
+                # The provider answered fine and billed for it, but the application cannot use the answer: keep both sides.
+                await self._capture_failure(result.request_id, msgs, activity=activity, tag=tag, reason="invalid_output",
+                                            error=f"Output rejected: {last_issues[:400]}", response=result.content)
                 # Parse/validation failed on output that looks cut off (provider didn't
                 # flag it) → treat as truncation and grow the budget for the next try.
                 if _looks_truncated(result.content) and effective_max < HARD_MAX:
