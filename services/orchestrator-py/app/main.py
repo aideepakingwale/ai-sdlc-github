@@ -216,6 +216,7 @@ async def lifespan(app: FastAPI):
     container.usage_reports = UsageReports(UsageRepo(db), authz)   # token ledger reports (phase 1)
     container.extras["publisher"] = publisher
     container.code_gen = code_gen
+    code_gen.gate = token_gate
     container.canon, container.formworks = canon, formworks
     container.memory = memory
     container.project_config, container.stack_advisor = project_config, stack_advisor

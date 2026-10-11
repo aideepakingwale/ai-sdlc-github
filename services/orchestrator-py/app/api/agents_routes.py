@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from ..domain.models import UserPublic
-from .deps import Container, current_user, get_container, require_tokens
+from .deps import Container, current_user, get_container, require_tokens, require_tokens_for_def
 
 router = APIRouter()
 
@@ -156,13 +156,13 @@ async def save_draft(def_id: str, body: DraftBody, user: UserPublic = Depends(cu
     return await c.agent_defs.save_draft(user, def_id, name=body.name, body=body.body)
 
 
-@router.post("/api/agent-defs/{def_id}/audit", dependencies=[require_tokens("agent.audit")])
+@router.post("/api/agent-defs/{def_id}/audit", dependencies=[require_tokens_for_def("agent.audit")])
 async def run_audit(def_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     report = await c.agent_defs.run_audit(user, def_id)
     return {"audit": report, **await c.agent_defs.detail(user, def_id)}
 
 
-@router.post("/api/agent-defs/{def_id}/audit/fix/{finding_id}", dependencies=[require_tokens("agent.audit-fix")])
+@router.post("/api/agent-defs/{def_id}/audit/fix/{finding_id}", dependencies=[require_tokens_for_def("agent.audit-fix")])
 async def apply_fix(def_id: str, finding_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     return await c.agent_defs.apply_fix(user, def_id, finding_id)
 
@@ -202,17 +202,17 @@ async def delete_def(def_id: str, user: UserPublic = Depends(current_user), c: C
     return await c.agent_defs.delete_unpublished(user, def_id)
 
 
-@router.post("/api/agent-defs/{def_id}/test", dependencies=[require_tokens("agent.test")])
+@router.post("/api/agent-defs/{def_id}/test", dependencies=[require_tokens_for_def("agent.test")])
 async def test_run(def_id: str, body: TestBody, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     return await c.agent_defs.run_test(user, def_id, body.inputs, body.version)
 
 
-@router.post("/api/agent-defs/{def_id}/draft-from-text", dependencies=[require_tokens("agent.draft")])
+@router.post("/api/agent-defs/{def_id}/draft-from-text", dependencies=[require_tokens_for_def("agent.draft")])
 async def draft_from_text(def_id: str, body: DraftTextBody, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     return await c.agent_defs.draft_from_text(user, def_id, body.text)
 
 
-@router.post("/api/agent-defs/{def_id}/compare", dependencies=[require_tokens("agent.compare")])
+@router.post("/api/agent-defs/{def_id}/compare", dependencies=[require_tokens_for_def("agent.compare")])
 async def compare(def_id: str, body: CompareBody, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     return await c.agent_defs.run_compare(user, def_id, body.versionA, body.versionB)
 

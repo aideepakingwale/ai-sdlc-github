@@ -54,7 +54,7 @@ def _int(v: Any) -> int | None:
         return None
     try:
         return max(0, int(v))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):      # OverflowError: a log value such as 1e999 parses to infinity
         return None
 
 
@@ -102,7 +102,8 @@ def parse_invocation_record(raw: dict[str, Any]) -> AwsCall | None:
     ts = _ts(raw.get("timestamp"))
     if not isinstance(rid, str) or not rid or ts is None:
         return None
-    inp, out = raw.get("input") or {}, raw.get("output") or {}
+    inp, out = raw.get("input"), raw.get("output")
+    inp, out = (inp if isinstance(inp, dict) else {}), (out if isinstance(out, dict) else {})
     counts = [_int(inp.get("inputTokenCount")), _int(inp.get("cacheReadInputTokenCount")), _int(inp.get("cacheWriteInputTokenCount")), _int(out.get("outputTokenCount"))]
     failed = bool(raw.get("errorCode"))
     if counts[0] is None and counts[3] is None:
@@ -139,7 +140,10 @@ def _parse_lines(lines: Any, since: datetime, until: datetime, out: list[AwsCall
             continue
         if not isinstance(raw, dict) or raw.get("schemaType", "ModelInvocationLog") != "ModelInvocationLog":
             continue
-        call = parse_invocation_record(raw)
+        try:
+            call = parse_invocation_record(raw)
+        except Exception:  # noqa: BLE001 — one malformed record must not abort the day: it is counted as unreadable
+            call = None
         if call is None:
             unreadable += 1
         elif since <= call.ts < until:
@@ -174,6 +178,7 @@ class CloudWatchSource:
 
     def __init__(self, log_group: str, region: str | None, max_events: int = 2_000_000, client: Any = None) -> None:
         self._group, self._region, self._max, self._client = log_group, region, max_events, client
+        self.capped = False          # set when a read stopped at the cap: the day is then incomplete and must not be reported as a clean comparison
 
     async def calls(self, since: datetime, until: datetime) -> tuple[list[AwsCall], int]:
         def run() -> tuple[list[AwsCall], int]:
@@ -190,6 +195,7 @@ class CloudWatchSource:
                 bad += _parse_lines((e.get("message", "") for e in events), since, until, out)
                 if seen >= self._max:
                     log.warning("CloudWatch log read stopped at %d events; the day is incomplete", seen)
+                    self.capped = True
                     break
             return out, bad
         return await asyncio.to_thread(run)
@@ -233,7 +239,8 @@ class S3Source:
                     for page in client.get_paginator("list_objects_v2").paginate(Bucket=self._bucket, Prefix=root + h):
                         for obj in page.get("Contents", []):
                             key = obj["Key"]
-                            if "/data/" in key:                    # large request/response bodies are stored separately; the counts are in the log file
+                            rel = key[len(root + h):]
+                            if rel.startswith("data/") or "/data/" in rel:     # large request/response bodies are stored separately; the counts are in the log file
                                 continue
                             body = client.get_object(Bucket=self._bucket, Key=key)["Body"].read()
                             if key.endswith(".gz"):
@@ -377,7 +384,7 @@ def reconcile(
         if not r.get("provider_request_id") and in_day(r["ts"]):
             ledger_tokens += _ledger_total(r)
 
-    drift = round((ledger_tokens - aws_tokens) / aws_tokens, 4) if aws_tokens else None
+    drift = max(-9999.0, min(9999.0, round((ledger_tokens - aws_tokens) / aws_tokens, 4))) if aws_tokens else None      # fits the NUMERIC(8,4) column
     diffs.sort(key=lambda d: abs(d["delta"]), reverse=True)
     if not aws and not unreadable:
         status, note = "no_data", "No Bedrock invocation log records were found for this day: logging may be off, the wrong log group, or the day has not been delivered yet."
@@ -418,19 +425,25 @@ class BedrockReconciler:
         until = since + timedelta(days=1) + 2 * MARGIN
         run_id = str(uuid.uuid4())
         try:
+            self._source.capped = False
             aws, unreadable = await self._source.calls(since, until)
+            if getattr(self._source, "capped", False):
+                raise RuntimeError("the log read stopped at its event cap, so this day is incomplete: raise the cap, or deliver the logs to S3")
             ledger = await self._repo.bedrock_ledger(since, until)
             res = reconcile(ledger, aws, day=day, threshold=self._threshold, unreadable=unreadable, identity_contains=self._identity)
+            await self._repo.save_run({
+                "id": run_id, "day": day, "source": self.source_name, "triggered_by": triggered_by, "started_at": started, "status": res.status, "threshold": self._threshold,
+                "convention": res.convention, "ledger_tokens": res.ledger_tokens, "aws_tokens": res.aws_tokens, "drift": res.drift, "matched": res.matched, "mismatched": res.mismatched,
+                "missing_in_ledger": res.missing_in_ledger, "missing_in_aws": res.missing_in_aws, "unmatchable_ledger": res.unmatchable_ledger, "estimated_pairs": res.estimated_pairs,
+                "by_model": res.by_model, "note": res.note or None}, res.diffs)
         except Exception as err:  # noqa: BLE001 — a failed night is recorded, not raised into the scheduler
             log.error("bedrock reconciliation for %s failed", day, exc_info=True)
-            await self._repo.save_run({"id": run_id, "day": day, "source": self.source_name, "triggered_by": triggered_by, "started_at": started, "status": "error",
-                                       "threshold": self._threshold, "error": str(err)[:500]}, [])
+            try:
+                await self._repo.save_run({"id": run_id, "day": day, "source": self.source_name, "triggered_by": triggered_by, "started_at": started, "status": "error",
+                                           "threshold": self._threshold, "error": str(err)[:500]}, [])
+            except Exception:  # noqa: BLE001
+                log.error("could not record the failed reconciliation for %s", day, exc_info=True)
             return {"day": day.isoformat(), "status": "error", "error": str(err)[:500]}
-        await self._repo.save_run({
-            "id": run_id, "day": day, "source": self.source_name, "triggered_by": triggered_by, "started_at": started, "status": res.status, "threshold": self._threshold,
-            "convention": res.convention, "ledger_tokens": res.ledger_tokens, "aws_tokens": res.aws_tokens, "drift": res.drift, "matched": res.matched, "mismatched": res.mismatched,
-            "missing_in_ledger": res.missing_in_ledger, "missing_in_aws": res.missing_in_aws, "unmatchable_ledger": res.unmatchable_ledger, "estimated_pairs": res.estimated_pairs,
-            "by_model": res.by_model, "note": res.note or None}, res.diffs)
         if res.status == "drift":
             log.warning("TOKEN LEDGER DRIFT %s: ledger=%d aws=%d drift=%.2f%% (threshold %.1f%%), %d mismatched, %d missing in ledger, %d missing in AWS",
                         day, res.ledger_tokens, res.aws_tokens, (res.drift or 0) * 100, self._threshold * 100, res.mismatched, res.missing_in_ledger, res.missing_in_aws)
@@ -440,9 +453,10 @@ class BedrockReconciler:
         """Reconcile every completed UTC day in the last `days_back` that has no run yet (oldest first). One replica at a time."""
         now = now or datetime.now(timezone.utc)
         locked = False
+        token = uuid.uuid4().hex
         if self._redis is not None:
             try:
-                if not await self._redis.set("sdlc:recon:lock", "1", nx=True, ex=1800):
+                if not await self._redis.set("sdlc:recon:lock", token, nx=True, ex=1800):
                     return []
                 locked = True
             except Exception:  # noqa: BLE001 — without Redis two replicas may both run; a day's result is replaced atomically, so that is harmless
@@ -457,8 +471,10 @@ class BedrockReconciler:
                 out.append(await self.run_day(d, "schedule"))
         finally:
             if locked:
-                try:
-                    await self._redis.delete("sdlc:recon:lock")
+                try:    # only release a lock that is still ours (a run longer than the TTL must not free another replica's)
+                    held = await self._redis.get("sdlc:recon:lock")
+                    if (held.decode() if isinstance(held, (bytes, bytearray)) else held) == token:
+                        await self._redis.delete("sdlc:recon:lock")
                 except Exception:  # noqa: BLE001
                     pass
         return out

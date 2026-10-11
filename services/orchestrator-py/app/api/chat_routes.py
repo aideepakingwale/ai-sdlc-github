@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from ..domain.models import ChatRequest, UserPublic
 from ..services.chat import sse_stream
+from ..services import usage_context
 from .deps import Container, current_user, get_container
 
 router = APIRouter()
@@ -21,6 +22,9 @@ async def chat(
     # The project is in the body, not the URL: ask the token gate about THAT project before anything streams, so a refusal is a clear 402
     # (and the generation does not start) rather than an error halfway through a stream.
     if container.token_gate is not None:
+        if body.projectId:
+            await container.authz.assert_project_access(body.projectId, user)      # before the balance: a refusal must not describe a stranger's project
+            usage_context.update(project_id=body.projectId)                      # everything this chat does is charged to the project it names
         await container.token_gate.admit(project_id=body.projectId, user_id=user.id, entry="chat")
 
     async def handler(emit):  # noqa: ANN001

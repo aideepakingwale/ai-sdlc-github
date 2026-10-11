@@ -157,6 +157,21 @@ export class LlmRouter {
     const pin = this.resolvePinned(req);
     const callReq: GenerateRequest = pin ? { ...req, model: pin.modelId } : req;
 
+    try {
+      return await this.tryChain(candidates, req, callReq, signal, onText, usageLog, attempts);
+    } catch (err) {
+      // Whatever escapes (a Redis error from the breaker, say) still carries what the attempts so far were billed.
+      if (typeof err === 'object' && err !== null && (err as { usageLog?: unknown }).usageLog === undefined) {
+        (err as { usageLog?: AttemptRecord[] }).usageLog = usageLog;
+      }
+      throw err;
+    }
+  }
+
+  private async tryChain(
+    candidates: LlmProvider[], req: GenerateRequest, callReq: GenerateRequest, signal: AbortSignal,
+    onText: ((delta: string) => void) | undefined, usageLog: AttemptRecord[], attempts: string[],
+  ): Promise<GenerateResponse> {
     for (const provider of candidates) {
       if (provider.id !== 'mock') {
         const state = await this.breaker.state(provider.id);
@@ -223,7 +238,15 @@ export class LlmRouter {
       try {
         // Only stream deltas on the first attempt, so a retry after a mid-stream
         // failure doesn't double the text in the caller's live preview (D-112).
-        const result = await provider.generate(req, signal, attempt === 0 ? onText : undefined);
+        let result;
+        try {
+          result = await provider.generate(req, signal, attempt === 0 ? onText : undefined);
+        } catch (e) {
+          // A provider that throws something that is not a ProviderCallError (an unparsable 200 body, a library error) is still a failed
+          // attempt: record it and treat it as transient, so earlier attempts' usage is not lost with it.
+          if (e instanceof ProviderCallError) throw e;
+          throw new ProviderCallError(provider.id, 'transient', `${provider.id} failed: ${String((e as Error)?.message ?? e)}`);
+        }
         usageLog.push({
           provider: provider.id, model: result.model, outcome: 'ok', usage: result.usage,
           providerRequestId: result.providerRequestId, stopReason: result.stopReason, region: result.region,

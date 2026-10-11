@@ -4,6 +4,7 @@ one repair retry (D-08)."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -181,10 +182,11 @@ class LlmClient:
     ) -> None:
         if self.ledger is None or not usage_log:
             return
-        rows = await self.ledger.record(
+        # Shielded: a caller that disconnects (the chat stream is cancelled) must not abandon a write for tokens the provider already billed.
+        rows = await asyncio.shield(self.ledger.record(
             request_id=request_id, usage_log=usage_log, tag=tag, activity=activity,
             latency_ms=int((time.perf_counter() - started) * 1000), truncated=truncated,
-        )
+        ))
         if self.gate is not None and rows:
             self.gate.note_spend(rows)
 

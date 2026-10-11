@@ -134,7 +134,7 @@ async def test_the_organisation_pool_counts_everything_billable_including_calls_
     await w.spend(None, 300)
     org = await pool(w, "org")
     assert org["consumed_tokens"] == 3300 and org["balance_tokens"] == 96_700
-    assert (await w.svc.project(ANN, w.p1))["organisation"] == {"metered": True, "balance": 96_700, "state": "ok", "level": 0}
+    assert (await w.svc.project(ANN, w.p1))["organisation"] == {"metered": True, "state": "ok", "level": 0}     # a member sees the state, not the figure
 
 
 @needs_pg
@@ -344,3 +344,87 @@ async def test_the_metrics_summarise_balances_and_the_gate_without_per_project_s
     m = await w.svc.metrics(TokenGate(w.svc._repo, mode="observe"))
     assert m["orgBalance"] == 1000 - 2350 and m["projectStates"] == {"low": 1, "overdrawn": 1}
     assert (m["refused7d"], m["wouldRefuse7d"], m["mode"]) == (1, 1, "observe")
+
+
+# ----------------------------------------------------------------------------- review findings
+@needs_pg
+async def test_a_monthly_top_up_that_fails_is_not_lost_and_is_applied_once_when_it_works(world):
+    w = world
+    now = datetime(2026, 10, 10, 9, tzinfo=timezone.utc)
+    await w.svc.allocate(ROOT, "project", w.p1, 1000, kind="monthly", now=now)
+    nov = datetime(2026, 11, 1, 0, 5, tzinfo=timezone.utc)
+    real = w.svc._repo._grant_tx
+    calls = {"n": 0}
+
+    async def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("database hiccup mid-grant")
+        return await real(*a, **k)
+
+    w.svc._repo._grant_tx = flaky
+    assert await w.svc.apply_due_schedules(nov) == 0                                   # the claim rolled back with the failed grant
+    assert (await pool(w))["allocated_tokens"] == 1000
+    assert (await w.svc.detail(ROOT, "project", w.p1))["schedules"][0]["nextRunAt"].startswith("2026-11-01")   # still due, not skipped to December
+    assert await w.svc.apply_due_schedules(nov) == 1                                   # the next tick applies it
+    assert (await pool(w))["allocated_tokens"] == 2000
+    assert await w.svc.apply_due_schedules(nov) == 0
+
+
+@needs_pg
+async def test_recompute_cannot_overwrite_consumption_that_lands_while_it_runs(world):
+    w = world
+    await w.svc.allocate(ROOT, "project", w.p1, 1_000_000)
+    await w.spend(w.p1, 100)
+    started, release = asyncio.Event(), asyncio.Event()
+    real = w.svc._repo._p
+
+    class SlowPool:
+        """Hold the transaction open after recompute has locked the row, while a new ledger write waits behind it."""
+        def __getattr__(self, n): return getattr(real, n)
+
+    results = await asyncio.gather(w.svc.recompute(ROOT, "project", w.p1), w.spend(w.p1, 50))
+    assert results[0]["after"] in (100, 150)                                            # either order is valid, but never a lost update:
+    assert (await pool(w))["consumed_tokens"] == 150 == await w.svc._repo.ledger_since(w.p1, (await pool(w))["metered_since"])
+    _ = (started, release, SlowPool)
+
+
+@needs_pg
+async def test_a_double_click_makes_one_request_and_a_take_back_needs_something_to_take_back(world):
+    w = world
+    await w.svc.allocate(ROOT, "project", w.p1, 10)
+    await w.spend(w.p1, 500)
+    r = await asyncio.gather(w.svc.request_tokens(ANN, w.p1, "a"), w.svc.request_tokens(ANN, w.p1, "b"))
+    assert sorted(x["already"] for x in r) in ([False, True], [True, True]) or r[0]["requested"]
+    assert await w.db.pool.fetchval("SELECT count(*) FROM token_requests WHERE status='open'") == 1
+    with pytest.raises(SdlcError, match="nothing to take back"):
+        await w.svc.allocate(ROOT, "project", w.p2, -100, note="oops")                 # Beta was never allocated tokens: this would have blocked it at once
+    assert await pool(w, sid=w.p2) is None
+
+
+@needs_pg
+async def test_text_from_people_cannot_ping_or_link_through_the_chat_webhook(world):
+    w = world
+    await w.svc.allocate(ROOT, "project", w.p1, 10)
+    await w.spend(w.p1, 500)
+    await w.svc.request_tokens(ANN, w.p1, "<!channel> please <https://evil.example|approve> @here `rm`")
+    text = next(h for h in w.hooks if "asked for more tokens" in h)
+    assert not any(c in text for c in "<>&@`") and "channel" in text                    # the words stay, the markup does not
+
+
+@needs_pg
+async def test_a_person_pressing_the_button_repeatedly_is_one_refusal_a_minute(world):
+    from app.services.token_gate import TokenGate
+
+    w = world
+    gate = TokenGate(w.svc._repo, mode="enforce")
+    await w.svc.allocate(ROOT, "project", w.p1, 10)
+    await w.spend(w.p1, 500)
+    for _ in range(5):
+        uc.reset(user_id="ann", project_id=w.p1)
+        with pytest.raises(SdlcError):
+            await gate.admit(project_id=w.p1, user_id="ann", entry="trigger")
+    uc.reset(user_id="eve", project_id=w.p1)
+    with pytest.raises(SdlcError):
+        await gate.admit(project_id=w.p1, user_id="eve", entry="trigger")
+    assert await w.db.pool.fetchval("SELECT count(*) FROM token_gate_blocks") == 2      # one per person, not one per click

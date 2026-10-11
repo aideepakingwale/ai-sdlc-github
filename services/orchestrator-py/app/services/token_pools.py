@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -80,7 +81,7 @@ class TokenPoolService:
         v = _view(await self._repo.get(project_id), await self._repo.burn_per_day(project_id), await self._monthly(project_id))
         org = _view(await self._repo.get(ORG), await self._repo.burn_per_day(ORG), None)
         return {"projectId": project_id, "name": name, **v,
-                "organisation": {"metered": org["metered"], "balance": org["balance"], "state": org["state"], "level": org["level"]}}
+                "organisation": {"metered": org["metered"], "state": org["state"], "level": org["level"]}}
 
     async def _monthly(self, pid: str) -> int | None:
         s = await self._repo.schedules(pid)
@@ -159,6 +160,10 @@ class TokenPoolService:
         if tokens < 0 and not note:
             raise SdlcError("VALIDATION_FAILED", "Say why tokens are being taken back")
         now = now or datetime.now(timezone.utc)
+        if tokens < 0:
+            existing = await self._repo.get(pid)
+            if not existing or not existing["metered"]:
+                raise SdlcError("VALIDATION_FAILED", "There is nothing to take back: no tokens have been allocated to this yet")
         sid = None
         if kind == "monthly":
             sid = await self._repo.add_schedule(scope_type=scope_type, scope_id=scope_id, tokens=tokens, by=user.id, note=note or None, next_run_at=next_month_start(now))
@@ -184,23 +189,25 @@ class TokenPoolService:
         """Re-derive a pool's consumption from the ledger (repair after a manual correction or a restore)."""
         self._admin(user)
         pid = await self._scope(scope_type, scope_id)
-        pool = await self._repo.get(pid)
-        if not pool or not pool["metered"]:
+        out = await self._repo.recompute(pid, level_for)
+        if out is None:
             raise SdlcError("VALIDATION_FAILED", "That pool has no allocation yet, so nothing is counted against it")
-        expected = await self._repo.ledger_since(pid, pool["metered_since"])
-        after = await self._repo.set_consumed(pid, expected, level_for(pool["allocated_tokens"] - expected, pool["reference_tokens"]))
-        return {"before": pool["consumed_tokens"], "after": after["consumed_tokens"], "changed": pool["consumed_tokens"] != after["consumed_tokens"]}
+        before, after = out
+        return {"before": before, "after": after["consumed_tokens"], "changed": before != after["consumed_tokens"]}
 
     async def apply_due_schedules(self, now: datetime | None = None) -> int:
-        """Top up every pool whose monthly allocation is due (idempotent: a run is claimed by the statement that advances it)."""
+        """Top up every pool whose monthly allocation is due. Each run is claimed and granted in one transaction, so a failure loses nothing:
+        the run stays due and the next tick tries again."""
         now = now or datetime.now(timezone.utc)
         n = 0
-        for s in await self._repo.claim_due_schedules(now):
-            scope = await self._repo.pool_scope(s["pool_id"])
-            if not scope:
-                continue
-            await self._repo.grant(scope_type=scope[0], scope_id=scope[1], tokens=s["tokens"], kind="monthly", by=s["created_by"], note=s["note"] or "Monthly allocation",
-                                   count_from="now", level_for=level_for, schedule_id=s["id"], now=now)
+        while True:
+            try:
+                done = await self._repo.apply_one_due_schedule(now, level_for)
+            except Exception:  # noqa: BLE001 — the failed run rolled back and is still due; stop this tick so one bad row cannot spin
+                log.error("a monthly token allocation could not be applied; it will be retried", exc_info=True)
+                break
+            if done is None:
+                break
             n += 1
         return n
 
@@ -267,9 +274,15 @@ class TokenPoolService:
             await self._db.insert_notification(project_id=p["scope_id"], phase=None, kind="token_balance", title=title, body=body, roles=[])
         await self._post_webhook(f"{title}: {body}" + ("" if p["scope_type"] == "org" else f" (project {p['scope_id'][:8]})"))
 
+    @staticmethod
+    def _hook_text(text: str) -> str:
+        """Text from people (a note, a name) goes to a chat webhook: no mentions, links or markup (Slack/Teams would act on <!channel> or <url|label>)."""
+        return re.sub(r"[<>&@`*_~|]", "", text).replace("\n", " ")[:600]
+
     async def _post_webhook(self, text: str) -> None:
         if not self._webhook:
             return
+        text = self._hook_text(text)
         try:
             import httpx
             async with (self._http or httpx.AsyncClient(timeout=5.0)) as c:

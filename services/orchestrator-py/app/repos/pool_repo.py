@@ -121,28 +121,47 @@ class PoolRepo:
     async def grant(self, *, scope_type: str, scope_id: str, tokens: int, kind: str, by: str | None, note: str | None, count_from: str,
                     level_for: Any, schedule_id: str | None = None, now: datetime | None = None) -> dict[str, Any]:
         """Add `tokens` to a pool (creating and metering it on first use), record the grant, and reset the alert level to what the new balance deserves."""
-        now = now or datetime.now(timezone.utc)
-        pid = pool_id(scope_type, scope_id)
         async with self._p.acquire() as conn, conn.transaction():
-            await conn.execute("INSERT INTO token_pools (id, scope_type, scope_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING", pid, scope_type, scope_id)
-            pool = dict(await conn.fetchrow(f"SELECT {_COLS} FROM token_pools WHERE id=$1 FOR UPDATE", pid))
-            consumed = pool["consumed_tokens"]
-            since = pool["metered_since"]
-            if not pool["metered"]:
-                since = month_start(now) if count_from == "month_start" else now
-                where, args = ("", [since])
-                if pid != ORG:
-                    where, args = ("AND project_id = $2", [since, pid])
-                consumed = int(await conn.fetchval(f"SELECT COALESCE(sum(total_tokens), 0) FROM llm_usage_events WHERE billable AND ts >= $1 {where}", *args))
-            allocated = pool["allocated_tokens"] + tokens
-            reference = tokens if tokens > 0 else pool["reference_tokens"]
-            level = level_for(allocated - consumed, reference)
-            row = await conn.fetchrow(
-                f"""UPDATE token_pools SET metered = TRUE, metered_since = $2, allocated_tokens = $3, consumed_tokens = $4, reference_tokens = $5,
-                           alert_level = $6, updated_at = now() WHERE id = $1 RETURNING {_COLS}""", pid, since, allocated, consumed, reference, level)
-            await conn.execute("INSERT INTO token_grants (id, pool_id, tokens, kind, schedule_id, granted_by, note) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-                               str(uuid.uuid4()), pid, tokens, kind, schedule_id, by, note)
-            return dict(row)
+            return await self._grant_tx(conn, scope_type=scope_type, scope_id=scope_id, tokens=tokens, kind=kind, by=by, note=note, count_from=count_from,
+                                        level_for=level_for, schedule_id=schedule_id, now=now or datetime.now(timezone.utc))
+
+    async def _grant_tx(self, conn: asyncpg.Connection, *, scope_type: str, scope_id: str, tokens: int, kind: str, by: str | None, note: str | None,
+                        count_from: str, level_for: Any, schedule_id: str | None, now: datetime) -> dict[str, Any]:
+        pid = pool_id(scope_type, scope_id)
+        await conn.execute("INSERT INTO token_pools (id, scope_type, scope_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING", pid, scope_type, scope_id)
+        pool = dict(await conn.fetchrow(f"SELECT {_COLS} FROM token_pools WHERE id=$1 FOR UPDATE", pid))
+        consumed = pool["consumed_tokens"]
+        since = pool["metered_since"]
+        if not pool["metered"]:
+            since = month_start(now) if count_from == "month_start" else now
+            where, args = ("", [since])
+            if pid != ORG:
+                where, args = ("AND project_id = $2", [since, pid])
+            consumed = int(await conn.fetchval(f"SELECT COALESCE(sum(total_tokens), 0) FROM llm_usage_events WHERE billable AND ts >= $1 {where}", *args))
+        allocated = pool["allocated_tokens"] + tokens
+        reference = tokens if tokens > 0 else pool["reference_tokens"]
+        level = level_for(allocated - consumed, reference)
+        row = await conn.fetchrow(
+            f"""UPDATE token_pools SET metered = TRUE, metered_since = $2, allocated_tokens = $3, consumed_tokens = $4, reference_tokens = $5,
+                       alert_level = $6, updated_at = now() WHERE id = $1 RETURNING {_COLS}""", pid, since, allocated, consumed, reference, level)
+        await conn.execute("INSERT INTO token_grants (id, pool_id, tokens, kind, schedule_id, granted_by, note) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                           str(uuid.uuid4()), pid, tokens, kind, schedule_id, by, note)
+        return dict(row)
+
+    async def apply_one_due_schedule(self, now: datetime, level_for: Any) -> dict[str, Any] | None:
+        """Apply ONE monthly allocation that is due, claim and grant in a single transaction: a failure rolls both back (the run is still due and
+        is tried again), and `SKIP LOCKED` lets several replicas work through the list without applying the same run twice."""
+        async with self._p.acquire() as conn, conn.transaction():
+            sch = await conn.fetchrow(
+                "SELECT id, pool_id, tokens, note, created_by FROM token_schedules WHERE active AND next_run_at <= $1 ORDER BY next_run_at LIMIT 1 FOR UPDATE SKIP LOCKED", now)
+            if not sch:
+                return None
+            await conn.execute("UPDATE token_schedules SET next_run_at = $2 WHERE id = $1", sch["id"], next_month_start(now))
+            scope = await conn.fetchrow("SELECT scope_type, scope_id FROM token_pools WHERE id=$1", sch["pool_id"])
+            if scope:
+                await self._grant_tx(conn, scope_type=scope["scope_type"], scope_id=scope["scope_id"], tokens=sch["tokens"], kind="monthly", by=sch["created_by"],
+                                     note=sch["note"] or "Monthly allocation", count_from="now", level_for=level_for, schedule_id=sch["id"], now=now)
+            return dict(sch)
 
     async def add_schedule(self, *, scope_type: str, scope_id: str, tokens: int, by: str | None, note: str | None, next_run_at: datetime) -> str:
         pid = pool_id(scope_type, scope_id)
@@ -154,19 +173,25 @@ class PoolRepo:
     async def stop_schedule(self, sid: str) -> bool:
         return (await self._p.execute("UPDATE token_schedules SET active = FALSE, stopped_at = now() WHERE id=$1 AND active", sid)).endswith("1")
 
-    async def claim_due_schedules(self, now: datetime) -> list[dict[str, Any]]:
-        """Schedules due now, each advanced to the first of next month in the same statement: only one caller can claim a given run."""
-        rows = await self._p.fetch(
-            """UPDATE token_schedules SET next_run_at = date_trunc('month', $1::timestamptz AT TIME ZONE 'UTC' + interval '1 month') AT TIME ZONE 'UTC'
-               WHERE active AND next_run_at <= $1 RETURNING id, pool_id, tokens, note, created_by""", now)
-        return [dict(r) for r in rows]
-
     async def pool_scope(self, pid: str) -> tuple[str, str] | None:
         r = await self._p.fetchrow("SELECT scope_type, scope_id FROM token_pools WHERE id=$1", pid)
         return (r["scope_type"], r["scope_id"]) if r else None
 
-    async def set_consumed(self, pid: str, consumed: int, level: int) -> dict[str, Any]:
-        return dict(await self._p.fetchrow(f"UPDATE token_pools SET consumed_tokens=$2, alert_level=$3, updated_at=now() WHERE id=$1 RETURNING {_COLS}", pid, consumed, level))
+    async def recompute(self, pid: str, level_for: Any) -> tuple[int, dict[str, Any]] | None:
+        """Re-derive consumption from the ledger inside one transaction that holds the pool row: no increment can land between the sum and the write.
+        Returns (consumed before, the pool after), or None for a pool that is not metered."""
+        async with self._p.acquire() as conn, conn.transaction():
+            pool = await conn.fetchrow(f"SELECT {_COLS} FROM token_pools WHERE id=$1 FOR UPDATE", pid)
+            if not pool or not pool["metered"]:
+                return None
+            where, args = ("", [pool["metered_since"]])
+            if pid != ORG:
+                where, args = ("AND project_id = $2", [pool["metered_since"], pid])
+            expected = int(await conn.fetchval(f"SELECT COALESCE(sum(total_tokens), 0) FROM llm_usage_events WHERE billable AND ts >= $1 {where}", *args))
+            after = await conn.fetchrow(
+                f"UPDATE token_pools SET consumed_tokens=$2, alert_level=$3, updated_at=now() WHERE id=$1 RETURNING {_COLS}",
+                pid, expected, level_for(pool["allocated_tokens"] - expected, pool["reference_tokens"]))
+            return pool["consumed_tokens"], dict(after)
 
     async def claim_alert(self, pid: str, level: int) -> bool:
         """Announce `level` once: true for the caller that moved the pool up to it."""
@@ -182,8 +207,13 @@ class PoolRepo:
         return {"org": by.get(ORG), "project": by.get(project_id) if project_id else None}
 
     async def record_block(self, *, project_id: str | None, user_id: str | None, pool: str, balance: int, entry: str, enforced: bool) -> None:
-        await self._p.execute("INSERT INTO token_gate_blocks (project_id, user_id, pool, balance, entry, enforced) VALUES ($1,$2,$3,$4,$5,$6)",
-                              project_id, user_id, pool, balance, entry[:120], enforced)
+        # One row per person, project and entry per minute: a person pressing a button repeatedly (or a script hammering a route) is one refusal.
+        await self._p.execute(
+            """INSERT INTO token_gate_blocks (project_id, user_id, pool, balance, entry, enforced)
+               SELECT $1,$2,$3,$4,$5,$6
+               WHERE NOT EXISTS (SELECT 1 FROM token_gate_blocks WHERE project_id IS NOT DISTINCT FROM $1 AND user_id IS NOT DISTINCT FROM $2
+                                 AND entry = $5 AND enforced = $6 AND ts > now() - interval '1 minute')""",
+            project_id, user_id, pool, balance, entry[:120], enforced)
 
     async def blocks_by_project(self, days: int = 7) -> dict[str, int]:
         rows = await self._p.fetch(
@@ -206,8 +236,9 @@ class PoolRepo:
         return dict(r) if r else None
 
     async def add_request(self, project_id: str, user_id: str, note: str | None) -> dict[str, Any]:
-        r = await self._p.fetchrow("INSERT INTO token_requests (id, project_id, requested_by, note) VALUES ($1,$2,$3,$4) RETURNING *", str(uuid.uuid4()), project_id, user_id, note)
-        return dict(r)
+        r = await self._p.fetchrow("INSERT INTO token_requests (id, project_id, requested_by, note) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING *",
+                                   str(uuid.uuid4()), project_id, user_id, note)
+        return dict(r) if r else (await self.open_request(project_id, user_id)) or {}
 
     async def open_requests(self) -> list[dict[str, Any]]:
         rows = await self._p.fetch(

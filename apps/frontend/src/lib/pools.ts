@@ -9,7 +9,7 @@ export interface PoolView {
 }
 export interface ProjectPool extends PoolView {
   projectId: string; name: string;
-  organisation: { metered: boolean; balance: number | null; state: PoolState; level: number };
+  organisation: { metered: boolean; state: PoolState; level: number };
 }
 export interface PoolsOverview {
   organisation: PoolView;

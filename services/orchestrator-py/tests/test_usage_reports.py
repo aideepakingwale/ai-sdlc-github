@@ -191,3 +191,16 @@ async def test_the_operations_dashboard_takes_its_tokens_from_the_ledger_and_has
     prov = {p["provider"]: p for p in s["providers"]}
     assert prov["bedrock"]["prompt_tokens"] > 0 and prov["bedrock"]["calls"] == 2
     assert sum(d["tokens"] for d in s["daily"]) > 0
+
+
+@needs_pg
+async def test_a_csv_cut_off_by_the_cap_says_so_and_a_member_never_sees_more_than_their_own(world, monkeypatch):
+    svc, p1, _, _ = world
+    from app.services import usage_reports as ur
+
+    monkeypatch.setattr(ur, "CSV_ROW_CAP", 2)
+    text = await svc.project_csv(_u("pm", "PROJECT_MANAGER"), p1, None, None, "billable", None)
+    lines = text.strip().splitlines()
+    assert len(lines) == 1 + 2 + 1 and lines[-1].startswith("TRUNCATED: more than 2 rows")
+    whole = await svc.project_csv(_u("ann", "DEV"), p1, None, None, "billable", None)
+    assert "TRUNCATED" not in whole or whole.count("\n") <= 4

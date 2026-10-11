@@ -154,15 +154,13 @@ class UsageReports:
         buf = io.StringIO()
         w = csv.writer(buf)
         w.writerow(cols)
-        offset = 0
-        while offset < CSV_ROW_CAP:
-            rows = await self._repo.events(f, activity=None, status=None, limit=5000, offset=offset)
-            for r in rows:
-                e = self._event(r)
-                w.writerow([_csv_cell(e[c]) for c in cols])
-            if len(rows) < 5000:
-                break
-            offset += 5000
+        # One query, one snapshot (paging with OFFSET while rows are being written can skip or repeat rows). One extra row tells us whether the cap cut it off.
+        rows = await self._repo.events(f, activity=None, status=None, limit=CSV_ROW_CAP + 1, offset=0)
+        for r in rows[:CSV_ROW_CAP]:
+            e = self._event(r)
+            w.writerow([_csv_cell(e[c]) for c in cols])
+        if len(rows) > CSV_ROW_CAP:
+            w.writerow([f"TRUNCATED: more than {CSV_ROW_CAP} rows in this selection; the newest {CSV_ROW_CAP} are shown. Choose a shorter period or one person."])
         return buf.getvalue()
 
     # ------------------------------------------------------------------ the organisation

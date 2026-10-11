@@ -33,6 +33,7 @@ class CodeGenService:
         self._db, self._dynamo, self._audit, self._authz = db, dynamo, audit, authz
         self._content, self._workflow, self._enqueue, self._can_write = content, workflow, enqueue, can_write
         self._enabled = enabled
+        self.gate: Any = None          # the token gate: asked before a structure approval starts code generation
 
     # ------------------------------------------------------------------ gate hooks
     def applies(self, stage: dict[str, Any]) -> bool:
@@ -48,6 +49,10 @@ class CodeGenService:
     async def approve_structure(self, *, project_id: str, phase: int, stage: dict[str, Any], plan: dict[str, Any],
                                 user: UserPublic, override: bool) -> dict[str, Any]:
         """The reviewers approved the structure: record it, release the stage from its gate and start step 2."""
+        # Step 2 is a new run of model work: ask the token gate BEFORE the plan is consumed or the stage moves, so a refusal leaves the structure
+        # waiting for approval (not half-approved with nothing running).
+        if self.gate is not None:
+            await self.gate.admit(project_id=project_id, user_id=user.id, entry="code.structure.approve")
         approved = await self._db.approve_code_plan(plan["id"], approver=user.email)
         if not approved:
             raise SdlcError("GATE_CONFLICT", "This structure was already decided")

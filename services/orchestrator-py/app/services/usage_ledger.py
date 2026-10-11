@@ -8,6 +8,7 @@ ledger is for measurement; the quota gate (a later phase) reads balances, not th
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import Any
@@ -89,7 +90,15 @@ class UsageLedger:
         if not rows:
             return rows
         try:
-            states = await self._db.insert_usage_events(rows)
+            states = None
+            for attempt in range(3):                 # a transient database error must not lose spend: retry before giving up
+                try:
+                    states = await self._db.insert_usage_events(rows)
+                    break
+                except Exception:  # noqa: BLE001
+                    if attempt == 2:
+                        raise
+                    await asyncio.sleep(0.2 * (attempt + 1))
             if self.pools is not None and states:
                 await self.pools.after_consumption(states)
         except Exception:  # noqa: BLE001 — measurement must not take generation down, but never fail silently

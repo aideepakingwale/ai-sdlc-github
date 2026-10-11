@@ -326,3 +326,18 @@ Nothing is blocked yet. This phase makes the balance real so that phase 4 can en
 * **Metrics.** `sdlc_token_org_balance_tokens`, `sdlc_token_projects{state}`, `sdlc_token_gate_refused_7d`, `sdlc_token_gate_would_refuse_7d`, `sdlc_token_gate_mode{mode}` (counts only: no per-project series).
 * **Tests** now cover the job queue: a new stage run is refused without leaving a lock or a job behind; boot recovery resumes an interrupted run even at zero; a queued run is admitted when a worker starts it and carries its ceiling.
 * **Not done:** a backfill of usage from before the ledger (reports and balances start when the ledger did), retention jobs, a run estimate before a stage starts, the rework allowance, a tokens-per-minute governor, per-person visibility switch and pseudonymised exports, email, and an in-app notice for organisation-level alerts.
+
+## 19. Independent review of phases 0 to 4
+
+An independent review of the whole token work found the following; each is fixed and has a test.
+
+* **Work that changed state before the gate ran.** Structure approval, regenerate, clarify, part retrigger and plan trigger now check the balance first, so a refusal leaves the project as it was.
+* **A person could name any project.** The `X-Project-Id` header is honoured only for a project the person can use; an unusable header is refused instead of being charged to someone else. A custom agent is always charged to its own project. Chat checks the person's access to the project in the request body before it looks at the balance (so a stranger learns nothing about a balance), and charges that project.
+* **Monthly top-ups are atomic.** The claim of a due schedule and the grant happen in one transaction: a failure in between rolls back, and the next tick applies it once. A recompute locks the pool row, so spend that lands during it is not overwritten.
+* **Allocation edges.** Taking tokens back from a project that was never allocated any is refused (it would have blocked the project at once). A person pressing "Request tokens" repeatedly makes one open request (migration 0055 enforces it). Refusals are logged once per person per minute. The organisation balance is no longer in the member view.
+* **Chat notifications.** Text from people in a notification is stripped of markup (`<`, `>`, `&`, `@`, backticks) so it cannot ping a channel or link elsewhere.
+* **Reconciliation hardening.** Odd record shapes and infinite values read as zero tokens instead of aborting the day; drift is clamped to the column; a run that hit the read cap is an error, not a clean comparison; a failure while saving a result is recorded; the S3 `data/` rule applies below the hour folder only; the nightly lock is released only by the replica that took it.
+* **Never lose billed spend.** The ledger write retries three times and is shielded from cancellation (a chat client that disconnects mid-call no longer drops the record). The gateway treats an unexpected provider exception as a failed attempt, so it fails over and still reports its usage.
+* **CSV export** reads in a single query and ends with a `TRUNCATED` row when the row cap is hit.
+
+**Left as they are (low risk):** the first-metering millisecond race, the task ceiling counting cache reads at full weight, aggregate breakdowns visible to non-managers, and calls that fail before any token is billed (timeouts) which only reconciliation can see. `/metrics` exposes the organisation balance and must stay cluster-internal.

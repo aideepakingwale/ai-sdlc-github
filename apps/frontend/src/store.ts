@@ -196,3 +196,7 @@ export const useProjectStream = (projectId: string): StreamState =>
     const mine = Object.entries(s.streams).filter(([k]) => k.startsWith(`${projectId}:`)).map(([, v]) => v);
     return mine.find((v) => v.active) ?? mine.sort((a, b) => b.seq - a.seq)[0] ?? IDLE_STREAM;
   });
+
+// The open project rides on every API request (token governance). Whichever way the store learns of a project (the picker, or a chat that created
+// one), the header follows it.
+useApp.subscribe((state) => setRequestProject(state.activeProjectId));

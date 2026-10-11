@@ -430,7 +430,7 @@ async def plan_preview(
     return await container.chat.plan_preview(project_id=project_id, user=user, message=message)
 
 
-@router.post("/api/projects/{project_id}/phase/{phase_id}/retrigger")
+@router.post("/api/projects/{project_id}/phase/{phase_id}/retrigger", dependencies=[require_tokens("retrigger")])
 async def retrigger_stage(
     project_id: str, phase_id: int,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
@@ -508,7 +508,7 @@ async def set_amend_mode(
     return await container.chat.set_amend_mode(project_id=project_id, phase=phase_id, user=user, mode=body.mode)
 
 
-@router.post("/api/projects/{project_id}/phase/{phase_id}/plan/trigger")
+@router.post("/api/projects/{project_id}/phase/{phase_id}/plan/trigger", dependencies=[require_tokens("trigger")])
 async def trigger_stage_plan(
     project_id: str, phase_id: int,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
@@ -556,7 +556,7 @@ async def get_clarification(
     return {"clarification": clarification}
 
 
-@router.post("/api/projects/{project_id}/phase/{phase_id}/clarify")
+@router.post("/api/projects/{project_id}/phase/{phase_id}/clarify", dependencies=[require_tokens("clarify")])
 async def answer_clarification(
     project_id: str, phase_id: int, body: ClarificationAnswersBody,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
@@ -608,7 +608,7 @@ async def get_generation_parts(
     }
 
 
-@router.post("/api/projects/{project_id}/phase/{phase_id}/parts/{field}/retrigger")
+@router.post("/api/projects/{project_id}/phase/{phase_id}/parts/{field}/retrigger", dependencies=[require_tokens("part.retrigger")])
 async def retrigger_generation_part(
     project_id: str, phase_id: int, field: str,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
@@ -628,7 +628,7 @@ class RegenerateBody(BaseModel):
     fields: list[str] = []  # artifacts to regenerate; empty = all
 
 
-@router.post("/api/projects/{project_id}/phase/{phase_id}/regenerate")
+@router.post("/api/projects/{project_id}/phase/{phase_id}/regenerate", dependencies=[require_tokens("regenerate")])
 async def regenerate_stage_artifacts(
     project_id: str, phase_id: int, body: RegenerateBody,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),

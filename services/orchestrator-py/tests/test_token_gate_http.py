@@ -151,3 +151,92 @@ async def test_a_chat_that_names_its_project_in_the_body_is_gated_on_that_projec
     repo.pools["project"] = pool(-1)
     r = await c.post("/api/chat", json={"projectId": "p7", "message": "hello"})
     assert r.status_code == 402 and r.json()["error"]["details"]["projectId"] == "p7" and ran == []
+
+
+# ----------------------------------------------------------------------------- review findings: authorise first, charge the right project
+def _app_with(access_denied=(), defs=None):
+    from app.api import chat_routes  # noqa: F401
+
+    repo = FakeRepo()
+    router = APIRouter()
+    admitted: list[str | None] = []
+
+    @router.post("/api/projects/{project_id}/work", dependencies=[require_tokens("work")])
+    async def work(project_id: str) -> dict:
+        return {"ran": True}
+
+    from app.api.deps import require_tokens_for_def
+
+    @router.post("/api/agent-defs/{def_id}/test", dependencies=[require_tokens_for_def("agent.test")])
+    async def agent_test(def_id: str) -> dict:
+        admitted.append(uc.current().project_id)
+        return {"ran": True}
+
+    app = FastAPI()
+    app.include_router(router)
+
+    @app.exception_handler(SdlcError)
+    async def handler(_r, err: SdlcError):
+        body = {"code": err.code, "message": err.message}
+        if err.code in ("TOKENS_EXHAUSTED", "TASK_TOKEN_CEILING"):
+            body["details"] = err.details
+        return JSONResponse(status_code=err.http_status, content={"error": body})
+
+    class Authz:
+        async def assert_project_access(self, pid, user):
+            if pid in access_denied:
+                raise SdlcError("FORBIDDEN", "You are not a member of this project")
+
+    class Db:
+        async def get_project(self, pid):
+            return {"id": pid}
+
+    class Defs:
+        class _Repo:
+            async def get_def(self, did):
+                return (defs or {}).get(did)
+        _repo = _Repo()
+
+    app.state.container = Container(settings=SimpleNamespace(JWT_SECRET=SECRET), token_gate=TokenGate(repo, mode="enforce"), authz=Authz(), db=Db(), agent_defs=Defs())
+    c = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t", cookies={SESSION_COOKIE: sign_session(ANN, SECRET, 1)})
+    return c, repo, admitted, app
+
+
+async def test_a_stranger_gets_a_403_and_never_learns_what_an_empty_project_has_left():
+    c, repo, _, _ = _app_with(access_denied=("secret",))
+    repo.pools["project"] = pool(-4242)
+    r = await c.post("/api/projects/secret/work")
+    assert r.status_code == 403 and "4242" not in r.text and "tokens" not in r.text.lower()
+    assert repo.blocks == []                                                      # and no refusal row was written on a stranger's behalf
+
+
+async def test_a_project_header_the_person_may_not_use_is_refused_not_quietly_ignored():
+    c, repo, admitted, _ = _app_with(access_denied=("theirs",))
+    r = await c.post("/api/agent-defs/d1/test", headers={"x-project-id": "theirs"})
+    assert r.status_code == 403 and "X-Project-Id" in r.json()["error"]["message"] and admitted == []
+
+
+async def test_a_projects_own_agent_is_charged_to_its_project_whatever_header_the_caller_sends():
+    c, repo, admitted, _ = _app_with(defs={"d1": {"id": "d1", "project_id": "alpha"}, "org1": {"id": "org1", "project_id": None}})
+    repo.pools["project"] = pool(-5)
+    for headers in ({}, {"x-project-id": "other"}):
+        r = await c.post("/api/agent-defs/d1/test", headers=headers)
+        assert r.status_code == 402 and r.json()["error"]["details"]["projectId"] == "alpha"      # no header, or another project's: it is alpha's pool
+    repo.pools["project"] = pool(50)
+    assert (await c.post("/api/agent-defs/d1/test")).status_code == 200 and admitted == ["alpha"]
+    repo.pools["project"] = None
+    assert (await c.post("/api/agent-defs/org1/test", headers={"x-project-id": "p9"})).status_code == 200 and admitted[-1] == "p9"   # an organisation agent: the open project
+
+
+async def test_chat_checks_access_to_the_project_in_the_body_before_the_balance_and_charges_that_project():
+    from app.api import chat_routes
+
+    c, repo, _, app = _app_with(access_denied=("secret",))
+    app.include_router(chat_routes.router)
+    seen: list = []
+    app.state.container.chat = SimpleNamespace(handle=lambda **kw: seen.append(uc.current().project_id))
+    repo.pools["project"] = pool(-9)
+    r = await c.post("/api/chat", json={"projectId": "secret", "message": "hi"})
+    assert r.status_code == 403 and "9" not in r.json()["error"]["message"]
+    r2 = await c.post("/api/chat", json={"projectId": "open", "message": "hi"})
+    assert r2.status_code == 402 and r2.json()["error"]["details"]["projectId"] == "open"

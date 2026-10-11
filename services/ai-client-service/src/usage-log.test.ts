@@ -92,4 +92,9 @@ describe('usage log', () => {
     const err = await router([refuse]).generate(req, new AbortController().signal).catch((e) => e);
     expect((err.details as { usageLog: Array<{ outcome: string }> }).usageLog[0]!.outcome).toBe('refused');
   });
+  it('treats an unexpected provider error as a failed attempt and keeps the log', async () => {
+    const odd: LlmProvider = { id: 'bedrock', configured: true, model: 'b', async generate() { throw new TypeError('sdk blew up'); } };
+    const err = await router([odd, works('gemini')]).generate(req, new AbortController().signal).catch((e) => e);
+    expect(err).not.toBeInstanceOf(TypeError);                                           // failed over rather than escaping unrecorded
+  });
 });

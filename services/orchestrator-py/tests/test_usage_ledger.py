@@ -306,13 +306,14 @@ async def test_a_project_header_is_attributed_only_for_a_project_the_person_can_
     _PROJECT_OK.clear()
 
     def req(pid):
-        return SimpleNamespace(headers={"x-project-id": pid} if pid else {})
+        return SimpleNamespace(headers={"x-project-id": pid} if pid else {}, state=SimpleNamespace())
 
     assert await _header_project(req("p1"), c, user) == "p1"
     assert await _header_project(req("denied"), c, user) is None          # not a member: never charged
     assert await _header_project(req("ghost"), c, user) is None           # an administrator naming a project that does not exist
     assert await _header_project(req(None), c, user) is None
-    assert await _header_project(req("x" * 100), c, user) is None
+    long = req("x" * 100)
+    assert await _header_project(long, c, user) is None and long.state.bad_project_header   # remembered so the gate can refuse it
 
 
 async def test_an_activity_override_reaches_tasks_spawned_inside_the_scope_and_ends_with_it():
@@ -325,3 +326,42 @@ async def test_an_activity_override_reaches_tasks_spawned_inside_the_scope_and_e
         await asyncio.gather(*(asyncio.get_running_loop().create_task(worker()) for _ in range(3)))
     await worker()
     assert seen == ["stage.rework"] * 3 + ["stage.generate"]
+
+
+# ----------------------------------------------------------------------------- review findings
+async def test_a_transient_database_error_does_not_lose_billed_spend():
+    uc.reset(user_id="u1", project_id="p1")
+    attempts = {"n": 0}
+
+    class Flaky:
+        async def insert_usage_events(self, rows):
+            attempts["n"] += 1
+            if attempts["n"] < 3:
+                raise RuntimeError("connection reset")
+            return []
+
+    rows = await UsageLedger(Flaky()).record(request_id="r", activity="other", tag=None, usage_log=[_attempt(promptTokens=5, inputTokens=5)])
+    assert attempts["n"] == 3 and len(rows) == 1
+
+
+async def test_a_caller_that_disconnects_mid_call_does_not_abandon_the_ledger_write(monkeypatch):
+    written: list = []
+    gate = asyncio.Event()
+
+    class Slow:
+        async def insert_usage_events(self, rows):
+            await gate.wait()
+            written.extend(rows)
+            return []
+
+    c = LlmClient("http://ai-client:8081")
+    c.ledger = UsageLedger(Slow())
+    uc.reset(user_id="u1", project_id="p1")
+    task = asyncio.get_running_loop().create_task(c._record_usage(request_id="r", usage_log=[_attempt(promptTokens=9, inputTokens=9)], tag=None, activity="other", started=0.0))
+    await asyncio.sleep(0.05)
+    task.cancel()                                                                       # the chat stream's client went away
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    gate.set()
+    await asyncio.sleep(0.1)
+    assert [r["input_tokens"] for r in written] == [9]                                  # the billed tokens were still recorded

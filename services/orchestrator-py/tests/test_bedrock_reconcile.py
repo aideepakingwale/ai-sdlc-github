@@ -358,3 +358,93 @@ async def test_runs_are_stored_replaced_per_day_and_read_back_with_their_differe
         admin = await asyncpg.connect(ADMIN)
         await admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
         await admin.close()
+
+
+# ----------------------------------------------------------------------------- review findings
+def test_malformed_records_never_abort_the_day(tmp_path):
+    import asyncio
+
+    good = log_record("good")
+    odd = [
+        {**log_record("s1"), "input": "not an object"},                       # input is a string
+        {**log_record("s2"), "output": ["x"]},                               # output is a list
+        '{"requestId":"huge","timestamp":"2026-10-10T12:00:00Z","input":{"inputTokenCount":1e999},"output":{"outputTokenCount":1}}',
+    ]
+    lines = [json.dumps(good)] + [x if isinstance(x, str) else json.dumps(x) for x in odd]
+    (tmp_path / "a.jsonl").write_text("\n".join(lines) + "\n")
+    calls, bad = asyncio.run(FileSource(str(tmp_path)).calls(NOON - MARGIN, NOON + MARGIN))
+    by_id = {c.request_id: c for c in calls}
+    assert set(by_id) == {"good", "s1", "s2", "huge"} and bad == 0                       # nothing raised; odd shapes read as zero tokens
+    assert by_id["good"].input_tokens > 0 and all(by_id[k].input_tokens == 0 for k in ("s1", "huge"))
+
+
+def test_a_drift_too_large_for_the_column_is_clamped():
+    r = run([led("a", inp=10_000_000)], aws(log_record("a", inp=1, out=0)), identity_contains="")
+    assert r.drift is not None and abs(r.drift) <= 9999
+
+
+def test_the_s3_data_folder_rule_looks_only_below_the_hour_folder():
+    import asyncio
+
+    key = "myapp/data/AWSLogs/123/BedrockModelInvocationLogs/eu-west-2/2026/10/10/12/"
+    objects = {
+        "myapp/data/AWSLogs/": {"CommonPrefixes": [{"Prefix": "myapp/data/AWSLogs/123/"}]},
+        "myapp/data/AWSLogs/123/": {"CommonPrefixes": [{"Prefix": "myapp/data/AWSLogs/123/BedrockModelInvocationLogs/"}]},
+        "myapp/data/AWSLogs/123/BedrockModelInvocationLogs/": {"CommonPrefixes": [{"Prefix": "myapp/data/AWSLogs/123/BedrockModelInvocationLogs/eu-west-2/"}]},
+        key: {"Contents": [{"Key": key + "x.json.gz"}, {"Key": key + "data/big.json.gz"}]},
+    }
+    body = gzip.compress((json.dumps(log_record("s1")) + "\n").encode())
+    fetched: list[str] = []
+
+    class Pg:
+        def __init__(self, prefix): self.prefix = prefix
+        def paginate(self, **kw): return iter([objects.get(kw["Prefix"], {})])
+
+    client = SimpleNamespace(get_paginator=lambda _n: SimpleNamespace(paginate=lambda **kw: Pg(kw["Prefix"]).paginate(**kw)),
+                             get_object=lambda Bucket, Key: (fetched.append(Key), {"Body": SimpleNamespace(read=lambda: body)})[1])
+    calls, _ = asyncio.run(S3Source("b", "myapp/data", client=client).calls(NOON - MARGIN, NOON + MARGIN))
+    assert [c.request_id for c in calls] == ["s1"] and fetched == [key + "x.json.gz"]    # a prefix that contains "data/" no longer hides every object
+
+
+async def test_a_capped_cloudwatch_read_is_an_error_not_a_clean_comparison():
+    msgs = [{"message": json.dumps(log_record(f"c{i}"))} for i in range(5)]
+    pag = _Paginator([{"events": msgs}])
+    client = SimpleNamespace(get_paginator=lambda name: pag)
+    repo = _Repo([led("c0")])
+    out = await BedrockReconciler(repo, CloudWatchSource("g", "r", max_events=3, client=client)).run_day(DAY)
+    assert out["status"] == "error" and "event cap" in out["error"] and repo.saved[0][0]["status"] == "error"
+
+
+async def test_a_failure_while_saving_the_result_is_recorded_not_raised():
+    class BadSave(_Repo):
+        async def save_run(self, run, diffs):
+            if run["status"] != "error":
+                raise RuntimeError("numeric field overflow")
+            await super().save_run(run, diffs)
+
+    repo = BadSave([led("a")])
+    out = await BedrockReconciler(repo, _Source(aws(log_record("a")))).run_day(DAY)
+    assert out["status"] == "error" and "overflow" in out["error"] and repo.saved[0][0]["status"] == "error"
+
+
+async def test_a_replica_only_releases_the_reconciliation_lock_it_took():
+    class Redis:
+        def __init__(self): self.kv = {}
+        async def set(self, k, v, nx=False, ex=None):
+            if nx and k in self.kv: return None
+            self.kv[k] = v; return True
+        async def get(self, k): return self.kv.get(k)
+        async def delete(self, k): self.kv.pop(k, None)
+
+    redis = Redis()
+    taken_over = {"n": 0}
+
+    class Slow(_Source):
+        async def calls(self, since, until):
+            redis.kv["sdlc:recon:lock"] = "another-replica"                       # our lock expired mid-run and another replica took it
+            taken_over["n"] += 1
+            return [], 0
+
+    rec = BedrockReconciler(_Repo(), Slow(), redis=redis)
+    await rec.run_missing(1, now=datetime(2026, 10, 12, 4, tzinfo=timezone.utc))
+    assert redis.kv["sdlc:recon:lock"] == "another-replica" and taken_over["n"] == 1

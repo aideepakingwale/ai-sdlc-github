@@ -90,11 +90,15 @@ _PROJECT_OK: dict[tuple[str, str], float] = {}
 
 
 async def _header_project(request: Request, container: "Container", user: UserPublic) -> str | None:
-    """The project the person has open (`X-Project-Id`), for calls whose URL carries none (MindDesigner design-time
-    work). Tokens are charged to it, so the person must belong to it: a project they cannot access is ignored,
-    never charged. Memberships are cached for a minute."""
+    """The project the person has open (`X-Project-Id`), for calls whose URL carries none (MindDesigner design-time work). Tokens are
+    charged to it, so the person must belong to it. A project that does not exist (a stale tab) is ignored; one the person may not use is
+    remembered on the request (`request.state.bad_project_header`) so work-starting routes can refuse it instead of quietly charging nobody.
+    Memberships are cached for a minute."""
     pid = request.headers.get("x-project-id")
-    if not pid or len(pid) > 64:
+    if not pid:
+        return None
+    if len(pid) > 64:
+        request.state.bad_project_header = True
         return None
     now = time.monotonic()
     if _PROJECT_OK.get((user.id, pid), 0.0) > now:
@@ -103,7 +107,11 @@ async def _header_project(request: Request, container: "Container", user: UserPu
         await container.authz.assert_project_access(pid, user)
         if not await container.db.get_project(pid):    # an administrator passes the access check for any id
             return None
-    except Exception:  # noqa: BLE001 — denied or unknown: do not attribute
+    except SdlcError as err:
+        if err.code != "NOT_FOUND":
+            request.state.bad_project_header = True
+        return None
+    except Exception:  # noqa: BLE001
         return None
     _PROJECT_OK[(user.id, pid)] = now + 60.0
     if len(_PROJECT_OK) > 5000:
@@ -113,9 +121,37 @@ async def _header_project(request: Request, container: "Container", user: UserPu
 
 def require_tokens(entry: str):
     """Route dependency: refuse to START model work while the project's (or the organisation's) tokens are used up (docs/token-governance.md, phase 4).
-    The task is admitted once here, so what it spawns is not re-checked and the activity in flight finishes. Reading and approving stay open."""
+    The task is admitted once here, so what it spawns is not re-checked and the activity in flight finishes. Reading and approving stay open.
+    Access to the project is checked BEFORE the balance, so a refusal never tells a stranger what a project has left."""
     async def dep(request: Request, user: UserPublic = Depends(current_user)) -> None:
-        gate = request.app.state.container.token_gate
-        if gate is not None:
-            await gate.admit(project_id=usage_context.current().project_id, user_id=user.id, entry=entry)
+        container = request.app.state.container
+        gate = container.token_gate
+        if gate is None:
+            return
+        await _authorise_and_admit(request, container, gate, user, entry)
     return Depends(dep)
+
+
+def require_tokens_for_def(entry: str):
+    """The same for MindDesigner routes that take an agent or skill definition. A project's own definition is charged to ITS project, whatever
+    header the caller sent; an organisation definition (no project) is charged to the project the person has open, else to the organisation."""
+    async def dep(request: Request, user: UserPublic = Depends(current_user)) -> None:
+        container = request.app.state.container
+        gate = container.token_gate
+        if gate is None:
+            return
+        d = await container.agent_defs._repo.get_def(request.path_params.get("def_id", "")) if container.agent_defs is not None else None
+        if d and d.get("project_id"):
+            await container.authz.assert_project_access(d["project_id"], user)
+            usage_context.update(project_id=d["project_id"])
+        await _authorise_and_admit(request, container, gate, user, entry)
+    return Depends(dep)
+
+
+async def _authorise_and_admit(request: Request, container: "Container", gate: Any, user: UserPublic, entry: str) -> None:
+    ctx_project = usage_context.current().project_id
+    if getattr(request.state, "bad_project_header", False):
+        raise SdlcError("FORBIDDEN", "The project named in X-Project-Id is not one you can use")
+    if ctx_project:
+        await container.authz.assert_project_access(ctx_project, user)
+    await gate.admit(project_id=ctx_project, user_id=user.id, entry=entry)

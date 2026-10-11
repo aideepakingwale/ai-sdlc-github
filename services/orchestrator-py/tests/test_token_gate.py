@@ -284,9 +284,9 @@ async def test_an_administrator_moves_the_gate_from_observe_to_enforce_and_sees_
     gate._reader = lambda: w.db.get_setting("token_gate_mode")
     await w.pools.allocate(ROOT, "project", w.p1, 100)
     await spend(w, w.p1, 500)
-    for _ in range(3):
-        uc.reset(user_id="ann", project_id=w.p1)
-        await gate.admit(project_id=w.p1, user_id="ann", entry="plan")                   # observe: let through, but remember
+    for who in ("ann", "bob", "cy"):                                                     # one record per person per minute, so three people
+        uc.reset(user_id=who, project_id=w.p1)
+        await gate.admit(project_id=w.p1, user_id=who, entry="plan")                     # observe: let through, but remember
     st = await w.pools.gate_status(ROOT, gate)
     assert (st["mode"], st["default"], st["refused7d"], st["wouldRefuse7d"]) == ("observe", "observe", 0, 3)
     out = await w.pools.set_gate_mode(ROOT, gate, "enforce")
