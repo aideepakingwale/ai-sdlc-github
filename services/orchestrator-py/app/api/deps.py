@@ -51,6 +51,7 @@ class Container:
     pack_admin: Any = None      # the organisation's rule packs (create, import, export, hide, restore)
     rule_advisor: Any = None    # recommends rule packs from the project's profile
     agent_runs: Any = None      # a person running a custom agent on its own or inside a stage
+    token_pools: Any = None     # token pools: allocations and balances
     reconciler: Any = None      # nightly comparison of the token ledger with Bedrock's invocation logs
     usage_reports: Any = None   # token usage reports over the ledger
     agent_defs: Any = None      # custom agents and skills: definitions, audit, approval, stage attachments

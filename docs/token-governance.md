@@ -156,7 +156,7 @@ Bedrock's own account quotas (tokens and requests per minute) are what really th
 | 0. Capture (**built**) | Full usage object and per-attempt rows in the gateway; partial usage on failure; `UsageContext` with required `activity` and user attribution for HTTP and background jobs; the ledger table; billable flag. No behaviour change. | M |
 | 1. Reporting (**built**) | Rollup, project and organisation views and API, per-person breakdown inside a project, CSV, waste view; MindDesigner Usage moves onto the ledger. | M |
 | 2. Reconcile (**built**) | Invocation logging, nightly drift check, application inference profiles with tags. | S/M |
-| 3. Pools and allocation | `token_pools` and `token_grants`, admin allocation console, balance meter, thresholds and notifications; **recording only** (the balance can go negative and nothing is blocked), so balances can be set sensibly from real consumption. | M |
+| 3. Pools and allocation (**built**) | `token_pools` and `token_grants`, admin allocation console, balance meter, thresholds and notifications; **recording only** (the balance can go negative and nothing is blocked), so balances can be set sensibly from real consumption. | M |
 | 4. The gate | Block new tasks at zero or below, fail-closed, "Request tokens", per-task safety ceiling, retire `agent_usage` limits. | M |
 | 5. Hardening | Rate governor, retention jobs, pseudonymised exports. | S |
 
@@ -265,3 +265,28 @@ the threshold (default 2%).
 * **Idempotent and self-healing:** a day's result is replaced atomically; a day with no log or an error is retried after six hours for three days.
 * **Not built:** application inference profiles per project (one environment-level profile and its cost tags are scripted; see the guide), and the AWS cost-report comparison from section 7 (it needs Cost Explorer access and a price table, which the tokens-only decision removes).
 * **Still unverified against a live account:** the invocation-log field layout. The reader takes counts from the record's own fields and falls back to the logged response usage; the first real day will show whether any record is "unreadable".
+
+## 16. Phase 3, as built (pools and allocation, recording only)
+
+Nothing is blocked yet. This phase makes the balance real so that phase 4 can enforce it on numbers people have already been looking at.
+
+**The model** (migration `0053`, `app/services/token_pools.py`, `app/repos/pool_repo.py`)
+
+* A **pool** is a project's, or the organisation's (`org`). A pool is **metered** from its first allocation; until then it is unlimited and nothing is counted against it. The first allocation chooses whether use is counted from now or from the start of the month (earlier ledger rows of the month are then included).
+* `balance = allocated - consumed` and may go **negative**. Consumption is billable ledger tokens: a project pool counts its project's, the organisation pool counts everything billable, including calls with no project. Mock and local tokens are never counted.
+* **Consumption is added in the same database transaction as the ledger rows** (`insert_usage_events`), so the balance is the ledger by construction; a test with many concurrent writers checks `consumed == sum(ledger since metered_since)`, and an administrator can *recompute* a pool from the ledger to repair a manual slip.
+* **Allocations** are recorded as grants (who, how much, why; a negative amount is a take-back and needs a reason). A **monthly** allocation gives the amount now and again on the 1st of each month (UTC) until stopped; each due run is claimed by the statement that advances it, so several replicas cannot double-apply (after downtime across a month boundary one catch-up top-up is applied, not one per missed month).
+* The **organisation carve-out**: project allocations are shown against the organisation's. Giving projects more than the organisation has is allowed and flagged ("over-subscribed"), not refused.
+* Deleting a project deletes its pool, grants and monthly top-ups; the ledger rows stay.
+
+**Alerts.** After a write, a pool that has just become *low* (20% of the latest allocation left), *critical* (5%) or *empty* (zero or below) is announced once per level, until the next allocation resets it (an atomic claim, so concurrent writers announce it once). A project's alert is a notification for its members (the bell, kind `token_balance`) and, if `TOKEN_ALERT_WEBHOOK_URL` is set, a POST of `{"text": ...}` (Slack and Teams incoming webhooks accept this). The organisation's alert is logged and sent to the webhook. Email is not built (the platform has no mailer).
+
+**Where it shows**
+
+* Everyone on a project: a slim balance line above the stage composer and at the top of MindDesigner, and a balance card on the Usage page, with the pace of recent use and an estimate of how long the balance lasts (a project that has never been allocated tokens shows nothing). If the *organisation's* pool is the one running low it says so, because that is what would stop everyone.
+* Administrators: "Token allocations" at the top of the organisation Usage view: the organisation's balance, what is given to projects and what is not, a list of projects (attention first, searchable) and an allocate dialog (amount such as `2M` or `500k`, once or monthly, a note) that also shows the history and the monthly top-ups, with *Stop*.
+* API: `GET /api/projects/{id}/token-pool` (members), `GET /api/token-pools`, `GET /api/token-pools/{org|project}/{id}`, `POST /api/token-pools/{org|project}/{id}/allocations`, `POST .../recompute`, `DELETE /api/token-schedules/{id}` (administrators).
+
+**Decisions made while building it** (say if any is wrong): only administrators allocate (project managers see the balance and can ask); alert thresholds are shares of the *latest* allocation; the forecast uses the last 7 days' use; a take-back is a negative allocation with a reason.
+
+**Not in this phase:** blocking at zero, the "Request tokens" button, the per-task safety ceiling, and retiring the old custom-agent limits (all phase 4). Open question for phase 4: building an agent for the organisation's library happens outside any project, so which pool pays for its audit and test calls (the author picks a project, or the organisation pool)?

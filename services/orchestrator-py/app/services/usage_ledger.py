@@ -78,8 +78,10 @@ def build_rows(
 
 
 class UsageLedger:
-    def __init__(self, db: Any) -> None:
+    def __init__(self, db: Any, pools: Any = None) -> None:
         self._db = db
+        # Token pools (phase 3): told which pools the write just counted against, so it can announce a balance that got low.
+        self.pools = pools
 
     async def record(self, **kw: Any) -> list[dict[str, Any]]:
         """Write the rows for one logical call; returns them (the caller can total them)."""
@@ -87,7 +89,9 @@ class UsageLedger:
         if not rows:
             return rows
         try:
-            await self._db.insert_usage_events(rows)
+            states = await self._db.insert_usage_events(rows)
+            if self.pools is not None and states:
+                await self.pools.after_consumption(states)
         except Exception:  # noqa: BLE001 — measurement must not take generation down, but never fail silently
             log.error("usage ledger write FAILED for request %s (%d attempts, %d tokens)", kw.get("request_id"),
                       len(rows), sum(r["input_tokens"] + r["cache_read_tokens"] + r["cache_write_tokens"] + r["output_tokens"] for r in rows),

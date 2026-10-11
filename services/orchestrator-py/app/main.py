@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 
 from .agents.phase_agents import AgentDeps
-from .api import agents_routes, auth_routes, chat_routes, config_routes, project_routes, rules_routes, usage_routes
+from .api import pool_routes, agents_routes, auth_routes, chat_routes, config_routes, project_routes, rules_routes, usage_routes
 from .api.deps import Container
 from .auth.keycloak import KeycloakAuth
 from .config import get_settings
@@ -43,6 +43,8 @@ from .services.telemetry import TelemetryService
 from .repos.usage_repo import UsageRepo
 from .repos.recon_repo import ReconRepo
 from .services.bedrock_reconcile import BedrockReconciler, ReconcileScheduler, build_recon_source
+from .repos.pool_repo import PoolRepo
+from .services.token_pools import PoolScheduler, TokenPoolService
 from .services.usage_ledger import UsageLedger
 from .services.usage_reports import UsageReports
 from .services.workflow import WorkflowService
@@ -126,7 +128,9 @@ async def lifespan(app: FastAPI):
     monitor = BuildMonitor(dynamo, redis, mcp, db, audit, settings)
     telemetry = TelemetryService(db)  # AI observability (D-35)
     llm.telemetry = telemetry
-    llm.ledger = UsageLedger(db)       # token ledger: one row per provider attempt (docs/token-governance.md)
+    token_pools = TokenPoolService(PoolRepo(db), authz, db, settings.TOKEN_ALERT_WEBHOOK_URL)
+    llm.ledger = UsageLedger(db, token_pools)       # token ledger: one row per provider attempt (docs/token-governance.md)
+    container.token_pools = token_pools
     canon = CanonService(db, authz, audit)                      # D-38
     formworks = FormworkService(db, authz, audit, content, canon)
     memory = MemoryService(db, authz, audit)
@@ -263,6 +267,8 @@ async def lifespan(app: FastAPI):
     container.reconciler = reconciler
     recon_scheduler = ReconcileScheduler(reconciler, settings.BEDROCK_RECON_HOUR_UTC)
     recon_scheduler.start()
+    pool_scheduler = PoolScheduler(token_pools)
+    pool_scheduler.start()
     if reconciler.configured:
         log.info("Bedrock token reconciliation: source=%s, after %02d:00 UTC", reconciler.source_name, settings.BEDROCK_RECON_HOUR_UTC)
 
@@ -270,6 +276,7 @@ async def lifespan(app: FastAPI):
     yield
 
     await recon_scheduler.stop()
+    await pool_scheduler.stop()
     monitor.stop_polling()
     if container.gen_jobs is not None:
         await container.gen_jobs.stop_workers()
@@ -332,3 +339,4 @@ app.include_router(config_routes.router)
 app.include_router(rules_routes.router)
 app.include_router(agents_routes.router)
 app.include_router(usage_routes.router)
+app.include_router(pool_routes.router)

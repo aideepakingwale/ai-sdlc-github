@@ -1118,5 +1118,50 @@ test.describe('token usage', () => {
       await expect(page.getByTestId('v2-recon-headline')).toContainText('Not set up');
     }
   });
+
+  test('an administrator allocates tokens to a project and its members see the balance; taking tokens back needs a reason', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    // before any allocation nothing is limited and the composer says nothing
+    await openProject(page, name);
+    await expect(page.getByTestId('v2-balance')).toHaveCount(0);
+
+    await page.getByTestId('v2-nav-orgusage').click();
+    await page.getByTestId('v2-pool-find').fill(name);
+    const row = page.getByTestId('v2-pool-row').filter({ hasText: name });
+    await expect(row).toContainText('Not metered');
+    await row.getByTestId('v2-pool-allocate').click();
+    const dialog = page.getByTestId('v2-pool-dialog');
+    await expect(dialog).toContainText('not limited yet');
+    await dialog.getByTestId('v2-pool-amount').fill('2M');
+    await dialog.getByTestId('v2-pool-monthly').check();
+    await dialog.getByTestId('v2-pool-note').fill('Initial plan');
+    await dialog.getByTestId('v2-pool-save').click();
+    await expect(dialog).toHaveCount(0);
+    await expect(row).toContainText('Healthy');
+    await expect(row).toContainText('2.0M');
+
+    // the history and the monthly top-up are visible when it is reopened; a take-back needs a reason
+    await row.getByTestId('v2-pool-allocate').click();
+    await expect(page.getByTestId('v2-pool-history')).toContainText('Initial plan');
+    await expect(page.getByTestId('v2-pool-history')).toContainText('on the 1st');
+    await page.getByTestId('v2-pool-amount').fill('-500k');
+    await expect(page.getByTestId('v2-pool-save')).toBeDisabled();
+    await page.getByTestId('v2-pool-note').fill('Moved to Beta');
+    await expect(page.getByTestId('v2-pool-save')).toBeEnabled();
+    await page.getByTestId('v2-pool-save').click();
+    await expect(row).toContainText('1.5M');
+
+    // members see the balance beside the composer, in MindDesigner and on the usage page
+    const pool = (await (await page.request.get(`/api/projects/${id}/token-pool`)).json()) as { metered: boolean; balance: number; monthly: number };
+    expect(pool).toMatchObject({ metered: true, balance: 1_500_000, monthly: 2_000_000 });
+    await page.reload();
+    await openProject(page, name);
+    await expect(page.getByTestId('v2-balance-line')).toContainText('1.5M tokens left');
+    await page.getByTestId('v2-nav-minddesigner').click();
+    await expect(page.getByTestId('v2-balance-line')).toContainText('tokens left');
+    await page.getByTestId('v2-nav-usage').click();
+    await expect(page.getByTestId('v2-balance-number')).toHaveText('1,500,000');
+  });
 });
 

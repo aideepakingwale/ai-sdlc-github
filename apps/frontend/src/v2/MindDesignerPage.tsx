@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useApp } from '../store';
 import AgentsTab from './agents/AgentsTab';
+import BalanceMeter from './usage/BalanceMeter';
 
 /**
  * MindDesigner: where a project designs, tests and approves its own agents and skills, uses the built-in and shared ones as starting points,
@@ -13,6 +14,7 @@ export default function MindDesignerPage({ projectId }: { projectId: string }) {
     <div className="h-full overflow-y-auto bg-slate-50 p-6" data-testid="v2-minddesigner-page">
       <div className={`mx-auto w-full ${building ? 'max-w-[1400px]' : 'max-w-5xl'}`}>
         <h1 className="font-display text-xl font-bold text-navy">MindDesigner</h1>
+        <div className="mb-3"><BalanceMeter projectId={projectId} /></div>
         <p className="mb-4 text-sm text-slate-500">Design, test and approve your own agents and skills. Start from a built-in or shared one, run it on its own or in a stage, and place it in your pipeline.</p>
         <AgentsTab projectId={projectId} userId={user?.id ?? ''} onBuilder={setBuilding} />
       </div>

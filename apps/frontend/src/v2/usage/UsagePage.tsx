@@ -3,6 +3,8 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { api } from '../../api/client';
 import { tokensLabel } from '../../lib/agents';
 import { Pill } from '../bits';
+import BalanceMeter from './BalanceMeter';
+import PoolsPanel from './PoolsPanel';
 import {
   activityLabel, barWidths, calls, DIFF_LABEL, driftLabel, reconHeadline, RECON_STATUS, type ReconDiff, type ReconList, type ReconRun, fillDays, headline, percent, RANGES, rangeFor, SCOPE_LABEL, statusLabel, tokensFull, usageQuery,
   type OrgUsageReport, type ProjectUsageReport, type UsageEvent, type UsageScope, type UsageTotals, type WasteRow,
@@ -83,6 +85,7 @@ function ProjectView({ projectId, range, scope }: { projectId: string; range: { 
         </div>
       </div>
 
+      <BalanceMeter projectId={projectId} variant="card" />
       <Tiles t={r.totals} extra={r.person ? { label: 'Whole project', value: tokensLabel(r.projectTotal.tokens), sub: `${tokensFull(r.projectTotal.tokens)} tokens` } : !manager ? { label: 'You', value: tokensLabel(r.you.tokens), sub: 'of the project total' } : undefined} />
       <Days rows={fillDays(r.range, r.byDay)} />
 
@@ -200,6 +203,7 @@ function OrgView({ range, scope, onOpenProject }: { range: { from: string; to: s
           {tokensFull(r.unattributed.tokens)} tokens in {calls(r.unattributed.calls)} have no project or person recorded. Every call should have both; ask your developers to look at calls logged as “UNATTRIBUTED”.
         </div>
       )}
+      <PoolsPanel />
       <Tiles t={r.totals} />
       <Days rows={fillDays(r.range, r.byDay)} />
       <Panel title="Projects" hint="Open a project to see who spent it" testid="v2-usage-projects">

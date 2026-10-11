@@ -107,6 +107,9 @@ class Settings(BaseSettings):
     BEDROCK_RECON_IDENTITY_FILTER: str = ""
     BEDROCK_REGION: str = ""
 
+    # Token pools (docs/token-governance.md): where a low or empty balance is also announced (a Slack or Teams incoming-webhook URL; receives {"text": ...}).
+    TOKEN_ALERT_WEBHOOK_URL: str = ""
+
     CONTEXT_TOKEN_THRESHOLD: int = 4_000
     # Max OUTPUT tokens for a phase agent's structured generation (D-95). The
     # built-in phases (esp. Solution Architect) emit several large artifacts in one

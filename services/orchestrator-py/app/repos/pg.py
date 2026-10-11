@@ -245,6 +245,8 @@ class Database:
             if not exists:
                 return False
             await conn.execute("DELETE FROM llm_traces WHERE project_id=$1", project_id)
+            # Its token pool, allocations and monthly top-ups (no FK: the pool id is the project id). The usage LEDGER is kept: it is finance history.
+            await conn.execute("DELETE FROM token_pools WHERE id=$1 AND scope_type='project'", project_id)
             # The project's retrieval corpus (approved artefacts, uploaded code): scope = project id, no FK.
             await conn.execute("DELETE FROM kb_documents WHERE scope=$1", project_id)
             await conn.execute("DELETE FROM projects WHERE id=$1", project_id)
@@ -1317,18 +1319,22 @@ class Database:
             request_body, response_body,
         )
 
-    async def insert_usage_events(self, rows: list[dict[str, Any]]) -> None:
-        """Token ledger (docs/token-governance.md): append one row per provider attempt."""
+    async def insert_usage_events(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Token ledger (docs/token-governance.md): append one row per provider attempt, and count the billable tokens against the
+        metered token pools in the same transaction. Returns the new state of every pool that changed."""
         assert self.pool
+        from .pool_repo import apply_consumption
         cols = ("id", "request_id", "attempt_no", "provider", "model", "region", "provider_request_id",
                 "project_id", "stage", "user_id", "actor_type", "activity", "tag", "agent_id", "run_id",
                 "input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens",
                 "status", "error_class", "stop_reason", "latency_ms", "estimated", "billable")
         marks = ",".join(f"${i + 1}" for i in range(len(cols)))
-        await self.pool.executemany(
-            f"INSERT INTO llm_usage_events ({','.join(cols)}) VALUES ({marks})",
-            [tuple(r.get(c) for c in cols) for r in rows],
-        )
+        async with self.pool.acquire() as conn, conn.transaction():
+            await conn.executemany(
+                f"INSERT INTO llm_usage_events ({','.join(cols)}) VALUES ({marks})",
+                [tuple(r.get(c) for c in cols) for r in rows],
+            )
+            return await apply_consumption(conn, rows)
 
     async def get_trace(self, trace_id: str) -> dict | None:
         """One trace row with the full request/response bodies (debug drill-down, D-104)."""

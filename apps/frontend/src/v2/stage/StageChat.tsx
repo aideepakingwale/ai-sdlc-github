@@ -17,6 +17,7 @@ import QualityCards, { useFeedback } from './QualityCards';
 import RuleAdviceCard from './RuleAdviceCard';
 import StageAgentsStrip from './StageAgentsStrip';
 import { stageMode, type StageMode } from './stageMode';
+import BalanceMeter from '../usage/BalanceMeter';
 
 const fmtTime = (iso: string): string => {
   const d = new Date(iso);
@@ -412,7 +413,7 @@ export default function StageChat(props: StageControllerProps & { onOpenPipeline
         </div>
       </div>
       <div className="shrink-0 border-t border-slate-200 bg-slate-50 px-4 pb-4 pt-3">
-        <div className="mx-auto flex max-w-[760px] flex-col gap-3">{dock}{composerBox}</div>
+        <div className="mx-auto flex max-w-[760px] flex-col gap-3">{dock}<BalanceMeter projectId={projectId} />{composerBox}</div>
       </div>
     </div>
   );
