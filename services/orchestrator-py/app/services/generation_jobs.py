@@ -53,6 +53,7 @@ class GenerationJobs:
         self._redis = redis
         self._runner = runner
         self._workers: list[asyncio.Task[None]] = []
+        self.gate: Any = None          # the token gate (phase 4), set after construction
 
     # ---- keys -----------------------------------------------------------------
     @staticmethod
@@ -111,7 +112,7 @@ class GenerationJobs:
             try:
                 await self._redis.delete(self._lock_key(*key))
                 await self._redis.set(f"sdlc:resume:{key[0]}:{key[1]}", "1", ex=3600)
-                await self.enqueue(key[0], key[1], row.get("started_by"))
+                await self.enqueue(key[0], key[1], row.get("started_by"), check=False)
                 log.info("resuming interrupted generation %s phase %s", *key)
             except Exception:  # noqa: BLE001 — never block boot
                 log.exception("could not resume generation %s", key)
@@ -124,9 +125,13 @@ class GenerationJobs:
         await self._redis.expire(key, _PROGRESS_TTL)
 
     # ---- enqueue --------------------------------------------------------------
-    async def enqueue(self, project_id: str, phase: int, started_by: str | None) -> dict[str, Any]:
+    async def enqueue(self, project_id: str, phase: int, started_by: str | None, check: bool = True) -> dict[str, Any]:
         """Record a queued job, push it onto the queue and return immediately. If a
-        job for this stage is already active, returns that job with alreadyRunning."""
+        job for this stage is already active, returns that job with alreadyRunning.
+        `check` is the token gate (phase 4): a new stage run is refused while the project's or the organisation's tokens are used up.
+        Resuming an interrupted run (boot recovery) is not a new task, so it passes check=False."""
+        if check and self.gate is not None:
+            await self.gate.admit(project_id=project_id, user_id=usage_context.current().user_id, entry=f"enqueue:phase{phase}")
         lock = self._lock_key(project_id, phase)
         acquired = await self._redis.set(lock, "1", nx=True, ex=_LOCK_TTL)
         if not acquired:
@@ -209,6 +214,9 @@ class GenerationJobs:
         # email); the previous job's user must not leak into this one.
         usage_context.reset(user_id=await self._user_id_for(actor), project_id=project_id, stage=phase,
                             run_id=job_id, actor_type="job")
+        # The run was admitted when it was queued: it finishes even if the balance reaches zero meanwhile (and has its safety ceiling).
+        if self.gate is not None:
+            await self.gate.admit_started(project_id)
         pkey = self._progress_key(project_id, phase)
         queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
 

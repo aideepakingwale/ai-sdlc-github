@@ -14,6 +14,9 @@ ERROR_STATUS: dict[str, int] = {
     "PROVIDER_EXHAUSTED": 503,
     "TOOL_ERROR": 502,
     "BUILD_LOOP_ESCALATED": 409,
+    "TOKENS_EXHAUSTED": 402,       # the project's (or the organisation's) tokens are used up: new work does not start
+    "TOKENS_UNAVAILABLE": 503,     # the token balance could not be read: fail closed
+    "TASK_TOKEN_CEILING": 409,     # one task used its safety ceiling and was stopped
     "INTERNAL": 500,
 }
 

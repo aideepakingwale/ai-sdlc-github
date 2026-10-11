@@ -247,6 +247,8 @@ class Database:
             await conn.execute("DELETE FROM llm_traces WHERE project_id=$1", project_id)
             # Its token pool, allocations and monthly top-ups (no FK: the pool id is the project id). The usage LEDGER is kept: it is finance history.
             await conn.execute("DELETE FROM token_pools WHERE id=$1 AND scope_type='project'", project_id)
+            await conn.execute("DELETE FROM token_requests WHERE project_id=$1", project_id)
+            await conn.execute("DELETE FROM token_gate_blocks WHERE project_id=$1", project_id)
             # The project's retrieval corpus (approved artefacts, uploaded code): scope = project id, no FK.
             await conn.execute("DELETE FROM kb_documents WHERE scope=$1", project_id)
             await conn.execute("DELETE FROM projects WHERE id=$1", project_id)

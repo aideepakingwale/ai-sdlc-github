@@ -1,7 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
-import { api } from '../../api/client';
-import { balanceLine, orgNote, STATE_LABEL, STATE_TONE, usedShare, type ProjectPool } from '../../lib/pools';
+import { api, type TokensEvent } from '../../api/client';
+import { balanceLine, isBlocked, orgNote, signedTokens, STATE_LABEL, STATE_TONE, usedShare, type ProjectPool } from '../../lib/pools';
 import { Pill } from '../bits';
+import { openTokensDialog } from './TokensDialog';
 
 const BAR: Record<string, string> = { green: 'bg-brand-500', slate: 'bg-slate-300', amber: 'bg-amber-500', red: 'bg-red-500' };
 
@@ -12,6 +13,16 @@ export function useProjectPool(projectId: string | null) {
     queryKey: ['project-pool', projectId], enabled: Boolean(projectId), refetchInterval: 60_000, staleTime: 15_000,
     queryFn: () => api.get<ProjectPool>(`/api/projects/${projectId}/token-pool`),
   });
+}
+
+/** The refusal a person would get, built from the balance they are looking at (so the dialog is the same wherever it is opened from). */
+function blockedEvent(p: ProjectPool): TokensEvent {
+  const project = p.state === 'empty' || p.state === 'overdrawn';
+  return {
+    code: 'TOKENS_EXHAUSTED',
+    message: project ? `This project has used all of its tokens (${signedTokens(p.balance ?? 0)} left), so new work can't start.` : "The organisation has used all of its tokens, so new work can't start in any project.",
+    details: { pool: project ? 'project' : 'organisation', projectId: p.projectId, canRequest: true },
+  };
 }
 
 export default function BalanceMeter({ projectId, variant = 'inline' }: { projectId: string; variant?: 'inline' | 'card' }) {
@@ -33,6 +44,12 @@ export default function BalanceMeter({ projectId, variant = 'inline' }: { projec
           </>
         )}
         {note && <span className="font-medium text-amber-700" data-testid="v2-balance-org">{note}</span>}
+        {isBlocked(p) && (
+          <>
+            <span className="font-medium text-red-700" data-testid="v2-balance-blocked">New work is paused.</span>
+            <button type="button" className="text-brand-600 underline" data-testid="v2-balance-request" onClick={() => openTokensDialog(blockedEvent(p))}>Ask for more tokens</button>
+          </>
+        )}
       </div>
     );
   }
@@ -51,6 +68,7 @@ export default function BalanceMeter({ projectId, variant = 'inline' }: { projec
         </>
       )}
       {note && <p className="mt-2 text-sm font-medium text-amber-700">{note}</p>}
+      {isBlocked(p) && <p className="mt-2 text-sm font-medium text-red-700">New work is paused until tokens are added.</p>}
     </div>
   );
 }

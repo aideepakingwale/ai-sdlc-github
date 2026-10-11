@@ -157,7 +157,7 @@ Bedrock's own account quotas (tokens and requests per minute) are what really th
 | 1. Reporting (**built**) | Rollup, project and organisation views and API, per-person breakdown inside a project, CSV, waste view; MindDesigner Usage moves onto the ledger. | M |
 | 2. Reconcile (**built**) | Invocation logging, nightly drift check, application inference profiles with tags. | S/M |
 | 3. Pools and allocation (**built**) | `token_pools` and `token_grants`, admin allocation console, balance meter, thresholds and notifications; **recording only** (the balance can go negative and nothing is blocked), so balances can be set sensibly from real consumption. | M |
-| 4. The gate | Block new tasks at zero or below, fail-closed, "Request tokens", per-task safety ceiling, retire `agent_usage` limits. | M |
+| 4. The gate (**built**) | Block new tasks at zero or below, fail-closed, "Request tokens", per-task safety ceiling, retire `agent_usage` limits. | M |
 | 5. Hardening | Rate governor, retention jobs, pseudonymised exports. | S |
 
 Each phase ships on its own; phase 0 alone fixes the under-reporting and the attribution gap. Turning the gate on (phase 4) only after phase 3 has run for a while avoids blocking people on guessed numbers.
@@ -290,3 +290,31 @@ Nothing is blocked yet. This phase makes the balance real so that phase 4 can en
 **Decisions made while building it** (say if any is wrong): only administrators allocate (project managers see the balance and can ask); alert thresholds are shares of the *latest* allocation; the forecast uses the last 7 days' use; a take-back is a negative allocation with a reason.
 
 **Not in this phase:** blocking at zero, the "Request tokens" button, the per-task safety ceiling, and retiring the old custom-agent limits (all phase 4). Open question for phase 4: building an agent for the organisation's library happens outside any project, so which pool pays for its audit and test calls (the author picks a project, or the organisation pool)?
+
+## 17. Phase 4, as built (the gate)
+
+**The rule** (`app/services/token_gate.py`): when a metered pool's balance is zero or below, **new work does not start**. The pools that count are the project's and the organisation's: either being empty refuses the work. Work already running finishes and may take the balance below zero. A pool nobody has allocated tokens to is unlimited and never blocks.
+
+**What is refused, and what is not.** Refused with a clear message (HTTP 402, `TOKENS_EXHAUSTED`): starting a stage run (including re-run, regenerate and re-run one artefact), chat, the code assistant, running a skill, rule drafting and rule checks, the stack advisor, and every MindDesigner action that calls the model (audit, fix, test, draft, compare, run). Still open: reading everything, reports, reviewing and approving finished work, saving a plan or answers (the model-backed planning that follows is simply not run), uploading files, and asking for more tokens. If you find a path that starts model work without being refused, that is a bug: see "the safety net" below.
+
+**Where it is checked.**
+
+* **At the entry point** (HTTP routes through the `require_tokens` dependency; the job queue when a run is queued): one check when the task starts, so the person gets a clear refusal before anything happens and everything the task fans out into is covered by that one admission.
+* **At every model call, as a safety net** (`LlmClient`): a call from a task nobody admitted is admitted, or refused, on its first call; a task admitted for one project is checked again if it moves to another (a chat names its project in the body, an agent belongs to a project). A queued run was admitted when it was queued and is not refused when a worker picks it up.
+* **Fail closed:** the balance is read from Postgres at that moment (no cache to go stale). If it cannot be read the answer is `TOKENS_UNAVAILABLE` (503) and nothing starts. There is no "open" mode on the gate.
+
+**The per-task safety ceiling.** One task (a stage run, an agent run, a request) that has used `TOKEN_TASK_CEILING` provider tokens (default 3,000,000; 0 turns it off; only applied when a pool it draws from is metered) stops at its next model call with `TASK_TOKEN_CEILING`: what it finished is kept. It bounds how far a runaway loop can overdraw. The figure is static: tune it to your largest legitimate stage run; a median-based ceiling needs real usage history first.
+
+**Modes.** `TOKEN_GATE_MODE`: `enforce` (default), `observe` (records what would have been refused and lets it through: a safe way to see the effect on real use first), `off`. Every refusal is recorded (`token_gate_blocks`) with who, where and the balance; the allocation console shows how many starts were refused per project in the last 7 days.
+
+**Asking for more.** A refusal opens a dialog anywhere in the app (the API client announces it): the reason, what still works, and an *Ask for more tokens* form. A request notifies the project (the bell, and the webhook if set) and appears in the administrators' allocation console with *Allocate* and *Dismiss*; allocating enough to bring the balance above zero marks it granted. One open request per person per project. The balance line beside the composer says "New work is paused" with the same button.
+
+**Work with no project.** Work that has no project (building an agent for the organisation's library with no project open) is charged to the organisation's pool and checked only against it. This was the open question from phase 1; it is the least surprising default and easy to change if you would rather force the author to pick a project.
+
+**Retired:** the custom-agent monthly budget (`PUT /api/projects/{id}/agent-limits`, its form, its check). Agents draw from the project's tokens like everything else; an agent's own per-run cap stays as a per-run ceiling. Existing `agent_project_limits` rows are ignored (the table is left in place, unused).
+
+**Known limits.**
+
+* Calls that reach the model without a project in their context are checked against the organisation pool only; the web app sends the open project on every request, but a script calling an API with no project (and no project in the path or body) is charged to the organisation, not to a project. Put the project in the URL, or send `X-Project-Id`.
+* A swallowed error: some internal paths catch every exception and fall back (the stage planner falls back to a heuristic plan). A refusal inside such a path means that step runs without the model and spends nothing, rather than showing the dialog. The entry points above refuse before that happens for work a person starts.
+* The classic (non-v2) web UI does not show the out-of-tokens dialog; it shows the API's error message.

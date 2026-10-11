@@ -98,6 +98,9 @@ class TokenPoolService:
                        "reference_tokens": p["reference_tokens"], "metered_since": p["metered_since"]} if pool else None, per_day, None)
             projects.append({"projectId": p["project_id"], "name": p["name"], "used30d": p["used_30d"], **v})
         carved = await self._repo.allocated_to_projects()
+        blocks = await self._repo.blocks_by_project()
+        for p in projects:
+            p["blocked7d"] = blocks.get(p["projectId"], 0)
         return {"organisation": org, "projects": projects, "allocatedToProjects": carved,
                 "unallocated": (org_row["allocated_tokens"] - carved) if org_row and org_row["metered"] else None,
                 "overAllocated": bool(org_row and org_row["metered"] and carved > org_row["allocated_tokens"])}
@@ -133,6 +136,8 @@ class TokenPoolService:
                                        level_for=level_for, schedule_id=sid, now=now)
         log.info("token allocation: %s %s %+d (%s) by %s", scope_type, scope_id, tokens, kind, user.email)
         out = {"pool": _view(state, await self._repo.burn_per_day(pid), await self._monthly(pid))}
+        if scope_type == "project" and state["balance_tokens"] > 0:
+            await self._repo.resolve_project_requests(scope_id, "granted", user.id)       # whoever asked now has tokens
         if scope_type == "project":
             org = await self._repo.get(ORG)
             carved = await self._repo.allocated_to_projects()
@@ -168,6 +173,42 @@ class TokenPoolService:
                                    count_from="now", level_for=level_for, schedule_id=s["id"], now=now)
             n += 1
         return n
+
+    # ------------------------------------------------------------------ asking for more
+    async def request_tokens(self, user: UserPublic, project_id: str, note: str = "") -> dict[str, Any]:
+        """A person on a project asks the administrators for more tokens. One open request per person per project; the project's members are told."""
+        await self._authz.assert_project_access(project_id, user)
+        name = await self._repo.project_name(project_id)
+        if name is None:
+            raise SdlcError("NOT_FOUND", "Project not found")
+        existing = await self._repo.open_request(project_id, user.id)
+        if existing:
+            return {"requested": True, "already": True}
+        note = (note or "").strip()[:300]
+        await self._repo.add_request(project_id, user.id, note or None)
+        who = user.displayName or user.email
+        body = f"{who} asked for more tokens." + (f" “{note}”" if note else "") + " An administrator can allocate them."
+        try:
+            await self._db.insert_notification(project_id=project_id, phase=None, kind="token_balance", title=f"{name} asked for more tokens", body=body, roles=[])
+        except Exception:  # noqa: BLE001
+            log.warning("token request notification failed", exc_info=True)
+        await self._post_webhook(f"{name}: {body}")
+        log.info("token request: project %s by %s", project_id, user.email)
+        return {"requested": True, "already": False}
+
+    async def requests(self, user: UserPublic) -> list[dict[str, Any]]:
+        self._admin(user)
+        out = []
+        for r in await self._repo.open_requests():
+            pool = await self._repo.get(r["project_id"])
+            out.append({"id": r["id"], "projectId": r["project_id"], "project": r["project_name"], "by": r["display_name"] or r["email"] or "", "note": r["note"] or "",
+                        "at": r["created_at"].isoformat(), "balance": pool["balance_tokens"] if pool and pool["metered"] else None})
+        return out
+
+    async def dismiss_request(self, user: UserPublic, rid: str) -> None:
+        self._admin(user)
+        if not await self._repo.resolve_request(rid, "dismissed", user.id):
+            raise SdlcError("NOT_FOUND", "No open request with that id")
 
     # ------------------------------------------------------------------ alerts
     async def after_consumption(self, states: list[dict[str, Any]]) -> None:

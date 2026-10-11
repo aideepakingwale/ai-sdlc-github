@@ -144,6 +144,8 @@ class LlmClient:
         # Token ledger (docs/token-governance.md): set post-construction; every provider attempt
         # becomes one row, failures included. None in tests that do not need it.
         self.ledger: Any = None
+        # Token gate (phase 4): checked before every model call; a call from a task nobody admitted is admitted (or refused) here.
+        self.gate: Any = None
 
     async def _debug_enabled(self) -> bool:
         """Is request/response capture on? Env baseline OR the runtime setting in
@@ -179,10 +181,12 @@ class LlmClient:
     ) -> None:
         if self.ledger is None or not usage_log:
             return
-        await self.ledger.record(
+        rows = await self.ledger.record(
             request_id=request_id, usage_log=usage_log, tag=tag, activity=activity,
             latency_ms=int((time.perf_counter() - started) * 1000), truncated=truncated,
         )
+        if self.gate is not None and rows:
+            self.gate.note_spend(rows)
 
     async def providers(self) -> dict[str, Any]:
         """Fetch the gateway's live provider roster (D-68): mode, effectiveMock and
@@ -284,6 +288,8 @@ class LlmClient:
         tier: str = "auto",
         model: str | None = None,
     ) -> LlmResult:
+        if self.gate is not None:
+            await self.gate.before_call(activity)
         started = time.perf_counter()
         request_id = uuid.uuid4().hex
 
@@ -385,6 +391,8 @@ class LlmClient:
         tier: str = "auto",
         model: str | None = None,
     ) -> LlmResult:
+        if self.gate is not None:
+            await self.gate.before_call(activity)
         started = time.perf_counter()
         request_id = uuid.uuid4().hex
         debug = await self._debug_enabled()

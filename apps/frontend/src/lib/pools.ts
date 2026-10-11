@@ -13,7 +13,7 @@ export interface ProjectPool extends PoolView {
 }
 export interface PoolsOverview {
   organisation: PoolView;
-  projects: Array<PoolView & { projectId: string; name: string; used30d: number }>;
+  projects: Array<PoolView & { projectId: string; name: string; used30d: number; blocked7d: number }>;
   allocatedToProjects: number; unallocated: number | null; overAllocated: boolean;
 }
 export interface PoolDetail {
@@ -64,4 +64,11 @@ const ATTENTION: Record<PoolState, number> = { overdrawn: 0, empty: 1, critical:
 /** Projects needing attention first (overdrawn, then empty, critical, low), then healthy ones, then those with no allocation, busiest first within each. */
 export function sortPools<T extends { state: PoolState; used30d: number; name: string }>(rows: T[]): T[] {
   return [...rows].sort((a, b) => ATTENTION[a.state] - ATTENTION[b.state] || b.used30d - a.used30d || a.name.localeCompare(b.name));
+}
+
+export interface TokenRequest { id: string; projectId: string; project: string; by: string; note: string; at: string; balance: number | null }
+
+/** True when the project's balance (or the organisation's) means new work will be refused. */
+export function isBlocked(p: Pick<ProjectPool, 'state' | 'organisation'>): boolean {
+  return p.state === 'empty' || p.state === 'overdrawn' || p.organisation.state === 'empty' || p.organisation.state === 'overdrawn';
 }

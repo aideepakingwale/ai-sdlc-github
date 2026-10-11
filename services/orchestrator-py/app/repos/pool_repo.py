@@ -171,3 +171,44 @@ class PoolRepo:
     async def claim_alert(self, pid: str, level: int) -> bool:
         """Announce `level` once: true for the caller that moved the pool up to it."""
         return (await self._p.execute("UPDATE token_pools SET alert_level=$2 WHERE id=$1 AND alert_level < $2", pid, level)).endswith("1")
+
+
+    # ------------------------------------------------------------------ the gate
+    async def gate_state(self, project_id: str | None) -> dict[str, dict[str, Any] | None]:
+        """The pools that decide whether work may start: the project's (if any) and the organisation's. A missing row means unmetered."""
+        ids = [ORG] + ([project_id] if project_id else [])
+        rows = await self._p.fetch("SELECT id, metered, allocated_tokens, consumed_tokens, balance_tokens FROM token_pools WHERE id = ANY($1::text[])", ids)
+        by = {r["id"]: dict(r) for r in rows}
+        return {"org": by.get(ORG), "project": by.get(project_id) if project_id else None}
+
+    async def record_block(self, *, project_id: str | None, user_id: str | None, pool: str, balance: int, entry: str, enforced: bool) -> None:
+        await self._p.execute("INSERT INTO token_gate_blocks (project_id, user_id, pool, balance, entry, enforced) VALUES ($1,$2,$3,$4,$5,$6)",
+                              project_id, user_id, pool, balance, entry[:120], enforced)
+
+    async def blocks_by_project(self, days: int = 7) -> dict[str, int]:
+        rows = await self._p.fetch(
+            "SELECT project_id, count(*)::int AS n FROM token_gate_blocks WHERE ts >= now() - make_interval(days => $1) AND enforced AND project_id IS NOT NULL GROUP BY 1", days)
+        return {r["project_id"]: r["n"] for r in rows}
+
+    # ------------------------------------------------------------------ requests for more tokens
+    async def open_request(self, project_id: str, user_id: str) -> dict[str, Any] | None:
+        r = await self._p.fetchrow("SELECT * FROM token_requests WHERE project_id=$1 AND requested_by=$2 AND status='open'", project_id, user_id)
+        return dict(r) if r else None
+
+    async def add_request(self, project_id: str, user_id: str, note: str | None) -> dict[str, Any]:
+        r = await self._p.fetchrow("INSERT INTO token_requests (id, project_id, requested_by, note) VALUES ($1,$2,$3,$4) RETURNING *", str(uuid.uuid4()), project_id, user_id, note)
+        return dict(r)
+
+    async def open_requests(self) -> list[dict[str, Any]]:
+        rows = await self._p.fetch(
+            """SELECT r.id, r.project_id, p.name AS project_name, r.requested_by, u.display_name, u.email, r.note, r.created_at
+               FROM token_requests r JOIN projects p ON p.id = r.project_id LEFT JOIN users u ON u.id = r.requested_by
+               WHERE r.status = 'open' ORDER BY r.created_at""")
+        return [dict(r) for r in rows]
+
+    async def resolve_request(self, rid: str, status: str, by: str) -> bool:
+        return (await self._p.execute("UPDATE token_requests SET status=$2, resolved_by=$3, resolved_at=now() WHERE id=$1 AND status='open'", rid, status, by)).endswith("1")
+
+    async def resolve_project_requests(self, project_id: str, status: str, by: str) -> int:
+        out = await self._p.execute("UPDATE token_requests SET status=$2, resolved_by=$3, resolved_at=now() WHERE project_id=$1 AND status='open'", project_id, status, by)
+        return int(out.split()[-1])

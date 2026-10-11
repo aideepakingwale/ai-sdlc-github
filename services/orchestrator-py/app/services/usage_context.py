@@ -33,6 +33,15 @@ ACTIVITIES: frozenset[str] = frozenset({
 NON_BILLABLE_PROVIDERS: frozenset[str] = frozenset({"mock", "local"})
 
 
+class TaskBudget:
+    """The tokens one task (a stage run, an agent run, a request) has used so far, shared by everything it spawns: a runaway task stops at
+    its ceiling at the next call boundary instead of overdrawing without limit."""
+
+    def __init__(self, ceiling: int) -> None:
+        self.ceiling = ceiling
+        self.spent = 0
+
+
 @dataclass(frozen=True)
 class UsageContext:
     user_id: str | None = None
@@ -42,6 +51,10 @@ class UsageContext:
     agent_id: str | None = None
     actor_type: str = "user"          # user | job | system
     activity: str | None = None       # optional override of the call site's activity
+    # Token gate: True once this task has been admitted (its balance was checked at its start). Calls inside an admitted task are not
+    # re-checked, so the activity in flight finishes even if it takes the balance below zero.
+    admitted: bool = False
+    task: TaskBudget | None = None
 
 
 _ctx: ContextVar[UsageContext | None] = ContextVar("usage_context", default=None)
@@ -51,9 +64,17 @@ def current() -> UsageContext:
     return _ctx.get() or UsageContext()
 
 
+def _admission_follows_project(changes: dict[str, Any]) -> dict[str, Any]:
+    """A task is admitted against ONE project's balance. Moving to another project (a request that named it in its body, an agent that
+    belongs to a different project) withdraws the admission, so the next model call is checked against the right balance."""
+    if "project_id" in changes and "admitted" not in changes and changes["project_id"] != current().project_id:
+        return {**changes, "admitted": False, "task": None}
+    return changes
+
+
 def update(**changes: Any) -> None:
     """Change fields of the current context for the rest of this task."""
-    _ctx.set(replace(current(), **changes))
+    _ctx.set(replace(current(), **_admission_follows_project(changes)))
 
 
 def reset(**fields: Any) -> None:
@@ -64,7 +85,7 @@ def reset(**fields: Any) -> None:
 @contextmanager
 def scope(**changes: Any) -> Iterator[UsageContext]:
     """Change the context for a block, then restore it."""
-    token = _ctx.set(replace(current(), **changes))
+    token = _ctx.set(replace(current(), **_admission_follows_project(changes)))
     try:
         yield _ctx.get()  # type: ignore[misc]
     finally:

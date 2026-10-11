@@ -18,6 +18,11 @@ async def chat(
     user: UserPublic = Depends(current_user),
     container: Container = Depends(get_container),
 ) -> StreamingResponse:
+    # The project is in the body, not the URL: ask the token gate about THAT project before anything streams, so a refusal is a clear 402
+    # (and the generation does not start) rather than an error halfway through a stream.
+    if container.token_gate is not None:
+        await container.token_gate.admit(project_id=body.projectId, user_id=user.id, entry="chat")
+
     async def handler(emit):  # noqa: ANN001
         await container.chat.handle(
             user=user, project_id=body.projectId, message=body.message, emit=emit,

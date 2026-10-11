@@ -48,3 +48,24 @@ async def recompute(scope: str, scope_id: str, user: UserPublic = Depends(curren
 async def stop_schedule(schedule_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     await c.token_pools.stop_schedule(user, schedule_id)
     return {"stopped": True}
+
+
+class RequestBody(BaseModel):
+    note: str = ""
+
+
+@router.post("/api/projects/{project_id}/token-requests")
+async def request_tokens(project_id: str, body: RequestBody, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    """Ask the administrators for more tokens (stays available when the project's tokens are used up)."""
+    return await c.token_pools.request_tokens(user, project_id, body.note)
+
+
+@router.get("/api/token-requests")
+async def token_requests(user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    return {"requests": await c.token_pools.requests(user)}
+
+
+@router.post("/api/token-requests/{request_id}/dismiss")
+async def dismiss_token_request(request_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    await c.token_pools.dismiss_request(user, request_id)
+    return {"dismissed": True}

@@ -11,7 +11,7 @@ from ..domain.errors import SdlcError
 from ..domain.models import UserPublic
 from ..services.project_config import render_entry
 from ..services.tech_catalog import get_layers, get_tech_catalog
-from .deps import Container, current_user, get_container
+from .deps import Container, current_user, get_container, require_tokens
 
 router = APIRouter()
 
@@ -67,7 +67,7 @@ async def update_stack(project_id: str, body: StackUpdate, user: UserPublic = De
     return {"config": cfg, "summary": cfg["stack"]["summary"]}
 
 
-@router.post("/api/projects/{project_id}/config/stack/advise")
+@router.post("/api/projects/{project_id}/config/stack/advise", dependencies=[require_tokens("stack.advise")])
 async def advise_stack(project_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     """Re-run the stack advisor over the project's finished stages and its uploaded codebase."""
     await c.project_config.assert_can_edit(project_id, user)

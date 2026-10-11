@@ -44,6 +44,7 @@ from .repos.usage_repo import UsageRepo
 from .repos.recon_repo import ReconRepo
 from .services.bedrock_reconcile import BedrockReconciler, ReconcileScheduler, build_recon_source
 from .repos.pool_repo import PoolRepo
+from .services.token_gate import TokenGate
 from .services.token_pools import PoolScheduler, TokenPoolService
 from .services.usage_ledger import UsageLedger
 from .services.usage_reports import UsageReports
@@ -131,6 +132,9 @@ async def lifespan(app: FastAPI):
     token_pools = TokenPoolService(PoolRepo(db), authz, db, settings.TOKEN_ALERT_WEBHOOK_URL)
     llm.ledger = UsageLedger(db, token_pools)       # token ledger: one row per provider attempt (docs/token-governance.md)
     container.token_pools = token_pools
+    token_gate = TokenGate(PoolRepo(db), mode=settings.TOKEN_GATE_MODE, task_ceiling=settings.TOKEN_TASK_CEILING)
+    llm.gate = token_gate
+    container.token_gate = token_gate
     canon = CanonService(db, authz, audit)                      # D-38
     formworks = FormworkService(db, authz, audit, content, canon)
     memory = MemoryService(db, authz, audit)
@@ -239,6 +243,7 @@ async def lifespan(app: FastAPI):
             raise
 
     container.gen_jobs = GenerationJobs(db, redis, runner=_run_stage)
+    container.gen_jobs.gate = token_gate
     _reconciled = await container.gen_jobs.reconcile()
     if _reconciled:
         log.info("reconciled %s stale generation job(s) on boot", _reconciled)
@@ -293,7 +298,10 @@ app = FastAPI(title="DevMind Orchestrator", lifespan=lifespan, docs_url="/api/do
 
 @app.exception_handler(SdlcError)
 async def sdlc_error_handler(_request: Request, err: SdlcError) -> JSONResponse:
-    return JSONResponse(status_code=err.http_status, content={"error": {"code": err.code, "message": err.message}})
+    body: dict = {"code": err.code, "message": err.message}
+    if err.code in ("TOKENS_EXHAUSTED", "TASK_TOKEN_CEILING"):    # the web app offers "request tokens" from these; other errors keep their detail private
+        body["details"] = err.details
+    return JSONResponse(status_code=err.http_status, content={"error": body})
 
 
 @app.exception_handler(RequestValidationError)

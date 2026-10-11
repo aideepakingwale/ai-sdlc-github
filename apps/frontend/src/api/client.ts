@@ -5,8 +5,19 @@ class ApiError extends Error {
     readonly code: string,
     message: string,
     readonly status: number,
+    readonly details: Record<string, unknown> = {},
   ) {
     super(message);
+  }
+}
+
+/** Work was refused because tokens are used up (or a task hit its safety ceiling). Anything listening (the "out of tokens" dialog)
+ *  can explain it and offer to ask for more, wherever in the app the person was. */
+export const TOKENS_EVENT = 'devmind:tokens';
+export interface TokensEvent { code: string; message: string; details: { pool?: string; balance?: number; projectId?: string | null; canRequest?: boolean; ceiling?: number; spent?: number } }
+function announceTokens(code: string | undefined, message: string, details: Record<string, unknown> | undefined): void {
+  if ((code === 'TOKENS_EXHAUSTED' || code === 'TASK_TOKEN_CEILING') && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent<TokensEvent>(TOKENS_EVENT, { detail: { code, message, details: (details ?? {}) as TokensEvent['details'] } }));
   }
 }
 
@@ -27,7 +38,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { ...(init?.body && !isForm ? { 'content-type': 'application/json' } : {}), ...projectHeader() },
   });
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: { code?: string; message?: string } } | null;
+    const body = (await res.json().catch(() => null)) as { error?: { code?: string; message?: string; details?: Record<string, unknown> } } | null;
+    announceTokens(body?.error?.code, body?.error?.message ?? '', body?.error?.details);
     // Proxy-level failures come back as HTML, not our JSON envelope - say what they mean.
     const proxyMessage: Record<number, string> = {
       413: 'That file is larger than the server accepts.',
@@ -38,6 +50,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       body?.error?.code ?? 'HTTP_ERROR',
       body?.error?.message ?? proxyMessage[res.status] ?? `Request failed (${res.status})`,
       res.status,
+      body?.error?.details,
     );
   }
   return (await res.json()) as T;
@@ -74,7 +87,8 @@ async function streamSse<E = StreamEvent>(
     signal,
   });
   if (!res.ok || !res.body) {
-    const errBody = (await res.json().catch(() => null)) as { error?: { code?: string; message?: string } } | null;
+    const errBody = (await res.json().catch(() => null)) as { error?: { code?: string; message?: string; details?: Record<string, unknown> } } | null;
+    announceTokens(errBody?.error?.code, errBody?.error?.message ?? '', errBody?.error?.details);
     onEvent({ type: 'error', code: errBody?.error?.code ?? 'HTTP_ERROR', message: errBody?.error?.message ?? `Request failed (${res.status})` } as E);
     return;
   }

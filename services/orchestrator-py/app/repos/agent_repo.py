@@ -184,17 +184,6 @@ class AgentRepo:
             "FROM agent_usage WHERE project_id=$1 AND created_at >= $2 GROUP BY def_id", project_id, since)
         return [dict(r) for r in rows]
 
-    async def get_limit(self, project_id: str) -> int | None:
-        return await self._p.fetchval("SELECT monthly_tokens FROM agent_project_limits WHERE project_id=$1", project_id)
-
-    async def set_limit(self, project_id: str, monthly_tokens: int | None, user_id: str) -> None:
-        if monthly_tokens is None:
-            await self._p.execute("DELETE FROM agent_project_limits WHERE project_id=$1", project_id)
-            return
-        await self._p.execute(
-            "INSERT INTO agent_project_limits (project_id, monthly_tokens, updated_by) VALUES ($1,$2,$3) "
-            "ON CONFLICT (project_id) DO UPDATE SET monthly_tokens=$2, updated_by=$3, updated_at=now()", project_id, int(monthly_tokens), user_id)
-
     # ------------------------------------------------------------ runs a person started (migration 0049)
     KEEP_RUNS = 50
 

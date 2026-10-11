@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from ..domain.models import UserPublic
-from .deps import Container, current_user, get_container
+from .deps import Container, current_user, get_container, require_tokens
 
 router = APIRouter()
 
@@ -66,9 +66,6 @@ class CompareBody(BaseModel):
     versionA: int | None = None
     versionB: int | None = None
 
-
-class LimitBody(BaseModel):
-    monthlyTokens: int | None = None
 
 
 class RunBody(BaseModel):
@@ -159,13 +156,13 @@ async def save_draft(def_id: str, body: DraftBody, user: UserPublic = Depends(cu
     return await c.agent_defs.save_draft(user, def_id, name=body.name, body=body.body)
 
 
-@router.post("/api/agent-defs/{def_id}/audit")
+@router.post("/api/agent-defs/{def_id}/audit", dependencies=[require_tokens("agent.audit")])
 async def run_audit(def_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     report = await c.agent_defs.run_audit(user, def_id)
     return {"audit": report, **await c.agent_defs.detail(user, def_id)}
 
 
-@router.post("/api/agent-defs/{def_id}/audit/fix/{finding_id}")
+@router.post("/api/agent-defs/{def_id}/audit/fix/{finding_id}", dependencies=[require_tokens("agent.audit-fix")])
 async def apply_fix(def_id: str, finding_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     return await c.agent_defs.apply_fix(user, def_id, finding_id)
 
@@ -205,17 +202,17 @@ async def delete_def(def_id: str, user: UserPublic = Depends(current_user), c: C
     return await c.agent_defs.delete_unpublished(user, def_id)
 
 
-@router.post("/api/agent-defs/{def_id}/test")
+@router.post("/api/agent-defs/{def_id}/test", dependencies=[require_tokens("agent.test")])
 async def test_run(def_id: str, body: TestBody, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     return await c.agent_defs.run_test(user, def_id, body.inputs, body.version)
 
 
-@router.post("/api/agent-defs/{def_id}/draft-from-text")
+@router.post("/api/agent-defs/{def_id}/draft-from-text", dependencies=[require_tokens("agent.draft")])
 async def draft_from_text(def_id: str, body: DraftTextBody, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     return await c.agent_defs.draft_from_text(user, def_id, body.text)
 
 
-@router.post("/api/agent-defs/{def_id}/compare")
+@router.post("/api/agent-defs/{def_id}/compare", dependencies=[require_tokens("agent.compare")])
 async def compare(def_id: str, body: CompareBody, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     return await c.agent_defs.run_compare(user, def_id, body.versionA, body.versionB)
 
@@ -271,18 +268,13 @@ async def project_usage(project_id: str, user: UserPublic = Depends(current_user
     return await c.agent_defs.project_usage(user, project_id)
 
 
-@router.put("/api/projects/{project_id}/agent-limits")
-async def put_limit(project_id: str, body: LimitBody, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
-    return await c.agent_defs.set_limit(user, project_id, body.monthlyTokens)
-
-
 # ------------------------------------------------------------------ running on request: on its own, or inside a stage
 @router.get("/api/projects/{project_id}/agents/{def_id}/run-form")
 async def run_form(project_id: str, def_id: str, stage: str | None = None, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     return await c.agent_runs.form(user, project_id, def_id, stage)
 
 
-@router.post("/api/projects/{project_id}/agents/{def_id}/run")
+@router.post("/api/projects/{project_id}/agents/{def_id}/run", dependencies=[require_tokens("agent.run")])
 async def run_agent(project_id: str, def_id: str, body: RunBody, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     return await c.agent_runs.run(user, project_id, def_id, body.inputs, body.stageKey)
 

@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from fastapi import Cookie, Request
+from fastapi import Cookie, Depends, Request
 
 from ..auth.sessions import verify_session
 from ..config import Settings
@@ -51,6 +51,7 @@ class Container:
     pack_admin: Any = None      # the organisation's rule packs (create, import, export, hide, restore)
     rule_advisor: Any = None    # recommends rule packs from the project's profile
     agent_runs: Any = None      # a person running a custom agent on its own or inside a stage
+    token_gate: Any = None      # refuses new work while a pool is at zero or below
     token_pools: Any = None     # token pools: allocations and balances
     reconciler: Any = None      # nightly comparison of the token ledger with Bedrock's invocation logs
     usage_reports: Any = None   # token usage reports over the ledger
@@ -76,7 +77,7 @@ async def current_user(
     # Token ledger: every model call this request makes belongs to this person and, when one is open, to
     # their project (the dependency is async, so the context change carries into the endpoint and anything
     # it awaits or spawns).
-    usage_context.update(user_id=user.id, actor_type="user")
+    usage_context.reset(user_id=user.id, actor_type="user")     # a fresh context per request: nothing (not even "admitted") carries over from another
     project_id = request.path_params.get("project_id")   # the route checks access itself
     if not project_id:
         project_id = await _header_project(request, container, user)
@@ -108,3 +109,13 @@ async def _header_project(request: Request, container: "Container", user: UserPu
     if len(_PROJECT_OK) > 5000:
         _PROJECT_OK.clear()
     return pid
+
+
+def require_tokens(entry: str):
+    """Route dependency: refuse to START model work while the project's (or the organisation's) tokens are used up (docs/token-governance.md, phase 4).
+    The task is admitted once here, so what it spawns is not re-checked and the activity in flight finishes. Reading and approving stay open."""
+    async def dep(request: Request, user: UserPublic = Depends(current_user)) -> None:
+        gate = request.app.state.container.token_gate
+        if gate is not None:
+            await gate.admit(project_id=usage_context.current().project_id, user_id=user.id, entry=entry)
+    return Depends(dep)

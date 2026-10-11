@@ -867,11 +867,10 @@ test.describe('custom agents', () => {
     await expect(page.getByTestId('v2-compare-message')).toContainText('Version 2');
   });
 
-  test('a project sees what its agents spend, and a monthly budget stops further runs', async ({ page }) => {
+  test('a project sees what its agents spend', async ({ page }) => {
     await login(page, '/?ui=v2');
     const { id, name } = await newProject(page);
-    const created = await page.request.post('/api/agent-defs', { data: { kind: 'agent', name: 'Budget probe', scope: 'project', projectId: id } });
-    const defId = ((await created.json()) as { def: { id: string } }).def.id;
+    await page.request.post('/api/agent-defs', { data: { kind: 'agent', name: 'Spend probe', scope: 'project', projectId: id } });
     await page.reload();
     await openProject(page, name);
     await page.getByTestId('v2-nav-minddesigner').click();
@@ -881,21 +880,9 @@ test.describe('custom agents', () => {
     await page.getByTestId('v2-btab-engine').click();
     await expect(page.getByTestId('v2-def-usage')).toContainText('1 run');
     await page.getByTestId('v2-builder-back').click();
-
     await page.getByTestId('v2-agents-view-usage').click();
-    await expect(page.getByTestId('v2-usage-row')).toContainText('Budget probe');
-    await page.getByTestId('v2-usage-limit').fill('1');
-    await page.getByTestId('v2-usage-save').click();
-    await expect(page.getByTestId('v2-usage-exceeded')).toBeVisible();
-
-    const run = await page.request.post(`/api/agent-defs/${defId}/test`, { data: { inputs: { input_1: 'x' } } });
-    expect(run.ok()).toBeFalsy();
-    expect(JSON.stringify(await run.json())).toContain('monthly budget');
-    // lifting the limit lets it run again
-    await page.getByTestId('v2-usage-limit').fill('');
-    await page.getByTestId('v2-usage-save').click();
-    await expect(page.getByTestId('v2-usage-exceeded')).toHaveCount(0);
-    expect((await page.request.post(`/api/agent-defs/${defId}/test`, { data: { inputs: { input_1: 'x' } } })).ok()).toBeTruthy();
+    await expect(page.getByTestId('v2-usage-row')).toContainText('Spend probe');
+    await expect(page.getByTestId('v2-usage-limit')).toHaveCount(0);          // the monthly agent budget is retired: agents draw from the project's tokens
   });
 
   /** An approved agent in a project, made through the API: create, audit, accept the warnings, submit, and have a second person approve. */
@@ -1162,6 +1149,53 @@ test.describe('token usage', () => {
     await expect(page.getByTestId('v2-balance-line')).toContainText('tokens left');
     await page.getByTestId('v2-nav-usage').click();
     await expect(page.getByTestId('v2-balance-number')).toHaveText('1,500,000');
+  });
+
+  test('when a project is out of tokens new work is refused with a reason, a person can ask for more, and an allocation lets work start again', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    const d = (await (await page.request.post('/api/agent-defs', { data: { kind: 'agent', name: `Gate ${Date.now()}`, scope: 'project', projectId: id } })).json()) as { def: { id: string } };
+    const test = () => page.request.post(`/api/agent-defs/${d.def.id}/test`, { data: { inputs: { input_1: 'x' } }, headers: { 'x-project-id': id } });
+    expect((await test()).ok()).toBeTruthy();                                   // unlimited: nothing stops it
+
+    // allocate, then take everything back with a reason: the balance is zero
+    await page.request.post(`/api/token-pools/project/${id}/allocations`, { data: { tokens: 1000 } });
+    expect((await test()).ok()).toBeTruthy();                                   // 1000 left: allowed
+    await page.request.post(`/api/token-pools/project/${id}/allocations`, { data: { tokens: -1000, note: 'e2e: use it all' } });
+    const refused = await test();
+    expect(refused.status()).toBe(402);
+    const body = (await refused.json()) as { error: { code: string; message: string; details: { pool: string; projectId: string; canRequest: boolean } } };
+    expect(body.error.code).toBe('TOKENS_EXHAUSTED');
+    expect(body.error.details).toMatchObject({ pool: 'project', projectId: id, canRequest: true });
+    // reading and asking stay open
+    expect((await page.request.get(`/api/projects/${id}/token-pool`)).ok()).toBeTruthy();
+
+    // in the app: the balance line says work is paused, and trying to start something explains why and offers to ask
+    await page.reload();
+    await openProject(page, name);
+    await expect(page.getByTestId('v2-balance-blocked')).toBeVisible();
+    await page.getByTestId('v2-nav-minddesigner').click();
+    await page.getByTestId('v2-agent-open').click();
+    await page.getByTestId('v2-test-run').click();
+    const dialog = page.getByTestId('v2-tokens-dialog');
+    await expect(dialog).toBeVisible();
+    await expect(page.getByTestId('v2-tokens-message')).toContainText('used all of its tokens');
+    await page.getByTestId('v2-tokens-note').fill('Release on Friday');
+    await page.getByTestId('v2-tokens-ask').click();
+    await expect(page.getByTestId('v2-tokens-done')).toBeVisible();
+    await page.getByTestId('v2-tokens-close').click();
+
+    // an administrator sees the request and the refusals, and allocating clears the request
+    await page.getByTestId('v2-nav-orgusage').click();
+    await page.getByTestId('v2-pool-find').fill(name);
+    await expect(page.getByTestId('v2-pool-request')).toContainText(name);
+    await expect(page.getByTestId('v2-pool-request')).toContainText('Release on Friday');
+    await expect(page.getByTestId('v2-pool-row').filter({ hasText: name }).getByTestId('v2-pool-blocked')).toBeVisible();
+    await page.getByTestId('v2-pool-request').filter({ hasText: name }).getByTestId('v2-pool-request-allocate').click();
+    await page.getByTestId('v2-pool-amount').fill('500k');
+    await page.getByTestId('v2-pool-save').click();
+    await expect(page.getByTestId('v2-pool-request').filter({ hasText: name })).toHaveCount(0);
+    expect((await test()).ok()).toBeTruthy();                                   // work starts again
   });
 });
 

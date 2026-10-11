@@ -13,7 +13,7 @@ from ..domain.models import UserPublic, get_phase
 from ..services import rule_packs
 from ..services.formworks import suggest_mapping
 from ..services.stack import is_stack_owner, stack_of, stack_source
-from .deps import Container, current_user, get_container
+from .deps import Container, current_user, get_container, require_tokens
 
 router = APIRouter()
 
@@ -144,14 +144,14 @@ async def update_profile(project_id: str, body: ProfileEdit, user: UserPublic = 
     return await get_profile(project_id, user, c)
 
 
-@router.post("/api/projects/{project_id}/rules/draft")
+@router.post("/api/projects/{project_id}/rules/draft", dependencies=[require_tokens("rules.draft")])
 async def draft_rules(project_id: str, body: TextBody, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     """Propose rules from a standards document. Nothing is saved."""
     await c.authz.assert_project_access(project_id, user)
     return await c.rule_assist.draft(project_id, user, body.text)
 
 
-@router.post("/api/projects/{project_id}/rules/check")
+@router.post("/api/projects/{project_id}/rules/check", dependencies=[require_tokens("rules.check")])
 async def check_rule(project_id: str, body: dict, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     """Duplicates, contradictions and clashes with the pinned stack, for a rule about to be saved. Advice only."""
     await c.authz.assert_project_access(project_id, user)

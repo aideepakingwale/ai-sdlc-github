@@ -288,3 +288,43 @@ async def test_deleting_a_project_removes_its_pool_but_keeps_the_ledger(world):
     assert await w.db.pool.fetchval("SELECT count(*) FROM token_pools WHERE id=$1", w.p2) == 0
     assert await w.db.pool.fetchval("SELECT count(*) FROM token_schedules") == 0 and await w.db.pool.fetchval("SELECT count(*) FROM token_grants") == 0
     assert await w.db.pool.fetchval("SELECT count(*) FROM llm_usage_events WHERE project_id=$1", w.p2) == 1
+
+
+@needs_pg
+async def test_asking_for_more_tokens_tells_the_project_once_and_is_cleared_by_an_allocation(world):
+    w = world
+    await w.svc.allocate(ROOT, "project", w.p1, 100)
+    await w.spend(w.p1, 500)
+    r1 = await w.svc.request_tokens(ANN, w.p1, "Need it for the release")
+    r2 = await w.svc.request_tokens(ANN, w.p1, "again")                              # one open request per person
+    assert (r1["already"], r2["already"]) == (False, True)
+    note = await w.db.pool.fetchrow("SELECT title, body FROM notifications WHERE kind='token_balance' AND title LIKE '%asked%'")
+    assert note["title"] == "Alpha asked for more tokens" and "Need it for the release" in note["body"]
+    assert any("asked for more tokens" in h for h in w.hooks)
+    with pytest.raises(SdlcError):
+        await w.svc.request_tokens(EVE, w.p1, "not a member")
+    with pytest.raises(SdlcError):
+        await w.svc.requests(ANN)                                                      # administrators only
+    open_ = await w.svc.requests(ROOT)
+    assert [(r["project"], r["by"], r["note"], r["balance"]) for r in open_] == [("Alpha", "ANN", "Need it for the release", -400)]
+    await w.svc.allocate(ROOT, "project", w.p1, 100)                                   # still negative: the request stays open
+    assert len(await w.svc.requests(ROOT)) == 1
+    await w.svc.allocate(ROOT, "project", w.p1, 10_000)                                # balance above zero: whoever asked now has tokens
+    assert await w.svc.requests(ROOT) == []
+    assert await w.db.pool.fetchval("SELECT status FROM token_requests") == "granted"
+    again = await w.svc.request_tokens(ANN, w.p1)                                      # a new request is possible afterwards
+    assert again["already"] is False
+    await w.svc.dismiss_request(ROOT, (await w.svc.requests(ROOT))[0]["id"])
+    assert await w.svc.requests(ROOT) == []
+    with pytest.raises(SdlcError):
+        await w.svc.dismiss_request(ROOT, "nope")
+
+
+@needs_pg
+async def test_the_overview_counts_refused_starts_per_project_for_the_week(world):
+    w = world
+    await w.db.pool.execute("INSERT INTO token_gate_blocks (project_id, user_id, pool, balance, entry) VALUES ($1,'ann','project',-5,'plan'),($1,'ann','project',-5,'plan'),($2,'ann','project',-5,'plan')", w.p1, w.p2)
+    await w.db.pool.execute("INSERT INTO token_gate_blocks (project_id, user_id, pool, balance, entry, ts) VALUES ($1,'ann','project',-5,'plan', now() - interval '10 days')", w.p1)
+    await w.db.pool.execute("INSERT INTO token_gate_blocks (project_id, user_id, pool, balance, entry, enforced) VALUES ($1,'ann','project',-5,'plan', FALSE)", w.p1)
+    ov = await w.svc.overview(ROOT)
+    assert {p["name"]: p["blocked7d"] for p in ov["projects"]} == {"Alpha": 2, "Beta": 1}

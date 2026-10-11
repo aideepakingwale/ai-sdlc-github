@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '../../api/client';
 import { tokensLabel } from '../../lib/agents';
-import { parseTokens, signedTokens, sortPools, STATE_LABEL, STATE_TONE, usedShare, type PoolDetail, type PoolsOverview, type PoolView } from '../../lib/pools';
+import { parseTokens, signedTokens, sortPools, STATE_LABEL, STATE_TONE, usedShare, type PoolDetail, type PoolsOverview, type PoolView, type TokenRequest } from '../../lib/pools';
 import { Pill } from '../bits';
 
 const LIMIT = 12;
@@ -15,6 +15,9 @@ export default function PoolsPanel() {
   const [target, setTarget] = useState<Target | null>(null);
   const [find, setFind] = useState('');
   const [all, setAll] = useState(false);
+  const reqs = useQuery({ queryKey: ['token-requests'], queryFn: () => api.get<{ requests: TokenRequest[] }>('/api/token-requests'), refetchInterval: 30_000 });
+  const qc = useQueryClient();
+  const dismiss = useMutation({ mutationFn: (id: string) => api.post(`/api/token-requests/${id}/dismiss`), onSuccess: () => void qc.invalidateQueries({ queryKey: ['token-requests'] }) });
   const o = q.data;
   if (!o) return <div className="animate-pulse text-sm text-slate-400">Loading…</div>;
   const org = o.organisation;
@@ -34,6 +37,23 @@ export default function PoolsPanel() {
         <Stat label="Given to projects" value={tokensLabel(o.allocatedToProjects)} sub={o.unallocated === null ? 'across all projects' : `${signedTokens(o.unallocated)} not yet given out`} />
         <Stat label="Monthly top-up" value={org.monthly ? tokensLabel(org.monthly) : 'None'} sub={org.monthly ? 'added on the 1st (UTC)' : 'one-off allocations only'} />
       </div>
+      {(reqs.data?.requests.length ?? 0) > 0 && (
+        <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-3" data-testid="v2-pool-requests">
+          <div className="mb-1 text-sm font-semibold text-amber-900">Asking for more tokens ({reqs.data!.requests.length})</div>
+          <ul className="space-y-1.5">{reqs.data!.requests.map((r) => {
+            const proj = o.projects.find((p) => p.projectId === r.projectId);
+            return (
+              <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 text-sm" data-testid="v2-pool-request">
+                <span><b>{r.project}</b> · {r.by}{r.balance !== null ? ` · ${signedTokens(r.balance)} left` : ''}{r.note ? ` · “${r.note}”` : ''}</span>
+                <span className="flex gap-3">
+                  {proj && <button type="button" className="text-brand-600 hover:underline" onClick={() => setTarget({ scope: 'project', id: proj.projectId, name: proj.name, pool: proj })} data-testid="v2-pool-request-allocate">Allocate</button>}
+                  <button type="button" className="text-slate-600 hover:underline" onClick={() => dismiss.mutate(r.id)} data-testid="v2-pool-request-dismiss">Dismiss</button>
+                </span>
+              </li>
+            );
+          })}</ul>
+        </div>
+      )}
       {o.overAllocated && <p className="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900" role="status" data-testid="v2-pool-over">Projects have been given more tokens than the organisation has.</p>}
       <div className="mb-2 flex items-center gap-2"><input value={find} onChange={(e) => setFind(e.target.value)} placeholder="Find a project" aria-label="Find a project" className="w-56 rounded-lg border border-slate-300 px-3 py-1 text-sm" data-testid="v2-pool-find" /><span className="text-xs text-slate-500">Projects that need attention come first.</span></div>
       <table className="w-full text-sm"><thead><tr className="text-left text-xs uppercase tracking-wide text-slate-500"><th className="py-1">Project</th><th>Status</th><th className="w-40">Used</th><th className="text-right">Left</th><th className="text-right">Last 30 days</th><th /></tr></thead>
@@ -42,7 +62,7 @@ export default function PoolsPanel() {
           return (
             <tr key={p.projectId} className="border-t border-slate-200" data-testid="v2-pool-row">
               <td className="py-1.5 font-medium text-navy">{p.name}</td>
-              <td><Pill tone={tone}>{STATE_LABEL[p.state]}</Pill></td>
+              <td><Pill tone={tone}>{STATE_LABEL[p.state]}</Pill>{p.blocked7d > 0 && <span className="ml-2 text-xs text-red-700" title="Times new work was refused in the last 7 days" data-testid="v2-pool-blocked">{p.blocked7d} refused</span>}</td>
               <td>{p.metered ? <span className="block h-1.5 rounded-full bg-slate-200"><span className={`block h-1.5 rounded-full ${BAR[tone]}`} style={{ width: `${Math.min(100, Math.round(usedShare(p) * 100))}%` }} /></span> : <span className="text-xs text-slate-400">—</span>}</td>
               <td className="text-right tabular-nums">{p.metered ? signedTokens(p.balance ?? 0) : '—'}</td>
               <td className="text-right tabular-nums text-slate-600">{tokensLabel(p.used30d)}</td>
@@ -77,7 +97,7 @@ function AllocateDialog({ target, onClose }: { target: Target; onClose: () => vo
   const [err, setErr] = useState('');
   const detail = useQuery({ queryKey: ['pool-detail', target.scope, target.id], queryFn: () => api.get<PoolDetail>(`/api/token-pools/${target.scope}/${target.id}`) });
   const tokens = parseTokens(amount);
-  const refresh = () => { void qc.invalidateQueries({ queryKey: ['pools'] }); void qc.invalidateQueries({ queryKey: ['project-pool'] }); void qc.invalidateQueries({ queryKey: ['pool-detail'] }); };
+  const refresh = () => { void qc.invalidateQueries({ queryKey: ['pools'] }); void qc.invalidateQueries({ queryKey: ['project-pool'] }); void qc.invalidateQueries({ queryKey: ['pool-detail'] }); void qc.invalidateQueries({ queryKey: ['token-requests'] }); };
   const save = useMutation({
     mutationFn: () => api.post<{ warning?: string }>(`/api/token-pools/${target.scope}/${target.id}/allocations`, { tokens, kind, note, countFrom }),
     onSuccess: (r) => { refresh(); if (r.warning) setErr(r.warning); else onClose(); },

@@ -6,6 +6,7 @@ import GovernancePanel from '../components/GovernancePanel';
 import ModelRoutesControl from '../components/ModelRoutesControl';
 import NewProjectModal from '../components/NewProjectModal';
 import ObservabilityPanel from '../components/ObservabilityPanel';
+import TokensDialog from './usage/TokensDialog';
 import UsagePage from './usage/UsagePage';
 import WorkflowDesigner from '../components/WorkflowDesigner';
 import MindDesignerPage from './MindDesignerPage';
@@ -83,6 +84,7 @@ export default function V2Workspace() {
 
   return (
     <div className="flex h-full bg-white" data-testid="v2-workspace">
+      <TokensDialog isAdmin={user.role === 'SUPER_ADMIN'} projectId={activeProjectId} onOpenAllocations={() => setModal('orgusage')} />
       {(narrow ? drawer : !sideCollapsed) && (
         <div className={narrow ? 'fixed inset-0 z-40 flex' : 'contents'} data-testid={narrow ? 'v2-drawer' : undefined}>
         <Sidebar

@@ -224,11 +224,9 @@ export interface CompareResult {
 }
 export interface DefUsage { days: number; runs: number; tokens: number; promptTokens: number; completionTokens: number; bySource: Record<string, number>; daily: Array<{ day: string; tokens: number }>; cap: number | null }
 export interface ProjectUsage {
-  rights: Rights; month: string; used: number; limit: number | null; runs: number; exceeded: boolean;
+  rights: Rights; month: string; used: number; runs: number;
   byAgent: Array<{ defId: string; name: string; kind: DefKind; runs: number; tokens: number }>;
 }
-/** How much of a budget is spent, as a percentage that never passes 100. */
-export const spentPercent = (used: number, limit: number | null): number => (limit && limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0);
 export const tokensLabel = (n: number): string => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 10_000 ? `${Math.round(n / 1000)}k` : n.toLocaleString());
 export const VERDICT_TONE: Record<CompareResult['summary']['verdict'], 'green' | 'slate' | 'red' | 'amber'> = { better: 'green', same: 'slate', worse: 'red', unknown: 'amber' };
 export const TOKEN_CAP = { min: 1_000, max: 40_000 } as const;

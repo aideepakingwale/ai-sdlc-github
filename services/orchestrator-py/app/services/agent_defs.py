@@ -757,19 +757,8 @@ class AgentDefService:
             by_agent.append({"defId": x["def_id"], "name": d["name"] if d else "(deleted)", "kind": d["kind"] if d else "agent", "runs": x["runs"],
                              "tokens": x["prompt"] + x["completion"]})
         by_agent.sort(key=lambda a: -a["tokens"])
-        limit = await self._repo.get_limit(project_id)
         used = sum(a["tokens"] for a in by_agent)
-        return {"rights": r, "month": start.strftime("%Y-%m"), "used": used, "limit": limit, "byAgent": by_agent,
-                "runs": sum(a["runs"] for a in by_agent), "exceeded": limit is not None and used >= limit}
-
-    async def set_limit(self, user: UserPublic, project_id: str, monthly_tokens: int | None) -> dict[str, Any]:
-        if not (await self.rights(project_id, user))["manage"]:
-            raise SdlcError("FORBIDDEN", "Only the managing project manager or a super-admin sets the budget")
-        if monthly_tokens is not None and not 0 <= int(monthly_tokens) <= 1_000_000_000:
-            raise SdlcError("VALIDATION_FAILED", "The monthly budget is a number of tokens, or empty for no limit")
-        await self._repo.set_limit(project_id, None if monthly_tokens is None else int(monthly_tokens), user.id)
-        self._event(None, user, "custom_agent.budget", project=project_id, monthly_tokens=monthly_tokens)
-        return await self.project_usage(user, project_id)
+        return {"rights": r, "month": start.strftime("%Y-%m"), "used": used, "byAgent": by_agent, "runs": sum(a["runs"] for a in by_agent)}
 
     # ================================================================== pipeline: what feeds what, and running on request
     async def _wiring(self, project_id: str) -> dict[str, list[dict[str, Any]]]:

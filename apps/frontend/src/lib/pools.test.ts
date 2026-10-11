@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { balanceLine, orgNote, parseTokens, signedTokens, sortPools, usedShare, type PoolState, type ProjectPool } from './pools';
+import { isBlocked, balanceLine, orgNote, parseTokens, signedTokens, sortPools, usedShare, type PoolState, type ProjectPool } from './pools';
 
 describe('token pool helpers', () => {
   it('reads the ways people write a token amount', () => {
@@ -40,5 +40,13 @@ describe('sortPools', () => {
     const r = (name: string, state: PoolState, used30d: number) => ({ name, state, used30d });
     const out = sortPools([r('c', 'unmetered', 50), r('a', 'ok', 5), r('b', 'low', 1), r('d', 'overdrawn', 0), r('e', 'unmetered', 90), r('f', 'ok', 9)]);
     expect(out.map((x) => x.name)).toEqual(['d', 'b', 'f', 'a', 'e', 'c']);
+  });
+});
+
+describe('isBlocked', () => {
+  it('is true when the project or the organisation is used up, false otherwise', () => {
+    const p = (a: string, b: string) => ({ state: a, organisation: { state: b } }) as unknown as ProjectPool;
+    expect([isBlocked(p('ok', 'ok')), isBlocked(p('low', 'unmetered')), isBlocked(p('empty', 'ok')), isBlocked(p('overdrawn', 'ok')), isBlocked(p('ok', 'empty')), isBlocked(p('unmetered', 'overdrawn'))])
+      .toEqual([false, false, true, true, true, true]);
   });
 });

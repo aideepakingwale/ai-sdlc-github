@@ -165,9 +165,7 @@ class AgentRuntime:
         project_id: str | None = None, source: str = "",
     ) -> RunResult:
         """Run an agent (and whatever it delegates to). The tree may spend at most the agent's own token cap, and never more than the platform
-        limit; a project with a monthly budget cannot start a run once the budget is spent."""
-        if self._usage is not None:
-            await self._usage.check(project_id)
+        limit. Whether the project has tokens left is the token gate's question, asked before the run starts."""
         cap = int(body.get("budget_tokens") or 0)
         # Token ledger: the whole tree (delegates included) is this agent's, in this project, for this kind of use.
         kind = {"stage": "agent.stage_run", "stage_request": "agent.stage_run", "test": "agent.build"}.get(source, "agent.run")

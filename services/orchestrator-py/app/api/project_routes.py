@@ -32,7 +32,7 @@ from ..domain.models import (
     can_manage_projects,
 )
 from ..services import content_validators as cv
-from .deps import Container, current_user, get_container
+from .deps import Container, current_user, get_container, require_tokens
 
 router = APIRouter()
 
@@ -1614,7 +1614,7 @@ class CodeEditApplyBody(BaseModel):
     paths: list[str] | None = None
 
 
-@router.post("/api/projects/{project_id}/code-edit")
+@router.post("/api/projects/{project_id}/code-edit", dependencies=[require_tokens("code-edit")])
 async def code_edit_run(
     project_id: str, body: CodeEditBody, request: Request,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
@@ -2389,7 +2389,7 @@ async def project_skills(
     }
 
 
-@router.post("/api/projects/{project_id}/skills/{skill_id}/execute")
+@router.post("/api/projects/{project_id}/skills/{skill_id}/execute", dependencies=[require_tokens("skill")])
 async def execute_skill(
     project_id: str, skill_id: str, body: dict | None = None,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),

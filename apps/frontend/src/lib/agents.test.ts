@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   appendLine, auditSubmittable, decodePalette, delegationMeters, encodePalette, fromDeveloperJson, insertAt, lineDiff, sampleInputs, segments, statusChip, stepIndex,
-  agentOutputTypes, filterStarters, moveItem, outputFileName, outputText, parseCap, starterStages, parseRunValue, spentPercent, tokensLabel, toDeveloperJson, uniqueName, variablesIn, type AgentBody,
+  agentOutputTypes, filterStarters, moveItem, outputFileName, outputText, parseCap, starterStages, parseRunValue, tokensLabel, toDeveloperJson, uniqueName, variablesIn, type AgentBody,
 } from './agents';
 
 const body: AgentBody = {
@@ -87,8 +87,7 @@ describe('budgets', () => {
     expect(parseCap('10')).toMatchObject({ ok: false, error: expect.stringContaining('1,000') });
     expect(parseCap('90000')).toMatchObject({ ok: false });
   });
-  it('shows how much of a budget is spent, never more than all of it', () => {
-    expect([spentPercent(50, 200), spentPercent(500, 200), spentPercent(5, null), spentPercent(5, 0)]).toEqual([25, 100, 0, 0]);
+  it('shortens token counts for display', () => {
     expect([tokensLabel(950), tokensLabel(12_400), tokensLabel(2_500_000)]).toEqual(['950', '12k', '2.5M']);
   });
   it('keeps the cap through developer-mode JSON', () => {

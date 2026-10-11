@@ -109,6 +109,11 @@ class Settings(BaseSettings):
 
     # Token pools (docs/token-governance.md): where a low or empty balance is also announced (a Slack or Teams incoming-webhook URL; receives {"text": ...}).
     TOKEN_ALERT_WEBHOOK_URL: str = ""
+    # The gate (docs/token-governance.md, phase 4): enforce = refuse new work at zero or below; observe = log and record what would be refused; off.
+    # It only ever applies to a pool an administrator has allocated tokens to.
+    TOKEN_GATE_MODE: Literal["enforce", "observe", "off"] = "enforce"
+    # Safety ceiling for ONE task (a stage run, an agent run): once it has used this many provider tokens it stops at the next model call. 0 = no ceiling.
+    TOKEN_TASK_CEILING: int = 3_000_000
 
     CONTEXT_TOKEN_THRESHOLD: int = 4_000
     # Max OUTPUT tokens for a phase agent's structured generation (D-95). The

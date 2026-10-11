@@ -277,15 +277,6 @@ async def test_a_run_inside_a_stage_uses_the_version_the_stage_pinned_not_a_newe
     assert "VERSION-TWO" in next(c for c in llm.calls if c["tag"] == "custom_agent_standalone")["messages"][0]["content"]
 
 
-async def test_a_runs_count_against_the_projects_monthly_budget():
-    svc, repo, llm, runs, db, deps = build()
-    d = await approved(svc, GOOD, "Counted")
-    await svc.set_limit(PM, "p1", 100)
-    await runs.run(PM, "p1", d, {"refund": {"a": 1}})
-    with pytest.raises(SdlcError, match="monthly budget"):
-        await runs.run(PM, "p1", d, {"refund": {"a": 1}})
-
-
 # ---------------------------------------------------------------- a stage built from agents alone
 async def test_a_stage_built_from_agents_alone_skips_its_own_writer_and_still_runs_on_a_retrigger(monkeypatch):
     from app.agents import phase_agents as pa

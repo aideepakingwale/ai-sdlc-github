@@ -659,7 +659,7 @@ async def test_an_agents_own_cap_stops_a_run_whose_delegates_used_it_up():
     assert ok["totalTokens"] == 240
 
 
-async def test_usage_is_counted_per_agent_and_a_projects_monthly_budget_stops_further_runs():
+async def test_usage_is_counted_per_agent_and_only_people_who_build_or_approve_see_it():
     svc, repo, llm, _ = make()
     d = await svc.create(PM, kind="agent", name="Fraud screen", scope="project", project_id="p1", body=GOOD)
     did = d["def"]["id"]
@@ -667,38 +667,10 @@ async def test_usage_is_counted_per_agent_and_a_projects_monthly_budget_stops_fu
     u = await svc.def_usage(PM, did)
     assert u["runs"] == 1 and u["tokens"] == 120 and u["bySource"] == {"test": 120}
     p = await svc.project_usage(PM, "p1")
-    assert p["used"] == 120 and p["limit"] is None and p["byAgent"][0]["name"] == "Fraud screen" and not p["exceeded"]
-    with pytest.raises(SdlcError):
-        await svc.set_limit(AUTHOR, "p1", 100)         # only the manager sets the budget
-    await granted(svc, repo, edit=[AUTHOR])
-    with pytest.raises(SdlcError):
-        await svc.set_limit(AUTHOR, "p1", 100)
-    with pytest.raises(SdlcError, match="whole|number"):
-        await svc.set_limit(PM, "p1", -5)
-    assert (await svc.set_limit(PM, "p1", 100))["exceeded"] is True
-    with pytest.raises(SdlcError, match="monthly budget"):
-        await svc.run_test(PM, did, {"refund": {"a": 1}})
-    assert (await svc.set_limit(PM, "p1", None))["limit"] is None
-    await svc.run_test(PM, did, {"refund": {"a": 1}})
+    assert p["used"] == 120 and p["byAgent"][0]["name"] == "Fraud screen" and "limit" not in p and "exceeded" not in p   # the monthly agent budget is retired
+    await svc.run_test(PM, did, {"refund": {"a": 1}})                       # nothing here stops a second run: the token gate asks about the project's balance
     with pytest.raises(SdlcError):
         await svc.project_usage(MEMBER, "p1")          # cost is for people who build or approve
-
-
-async def test_a_stage_run_over_the_monthly_budget_is_reported_and_does_not_fail_the_stage():
-    svc, repo, llm, audit = make()
-    d = await svc.create(PM, kind="agent", name="Fraud screen", scope="project", project_id="p1", body=GOOD)
-    await publish(svc, PM, SUPER, d["def"]["id"])
-    await svc.set_limit(PM, "p1", 1)
-    repo.usage.append({"def_id": d["def"]["id"], "project_id": "p1", "source": "stage", "prompt": 5, "completion": 5})
-    saved = []
-
-    async def save(**kw):
-        saved.append(kw)
-    items = [{"def_id": d["def"]["id"], "name": "Fraud screen", "version": 1, "body": GOOD | {"outputs": GOOD["outputs"]}, "runs": "always", "condition": ""}]
-    items[0]["body"] = body.normalise_body("agent", GOOD)
-    res = await run_stage_agents(runtime=svc._runtime, items=items, brief="b", upstream=lambda t: None, rules="", stack="", project_context="", save=save, emit=lambda e: None,
-                                 project_id="p1")
-    assert not saved and res.failed and "monthly budget" in res.failed[0]
 
 
 # ---------------------------------------------------------------- built-in agents a project may copy

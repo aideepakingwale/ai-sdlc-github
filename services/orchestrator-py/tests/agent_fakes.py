@@ -186,17 +186,6 @@ async def _usage_for_project(self, project_id, since):
     return list(out.values())
 
 
-async def _get_limit(self, project_id):
-    return self.limits.get(project_id)
-
-
-async def _set_limit(self, project_id, monthly, user_id):
-    if monthly is None:
-        self.limits.pop(project_id, None)
-    else:
-        self.limits[project_id] = monthly
-
-
 async def _insert_run(self, r):
     self.runs.append({**r, "created_at": NOW})
 
@@ -215,7 +204,7 @@ async def _set_core_visibility(self, kind, core_id, public, user_id):
 
 MemRepo.core_visibility, MemRepo.set_core_visibility = _core_visibility, _set_core_visibility
 MemRepo.insert_run, MemRepo.list_runs = _insert_run, _list_runs
-MemRepo.record_usage, MemRepo.usage_for_def, MemRepo.usage_for_project, MemRepo.get_limit, MemRepo.set_limit = _record_usage, _usage_for_def, _usage_for_project, _get_limit, _set_limit
+MemRepo.record_usage, MemRepo.usage_for_def, MemRepo.usage_for_project = _record_usage, _usage_for_def, _usage_for_project
 
 
 class FakeLlm:
