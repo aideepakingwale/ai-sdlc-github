@@ -455,6 +455,19 @@ async def get_stage_plan(
                                            run_intel=not cached)
 
 
+@router.get("/api/projects/{project_id}/phase/{phase_id}/plan-graph")
+async def get_stage_plan_graph(
+    project_id: str, phase_id: int, view: str = "auto",
+    user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
+) -> dict:
+    """The plan of this stage's run as a graph: the stage agent, its sub-agents (built-in and custom, with what they delegate to), skills, tools,
+    deliverables, validation and the review gate. `view`: auto (live while a run is active, else the last run's record when the stage is waiting on
+    review, else the plan), planned, or run (the last finished run). Costs no tokens."""
+    if not 1 <= phase_id <= 12:
+        raise SdlcError("VALIDATION_FAILED", "phaseId must be 1-12")
+    return await container.plan_graphs.view(project_id, phase_id, user, view)
+
+
 @router.get("/api/projects/{project_id}/phase/{phase_id}/plan/state")
 async def get_stage_plan_state(
     project_id: str, phase_id: int,

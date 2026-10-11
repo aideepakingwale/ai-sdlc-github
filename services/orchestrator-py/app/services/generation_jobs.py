@@ -54,6 +54,7 @@ class GenerationJobs:
         self._runner = runner
         self._workers: list[asyncio.Task[None]] = []
         self.gate: Any = None          # the token gate (phase 4), set after construction
+        self.after_run: Any = None     # async (project_id, phase, job_id, actor_email, status): stores what the run did (plan graph); never raises
 
     # ---- keys -----------------------------------------------------------------
     @staticmethod
@@ -273,6 +274,11 @@ class GenerationJobs:
                 await self._db.finish_generation_job(job_id, status, err)
             except Exception:
                 log.exception("finish_generation_job failed")
+            if self.after_run is not None:
+                try:
+                    await self.after_run(project_id, phase, job_id, actor, status)
+                except Exception:  # noqa: BLE001 - the record is a convenience
+                    log.warning("after-run hook failed", exc_info=True)
             await self._redis.delete(self._lock_key(project_id, phase))
 
     # ---- viewing --------------------------------------------------------------

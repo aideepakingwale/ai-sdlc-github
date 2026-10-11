@@ -138,5 +138,6 @@ role must equal the user's Keycloak role — a PM cannot grant authority the IdP
 - **Token governance:** every model call is recorded in an append-only ledger (tokens, per attempt, per person, project and activity); projects and the organisation have token
   balances that block *new* work at zero; the ledger is reconciled nightly with Bedrock's invocation logs. See
   [docs/token-governance.md](docs/token-governance.md) and [docs/bedrock-reconciliation.md](docs/bedrock-reconciliation.md).
+- **Current plan:** every stage has a button that draws its run as a graph (stage agent, sub-agents and the agents they delegate to, skills, tools, deliverables, checks and the review gate), live while it runs and as a record afterwards. See [docs/plan-graph.md](docs/plan-graph.md).
 - **Audit:** every AI generation and human decision → S3 JSON (immutable) + Postgres index;
   the audit table has a trigger forbidding UPDATE/DELETE.

@@ -20,6 +20,7 @@ from ..services.agent_catalog import role_of
 from ..domain.errors import SdlcError
 from ..domain.models import AgentState, ArtifactRef, ContextArtifact, PhaseStatus, get_phase
 from ..integrations.llm import LlmClient, LlmResult
+from ..integrations.llm import on_retry as llm_on_retry
 from ..integrations.mcp_client import McpToolClient
 from ..repos.pg import Database, new_id
 from ..services.applicability import (
@@ -455,6 +456,7 @@ async def _generate_with_specialists(
                 siblings={k: v for k, v in values.items() if k not in failures}, amend=amend)
             wrapper = create_model(f"{schema.__name__}__{spec.id}", **{f: (schema.model_fields[f].annotation, schema.model_fields[f]) for f in todo})
             emit({"type": "node", "node": "agent", "label": f"{spec.name} writing {', '.join(todo)} (own context: {len(prompt.items)} item(s))…"})
+            emit({"type": "step", "id": f"sub:{spec.id}", "name": spec.name, "status": "running"})
             single_text = len(todo) == 1 and schema.model_fields[todo[0]].annotation is str
             user = (f"{prompt.user}\n\n---\nProduce ONLY " + ("the `" + todo[0] + "` portion" if len(todo) == 1 else "these portions: " + ", ".join(f"`{f}`" for f in todo))
                     + " of the deliverable, to the enterprise standard and consistent with the context above. Return JSON of exactly the form "
@@ -462,11 +464,12 @@ async def _generate_with_specialists(
             role = state.model_role or spec.role
             try:
                 try:
-                    inst, res = await deps.llm.generate_json(
-                        activity="stage.generate", intent=intent, tag=f"{base_tag}:{spec.id}",
-                        messages=[{"role": "system", "content": prompt.system, "cache": True}, {"role": "user", "content": user}],
-                        schema=wrapper, max_tokens=max_tokens, model=(model if role == "generate" else None), role=role,
-                        max_attempts=1 if single_text else 3)
+                    with llm_on_retry(_retry_step(emit, f"sub:{spec.id}")):
+                        inst, res = await deps.llm.generate_json(
+                            activity="stage.generate", intent=intent, tag=f"{base_tag}:{spec.id}",
+                            messages=[{"role": "system", "content": prompt.system, "cache": True}, {"role": "user", "content": user}],
+                            schema=wrapper, max_tokens=max_tokens, model=(model if role == "generate" else None), role=role,
+                            max_attempts=1 if single_text else 3)
                 except SdlcError as err:
                     if not single_text:
                         raise
@@ -479,6 +482,7 @@ async def _generate_with_specialists(
                 for f in todo:
                     failures[f] = str(err)
                     await persist(f, "failed", error=str(err))
+                emit({"type": "step", "id": f"sub:{spec.id}", "name": spec.name, "status": "failed", "detail": str(err)[:240]})
                 emit({"type": "node", "node": "guardrail", "status": "error", "label": f"✗ {spec.name} failed — {str(err)[:160]}"})
                 return
             record = {
@@ -493,6 +497,8 @@ async def _generate_with_specialists(
                 runs[f] = record
                 await persist(f, "done", values[f], run=record)
             emit({"type": "node", "node": "agent", "label": f"✓ {spec.name}: {', '.join(todo)} generated ({res.model})"})
+            emit({"type": "step", "id": f"sub:{spec.id}", "name": spec.name, "status": "done", "model": res.model,
+                  "tokens": int(res.usage.get("promptTokens", 0)) + int(res.usage.get("completionTokens", 0))})
 
     async def run_stage_wide() -> None:
         """Fields no specialist owns (e.g. the code files of the implementation stage) keep the stage-wide prompt."""
@@ -504,9 +510,10 @@ async def _generate_with_specialists(
                     + ". Return JSON of exactly the form {" + ", ".join(f'"{f}": ...' for f in stage_wide) + "} conforming to the schema — nothing else.")
             role = state.model_role or role_for_stage(state.stage_template)
             try:
-                inst, res = await deps.llm.generate_json(
-                    activity="stage.generate", intent=intent, tag=f"{base_tag}:stage", messages=[{"role": "system", "content": stage_system, "cache": True}, {"role": "user", "content": user}],
-                    schema=wrapper, max_tokens=max_tokens, model=model, role=role)
+                with llm_on_retry(_retry_step(emit, "lead")):
+                    inst, res = await deps.llm.generate_json(
+                        activity="stage.generate", intent=intent, tag=f"{base_tag}:stage", messages=[{"role": "system", "content": stage_system, "cache": True}, {"role": "user", "content": user}],
+                        schema=wrapper, max_tokens=max_tokens, model=model, role=role)
             except Exception as err:  # noqa: BLE001
                 for f in stage_wide:
                     failures[f] = str(err)
@@ -1499,7 +1506,8 @@ async def _generate_validated(deps: AgentDeps, state: AgentState, emit: Emit) ->
     for attempt in range(max_repairs + 1):
         emit({"type": "node", "node": "validator",
               "label": "Validator: checking output against your intent and for syntax errors"})
-        verdict = await _validate_output(deps, state, emit, out)
+        with llm_on_retry(_retry_step(emit, "validate")):
+            verdict = await _validate_output(deps, state, emit, out)
         errors = [i for i in verdict.issues if i.severity == "error"]
         deps.audit.record(
             project_id=state.project_id, phase=state.current_phase, agent_role="ValidationAgent",
@@ -1523,6 +1531,11 @@ async def _generate_validated(deps: AgentDeps, state: AgentState, emit: Emit) ->
         # Rework only the artifacts the validator flagged when it can tell which (the others
         # are reused from the parts the first run saved); otherwise regenerate everything.
         flagged = failing_fields(state, out, errors) if getattr(deps.settings, "VALIDATION_LOCALISED_REWORK", True) else None
+        # The plan graph shows what is being run again: the validation step, and the agents that write what was flagged (or everything).
+        why = f"{len(errors)} issue(s) found: reworking"
+        emit({"type": "step", "id": "validate", "status": "retrying", "detail": why})
+        for fld in (flagged or list(type(out).model_fields)):
+            emit({"type": "step", "field": fld, "status": "retrying", "detail": why})
         # Escalate: the first attempt did not pass the validator, so the retry runs on the
         # reasoning model (when one is configured) - strong-model cost only where quality is at risk.
         rework_state = state
@@ -2824,6 +2837,13 @@ TEMPLATE_TOOLS: dict[int, list[str]] = {
     6: ["github_create_branch", "github_commit_code", "postman_run_collection",
         "playwright_run_tests", "k6_run_test", "zap_baseline_scan", "sonarqube_analyse"],
 }
+
+
+def _retry_step(emit: Emit, node_id: str):
+    """A listener for `generate_json` retries: reports the graph node whose model call is being attempted again."""
+    def listener(info: dict[str, Any]) -> None:
+        emit({"type": "step", "id": node_id, "status": "retrying", "detail": f"attempt {info['attempt']} of {info['of']}: {info['reason']}".strip(": ")})
+    return listener
 
 
 async def run_phase_agent(deps: AgentDeps, state: AgentState, emit: Emit) -> PhaseAgentResult:

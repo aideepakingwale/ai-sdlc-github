@@ -1255,3 +1255,103 @@ test.describe('token usage', () => {
     expect((await page.request.get(`/api/projects/${id}/usage/requests/nope`)).status()).toBe(404);
   });
 });
+
+test.describe('current plan graph', () => {
+  test('the Current plan button draws the agents, sub-agents, skills, tools and gate of the stage as a graph', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-stage-1').click();
+    await expect(page.getByTestId('v2-stagechat')).toBeVisible();
+    await page.getByTestId('v2-current-plan').click();
+    const view = page.getByTestId('v2-plan-graph');
+    await expect(view).toBeVisible();
+    await expect(page.getByTestId('v2-plan-graph-mode')).toHaveText('The plan for the next run');
+    await expect(page.getByTestId('v2-plan-graph-summary')).toContainText('sub-agent');
+    for (const type of ['input', 'check', 'agent', 'subagent', 'artefact', 'gate']) {
+      await expect(view.locator(`[data-type="${type}"]`).first()).toBeVisible();
+    }
+    await expect(view.locator('[data-node="lead"]')).toHaveAttribute('data-status', 'planned');
+    await expect(page.getByTestId('v2-plan-graph-run')).toBeDisabled();                 // nothing has run yet
+    await expect(page.getByTestId('v2-plan-graph-legend')).toContainText('Sub-agent');
+    // the API gives the same structure: typed nodes, edges that join them, and a column for each node
+    const api = (await (await page.request.get(`/api/projects/${id}/phase/1/plan-graph`)).json()) as { graph: { nodes: Array<{ id: string; layer: number }>; edges: Array<{ from: string; to: string }> } };
+    const ids = new Set(api.graph.nodes.map((n) => n.id));
+    expect(api.graph.edges.length).toBeGreaterThan(5);
+    expect(api.graph.edges.every((e) => ids.has(e.from) && ids.has(e.to))).toBe(true);
+    // a node explains itself and what it connects to
+    await view.locator('[data-type="subagent"]').first().click();
+    await expect(page.getByTestId('v2-plan-graph-node')).toContainText('Comes from');
+    await expect(page.getByTestId('v2-plan-graph-node-status')).toHaveText('Planned');
+    await page.getByTestId('v2-plan-graph-close').click();
+    await expect(view).toHaveCount(0);
+  });
+
+  test('after a run it keeps the record: who ran, and what each part did', async ({ page }) => {
+    test.setTimeout(180_000);
+    await login(page, '/?ui=v2');
+    const { name } = await newProject(page);
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-stage-1').click();
+    await page.getByTestId('v2-composer').getByRole('textbox').first().click();
+    await page.keyboard.type('Build a loyalty points API for a retail bank. Python 3.12 and FastAPI on AWS.');
+    await page.getByTestId('v2-primary').click();
+    await expect(page.getByTestId('v2-stagechat')).toHaveAttribute('data-mode', 'plan', { timeout: 60_000 });
+    await page.getByTestId('v2-primary').click();
+    for (let i = 0; i < 4; i++) {
+      const q = page.getByTestId('v2-questions');
+      if (!(await q.isVisible().catch(() => false))) { await page.waitForTimeout(1500); if (!(await q.isVisible().catch(() => false))) break; }
+      await q.locator('button[aria-pressed]').first().click();
+      await page.getByTestId('v2-primary').click();
+      await page.waitForTimeout(800);
+    }
+    await expect(page.getByTestId('v2-stagechat')).toHaveAttribute('data-mode', /review|escalated/, { timeout: 120_000 });
+    await page.getByTestId('v2-current-plan').click();
+    const view = page.getByTestId('v2-plan-graph');
+    await expect(page.getByTestId('v2-plan-graph-mode')).toHaveText('Record of the last run', { timeout: 20_000 });
+    await expect(view.locator('[data-node="lead"]')).toHaveAttribute('data-status', 'done');
+    await expect(view.locator('[data-type="subagent"][data-status="done"]').first()).toBeVisible();
+    await expect(view.locator('[data-node="gate"]')).toHaveAttribute('data-status', 'waiting');
+    await expect(page.getByTestId('v2-plan-graph-progress')).toContainText(' of ');
+    await page.getByTestId('v2-plan-graph-planned').click();                           // the plan is still one click away
+    await expect(page.getByTestId('v2-plan-graph-mode')).toHaveText('The plan for the next run');
+  });
+
+  test('each step shows where it is: a green tick when done, a cross when it failed, a turning arrow while it is retried', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    // Serve the stage's real graph with a run laid over it: the display must not depend on a model failing on cue.
+    const real = (await (await page.request.get(`/api/projects/${id}/phase/1/plan-graph`)).json()) as { graph: { nodes: Array<Record<string, unknown>> } & Record<string, unknown> } & Record<string, unknown>;
+    const subs = real.graph.nodes.filter((n) => n.type === 'subagent');
+    expect(subs.length).toBeGreaterThanOrEqual(2);
+    const set = (n: Record<string, unknown>, status: string, extra: Record<string, unknown> = {}) => Object.assign(n, { status, ...extra });
+    for (const n of real.graph.nodes) if (['input', 'check', 'agent'].includes(n.type as string)) set(n, 'done');
+    set(subs[0]!, 'done', { retries: 1, tokens: 3200, model: 'mock-sdlc-1' });
+    set(subs[1]!, 'retrying', { retries: 2, detail: '1 issue(s) found: reworking' });
+    const val = real.graph.nodes.find((n) => n.id === 'validate')!;
+    set(val, 'failed', { detail: 'Validator: 2 issue(s) remain after rework' });
+    await page.route(`**/api/projects/${id}/phase/1/plan-graph*`, (route) =>
+      route.fulfill({ json: { ...real, mode: 'live', available: { planned: true, run: true }, graph: { ...real.graph, run: { state: 'running', jobId: 'j1' } } } }));
+    await openProject(page, name);
+    await page.getByTestId('v2-stage-1').click();
+    await page.getByTestId('v2-current-plan').click();
+    const view = page.getByTestId('v2-plan-graph');
+    await expect(page.getByTestId('v2-plan-graph-live')).toBeVisible();
+    await expect(view.locator('[data-node="lead"][data-status="done"] [data-glyph="done"]')).toHaveCount(1);
+    await expect(view.locator(`[data-node="${subs[1]!.id}"]`)).toHaveAttribute('data-status', 'retrying');
+    await expect(view.locator(`[data-node="${subs[1]!.id}"] [data-glyph="retrying"] animateTransform`)).toHaveCount(1);   // the arrow turns
+    await expect(view.locator(`[data-node="${subs[1]!.id}"]`).getByTestId('plan-node-retries')).toHaveText('↻ retried 2×');
+    await expect(view.locator('[data-node="validate"] [data-glyph="failed"]')).toHaveCount(1);
+    // the checklist says the same in words, step by step
+    const steps = page.getByTestId('v2-plan-steps');
+    await expect(steps.locator(`[data-step="${subs[1]!.id}"]`)).toContainText('Retrying · retried 2 times · 1 issue(s) found: reworking');
+    await expect(steps.locator(`[data-step="${subs[0]!.id}"]`)).toContainText('Done · retried 1 time');
+    await expect(steps.locator('[data-step="validate"]')).toContainText('Failed · Validator: 2 issue(s) remain after rework');
+    await expect(page.getByTestId('v2-plan-graph-progress')).toContainText('1 retrying · 1 failed');
+    await steps.locator(`[data-step="${subs[1]!.id}"]`).click();                       // a step in the list opens its details
+    await expect(page.getByTestId('v2-plan-graph-node-status')).toHaveText('Retrying');
+    await page.screenshot({ path: 'test-results/plan-graph-statuses.png' });
+  });
+});

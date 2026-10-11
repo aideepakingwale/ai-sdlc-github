@@ -730,3 +730,28 @@ async def test_copying_a_built_in_needs_the_right_to_build_in_that_project_and_t
         svc.core_detail(PM, "agent", "prd")                                       # the full inventory (files, notes) is still super-admin only
     skills = await svc.starters(PM, "p1", "skill")
     assert skills["items"] == []                                                  # the test catalogue's one skill is not an instruction-only skill
+
+
+async def test_a_stage_run_reports_each_agent_and_each_delegate_as_a_structured_step_for_the_plan_graph():
+    svc, repo, llm, audit = make()
+    child, parent = await make_pair(svc, repo)
+    await publish(svc, PM, SUPER, parent)
+    await svc.set_stage_items(PM, "p1", "s", [{"defId": parent}])
+    items = await svc.resolve_for_run("p1", "s")
+
+    async def save(**kw):
+        return kw["title"]
+
+    events: list[dict] = []
+    await run_stage_agents(runtime=svc._runtime, items=items, brief='{"amount": 1, "why": "dup"}', upstream=lambda t: None, rules="", stack="", project_context="", save=save, emit=events.append)
+    steps = [(e["id"], e["status"]) for e in events if e["type"] == "step"]
+    assert steps[0] == (f"cust:{parent}", "running") and (f"cust:{parent}", "done") in steps and (f"deleg:{parent}:{child}", "done") in steps
+    done = next(e for e in events if e["type"] == "step" and e["id"] == f"cust:{parent}" and e["status"] == "done")
+    assert done["tokens"] == 240 and done["name"] == "Reviewer"                    # the whole tree: parent and delegate
+    events.clear()
+    await run_stage_agents(runtime=svc._runtime, items=items, brief='{"a": 1}', upstream=lambda t: None, rules="", stack="", project_context="", save=save, emit=events.append)
+    assert (f"deleg:{parent}:{child}", "skipped") in [(e["id"], e["status"]) for e in events if e["type"] == "step"]      # its condition was not met
+    llm.outputs = {}
+    events.clear()
+    await run_stage_agents(runtime=svc._runtime, items=items, brief='{"amount": 1, "why": "dup"}', upstream=lambda t: None, rules="", stack="", project_context="", save=save, emit=events.append)
+    assert (f"cust:{parent}", "failed") in [(e["id"], e["status"]) for e in events if e["type"] == "step"]

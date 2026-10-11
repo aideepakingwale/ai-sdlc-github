@@ -177,6 +177,7 @@ export type StreamEvent =
   | { type: 'content_end'; part?: string }
   // One generated file (per-artifact split): running → done|failed, with its text once done.
   | { type: 'part'; part: string; status: 'running' | 'done' | 'failed'; text?: string; error?: string | null }
+  | { type: 'step'; id: string; name?: string; status: 'running' | 'done' | 'failed' | 'skipped'; detail?: string; model?: string; tokens?: number }
   | { type: 'artifact'; artifact: { type: string; title: string; url?: string; key?: string } }
   | { type: 'gate'; phase: number; status: PhaseStatus; reviewerRole: Role }
   | { type: 'done'; finalResponse: string; phase: number; gateStatus: PhaseStatus }

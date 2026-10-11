@@ -44,6 +44,7 @@ from .repos.capture_repo import CaptureRepo
 from .repos.usage_repo import UsageRepo
 from .repos.recon_repo import ReconRepo
 from .services.failure_capture import FailureCapture
+from .services.plan_graph_service import PlanGraphService
 from .services.bedrock_reconcile import BedrockReconciler, ReconcileScheduler, build_recon_source
 from .repos.pool_repo import PoolRepo
 from .services.token_gate import TokenGate
@@ -253,6 +254,16 @@ async def lifespan(app: FastAPI):
 
     container.gen_jobs = GenerationJobs(db, redis, runner=_run_stage)
     container.gen_jobs.gate = token_gate
+    plan_graphs = PlanGraphService(chat, db, redis, llm)
+    plan_graphs.jobs = container.gen_jobs
+    container.plan_graphs = plan_graphs
+
+    async def _record_run_graph(project_id: str, phase: int, job_id: str, actor_email: str, status: str) -> None:
+        urow = await db.get_user_by_email(actor_email)
+        if urow:
+            await plan_graphs.record(project_id, phase, job_id, status, UserPublic(id=urow["id"], email=urow["email"], displayName=urow["display_name"], role=urow["role"]))
+
+    container.gen_jobs.after_run = _record_run_graph
     _reconciled = await container.gen_jobs.reconcile()
     if _reconciled:
         log.info("reconciled %s stale generation job(s) on boot", _reconciled)

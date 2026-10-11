@@ -143,6 +143,28 @@ class Database:
             job_id, status, error,
         )
 
+    async def save_run_graph(self, job_id: str, project_id: str, phase: int, status: str, graph: dict, keep: int = 10) -> None:
+        """What a stage run did, as a graph (services/plan_graph.py). The newest `keep` per stage are kept."""
+        assert self.pool
+        async with self.pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "INSERT INTO stage_run_graphs (job_id, project_id, phase, status, graph) VALUES ($1,$2,$3,$4,$5) "
+                "ON CONFLICT (job_id) DO UPDATE SET status=EXCLUDED.status, graph=EXCLUDED.graph",
+                job_id, project_id, phase, status, graph)
+            await conn.execute(
+                "DELETE FROM stage_run_graphs WHERE project_id=$1 AND phase=$2 AND job_id NOT IN "
+                "(SELECT job_id FROM stage_run_graphs WHERE project_id=$1 AND phase=$2 ORDER BY created_at DESC LIMIT $3)",
+                project_id, phase, keep)
+
+    async def get_run_graph(self, project_id: str, phase: int, job_id: str | None = None) -> dict | None:
+        """The stored graph of one run (default: the newest) with its job id and status, or None."""
+        assert self.pool
+        if job_id:
+            r = await self.pool.fetchrow("SELECT * FROM stage_run_graphs WHERE project_id=$1 AND phase=$2 AND job_id=$3", project_id, phase, job_id)
+        else:
+            r = await self.pool.fetchrow("SELECT * FROM stage_run_graphs WHERE project_id=$1 AND phase=$2 ORDER BY created_at DESC LIMIT 1", project_id, phase)
+        return dict(r) if r else None
+
     async def latest_generation_job(self, project_id: str, phase: int) -> asyncpg.Record | None:
         assert self.pool
         return await self.pool.fetchrow(
@@ -248,7 +270,8 @@ class Database:
             # Its token pool, allocations and monthly top-ups (no FK: the pool id is the project id). The usage LEDGER is kept: it is finance history.
             await conn.execute("DELETE FROM token_pools WHERE id=$1 AND scope_type='project'", project_id)
             await conn.execute("DELETE FROM token_requests WHERE project_id=$1", project_id)
-            await conn.execute("DELETE FROM llm_failure_captures WHERE project_id=$1", project_id)     # the prompts held a project's documents
+            await conn.execute("DELETE FROM llm_failure_captures WHERE project_id=$1", project_id)
+            await conn.execute("DELETE FROM stage_run_graphs WHERE project_id=$1", project_id)     # the prompts held a project's documents
             await conn.execute("DELETE FROM token_gate_blocks WHERE project_id=$1", project_id)
             # The project's retrieval corpus (approved artefacts, uploaded code): scope = project id, no FK.
             await conn.execute("DELETE FROM kb_documents WHERE scope=$1", project_id)

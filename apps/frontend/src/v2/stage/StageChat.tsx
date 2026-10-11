@@ -13,6 +13,7 @@ import { useStageController, TRAIT_META, type StageControllerProps } from '../..
 import { Icon } from '../../components/ui/Icon';
 import { COLOR_CLASSES } from '../../api/flow';
 import { Pill, StageDot, stageTone } from '../bits';
+import PlanGraphView from './PlanGraphView';
 import QualityCards, { useFeedback } from './QualityCards';
 import RuleAdviceCard from './RuleAdviceCard';
 import StageAgentsStrip from './StageAgentsStrip';
@@ -64,6 +65,7 @@ export default function StageChat(props: StageControllerProps & { onOpenPipeline
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [changes, setChanges] = useState('');
   const [gateError, setGateError] = useState('');
+  const [graphOpen, setGraphOpen] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
   const artefactRows = useQuery({
     queryKey: ['artefacts', props.projectId],
@@ -113,8 +115,13 @@ export default function StageChat(props: StageControllerProps & { onOpenPipeline
       {stage.stale && <Pill tone="amber" title={stage.staleReason ?? 'An upstream input changed'}>Outdated</Pill>}
       {fb.security.length > 0 && <Pill tone={fb.openBlocking ? 'red' : 'brand'} title="The security review runs when the output reaches review">{fb.openBlocking ? 'Security review: HIGH' : 'Security review at gate'}</Pill>}
       {locked && <Pill tone="brand">Editing locked</Pill>}
+      <button type="button" onClick={() => setGraphOpen(true)} data-testid="v2-current-plan"
+        title="See the agents, sub-agents, skills and tools this stage uses, as a graph"
+        className="ml-auto flex items-center gap-1.5 rounded-full border border-brand-300 bg-brand-100 px-3 py-1 text-xs font-medium text-brand-700 hover:bg-brand-200">
+        <Icon name="search" size={13} /> Current plan
+      </button>
       <button type="button" onClick={props.onOpenPipeline} aria-label="Open the pipeline view" data-testid="v2-minimap"
-        className="ml-auto flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-600 hover:border-brand-300">
+        className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-600 hover:border-brand-300">
         {stages.map((s, i) => (
           <span key={s.phase} className="flex items-center gap-1.5">
             <StageDot n="" color={s.color} size={s.phase === stage.phase ? 14 : 10} />
@@ -365,6 +372,7 @@ export default function StageChat(props: StageControllerProps & { onOpenPipeline
   return (
     <div className="flex h-full min-h-0 flex-col bg-slate-50" data-testid="v2-stagechat" data-mode={mode} data-blocked={blocked ? 'true' : 'false'}>
       {header}
+      {graphOpen && <PlanGraphView projectId={projectId} seq={selectedSeq} stageName={stage.name} onClose={() => setGraphOpen(false)} />}
       <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-[760px] flex-col gap-4 px-4 py-5">
           {blockedReason.length > 0 ? (

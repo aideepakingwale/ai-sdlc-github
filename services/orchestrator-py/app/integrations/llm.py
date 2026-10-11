@@ -5,12 +5,14 @@ one repair retry (D-08)."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
 import time
 import uuid
-from typing import Any, Callable, TypeVar
+from contextvars import ContextVar
+from typing import Any, Callable, Iterator, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -81,6 +83,20 @@ def _usage_of(raw: dict[str, Any] | None, fallback_completion: int = 0) -> dict[
         "cacheReadTokens": int(u.get("cacheReadTokens") or 0),
         "cacheWriteTokens": int(u.get("cacheWriteTokens") or 0),
     }
+
+
+# A caller that wants to know when a JSON generation starts another attempt (a repair after bad output, a bigger budget after a cut-off)
+# installs a listener for the duration of its work; the plan graph shows that step as retrying. A listener never affects the call.
+_retry_listener: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar("llm_retry_listener", default=None)
+
+
+@contextlib.contextmanager
+def on_retry(listener: Callable[[dict[str, Any]], None]) -> Iterator[None]:
+    token = _retry_listener.set(listener)
+    try:
+        yield
+    finally:
+        _retry_listener.reset(token)
 
 
 def _log_tokens(usage_log: list[dict[str, Any]]) -> tuple[int, int]:
@@ -554,6 +570,11 @@ class LlmClient:
         effective_max = max_tokens
         last_issues = ""
         for attempt in range(max(1, max_attempts)):
+            if attempt > 0 and (listener := _retry_listener.get()) is not None:
+                try:
+                    listener({"attempt": attempt + 1, "of": max(1, max_attempts), "reason": last_issues[:160]})
+                except Exception:  # noqa: BLE001 - a progress listener must never break generation
+                    log.debug("retry listener failed", exc_info=True)
             msgs = messages if attempt == 0 else [
                 *messages,
                 {"role": "user", "content": render_prompt("json_repair.user", issues=last_issues[:500])},

@@ -58,6 +58,7 @@ class Container:
     agent_defs: Any = None      # custom agents and skills: definitions, audit, approval, stage attachments
     code_edit: Any = None  # prompt-based code assistant: agentic edits shown as a diff, applied by a person
     gen_jobs: Any = None  # durable background stage generation (D-97 L2)
+    plan_graphs: Any = None  # the stage plan as a graph (docs/plan-graph.md)
     extras: dict[str, Any] = field(default_factory=dict)
 
 

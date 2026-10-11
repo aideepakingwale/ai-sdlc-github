@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from ..domain.errors import SdlcError
+from ..integrations.llm import on_retry as llm_on_retry
 from . import safe_expr
 from .agent_runtime import AgentRuntime, render_output, resolve_inputs
 
@@ -35,6 +36,13 @@ class StageAgentsResult:
         if self.failed:
             bits.append(f"did not complete: {'; '.join(self.failed)}")
         return ("Custom agents - " + "; ".join(bits) + ".") if bits else ""
+
+
+def _walk(res: Any):
+    """Every delegate below an agent's result (not the agent itself), depth first."""
+    for c in res.children:
+        yield c
+        yield from _walk(c)
 
 
 def _resolver(resolved: dict[str, Any]):
@@ -69,30 +77,45 @@ async def run_stage_agents(
         if missing:
             msg = f"{name} was not run: it needs {', '.join(missing)}, which this stage does not have yet"
             out.skipped.append(msg)
+            emit({"type": "step", "id": f"cust:{it['def_id']}", "name": name, "status": "skipped", "detail": msg})
             emit({"type": "node", "node": "agent", "label": f"⏭ {msg}"})
             continue
         if it["runs"] == "when" and not only:
             try:
                 if not safe_expr.truthy(it["condition"], {**vals, "brief": brief}):
                     out.skipped.append(f"{name} was not run: its condition was not met")
+                    emit({"type": "step", "id": f"cust:{it['def_id']}", "name": name, "status": "skipped", "detail": "its condition was not met"})
                     emit({"type": "node", "node": "agent", "label": f"⏭ {name}: its condition was not met"})
                     continue
             except safe_expr.ExprError as err:
                 out.failed.append(f"{name}: its condition could not be read ({err})")
                 continue
         emit({"type": "node", "node": "agent", "label": f"Custom agent '{name}' (v{it['version']}) working"})
+        emit({"type": "step", "id": f"cust:{it['def_id']}", "name": name, "status": "running"})
         try:
-            res = await runtime.run(agent_id=it["def_id"], name=name, body=body, inputs=vals, project_context=project_context,
-                                    resolve_child=_resolver(it.get("resolved") or {}), tag="custom_agent_stage", project_id=project_id or None, source="stage")
+            def retrying(info: dict[str, Any], _id: str = f"cust:{it['def_id']}", _name: str = name) -> None:
+                emit({"type": "step", "id": _id, "name": _name, "status": "retrying", "detail": f"attempt {info['attempt']} of {info['of']}: {info['reason']}".strip(": ")})
+
+            with llm_on_retry(retrying):
+                res = await runtime.run(agent_id=it["def_id"], name=name, body=body, inputs=vals, project_context=project_context,
+                                        resolve_child=_resolver(it.get("resolved") or {}), tag="custom_agent_stage", project_id=project_id or None, source="stage")
         except SdlcError as err:
             out.failed.append(f"{name}: {err.message}")
+            emit({"type": "step", "id": f"cust:{it['def_id']}", "name": name, "status": "failed", "detail": err.message[:240]})
             emit({"type": "node", "node": "guardrail", "status": "error", "label": f"✗ Custom agent '{name}' failed: {err.message[:160]}"})
             continue
         except Exception as err:  # noqa: BLE001 - never sink the stage
             log.warning("custom agent %s failed", name, exc_info=True)
             out.failed.append(f"{name}: {str(err)[:120]}")
+            emit({"type": "step", "id": f"cust:{it['def_id']}", "name": name, "status": "failed", "detail": str(err)[:240]})
             emit({"type": "node", "node": "guardrail", "status": "error", "label": f"✗ Custom agent '{name}' failed: {str(err)[:160]}"})
             continue
+        emit({"type": "step", "id": f"cust:{it['def_id']}", "name": name, "status": "done", "model": res.model, "tokens": res.total_tokens()})
+        for kid in _walk(res):                        # what the agent delegated to, now that its tree is known
+            emit({"type": "step", "id": f"deleg:{it['def_id']}:{kid.agent_id}", "name": kid.name, "status": "done", "model": kid.model,
+                  "tokens": kid.usage["promptTokens"] + kid.usage["completionTokens"]})
+        for sk in res.skipped:
+            emit({"type": "step", "id": f"deleg:{it['def_id']}:{sk.get('agent')}", "name": str(sk.get("agent")), "status": "skipped", "detail": sk.get("why", "")})
         outs = body.get("outputs", [])
         for o in outs:
             title = name if len(outs) == 1 else f"{name} - {o['name']}"
