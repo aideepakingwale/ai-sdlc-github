@@ -1970,8 +1970,8 @@ async def observability_summary(
     days: int = 7,
     user: UserPublic = Depends(current_user), container: Container = Depends(get_container),
 ) -> dict:
-    """AI usage aggregates: calls, tokens, latency (avg/p95), error rate,
-    estimated cost — total, per provider, per day, per MCP tool."""
+    """AI operations aggregates: calls, latency (avg/p95), error rate, and tokens
+    (from the token ledger) — total, per provider, per day, per MCP tool."""
     _require_admin(user)
     return await container.telemetry.summary(days=max(1, min(days, 90)))
 
@@ -1994,7 +1994,6 @@ async def observability_traces(
                 "tier": r["tier"], "tag": r["tag"],
                 "promptTokens": r["prompt_tokens"], "completionTokens": r["completion_tokens"],
                 "latencyMs": r["latency_ms"], "status": r["status"], "error": r["error"],
-                "costUsd": float(r["cost_usd"]),
                 # D-104: true when debug capture stored request/response bodies for
                 # this span — the UI shows an expander that fetches them on demand.
                 "hasBodies": bool(r.get("has_bodies")),
@@ -2049,9 +2048,6 @@ async def prometheus_metrics(container: Container = Depends(get_container)) -> P
         "# HELP sdlc_llm_errors_total Failed spans in the last 24h",
         "# TYPE sdlc_llm_errors_total gauge",
         f"sdlc_llm_errors_total {int(t.get('errors', 0))}",
-        "# HELP sdlc_llm_cost_usd Estimated LLM spend in the last 24h",
-        "# TYPE sdlc_llm_cost_usd gauge",
-        f"sdlc_llm_cost_usd {float(t.get('cost_usd', 0)):.6f}",
     ]
     for p in s["providers"]:
         lines.append(
@@ -2067,6 +2063,23 @@ async def prometheus_metrics(container: Container = Depends(get_container)) -> P
                   "# TYPE sdlc_token_ledger_drift gauge", f"sdlc_token_ledger_drift {float(latest[0]['drift']):.4f}",
                   "# HELP sdlc_token_ledger_drift_alert 1 when the latest reconciled day drifted past the threshold",
                   "# TYPE sdlc_token_ledger_drift_alert gauge", f"sdlc_token_ledger_drift_alert {1 if latest[0]['status'] == 'drift' else 0}"]
+    # Token pools and the gate (docs/token-governance.md): counts, never per-project series.
+    try:
+        tp = await container.token_pools.metrics(container.token_gate) if container.token_pools is not None and container.token_gate is not None else None
+    except Exception:  # noqa: BLE001 — metrics must never fail on this
+        tp = None
+    if tp:
+        lines += ["# HELP sdlc_token_org_balance_tokens The organisation's token balance (absent until tokens are allocated)", "# TYPE sdlc_token_org_balance_tokens gauge"]
+        if tp["orgBalance"] is not None:
+            lines.append(f"sdlc_token_org_balance_tokens {int(tp['orgBalance'])}")
+        lines += ["# HELP sdlc_token_projects Metered projects by balance state", "# TYPE sdlc_token_projects gauge"]
+        lines += [f'sdlc_token_projects{{state="{k}"}} {v}' for k, v in sorted(tp["projectStates"].items())]
+        lines += ["# HELP sdlc_token_gate_refused_7d New-work starts refused by the token gate in the last 7 days", "# TYPE sdlc_token_gate_refused_7d gauge",
+                  f"sdlc_token_gate_refused_7d {tp['refused7d']}",
+                  "# HELP sdlc_token_gate_would_refuse_7d Starts the gate would have refused in observe mode, last 7 days", "# TYPE sdlc_token_gate_would_refuse_7d gauge",
+                  f"sdlc_token_gate_would_refuse_7d {tp['wouldRefuse7d']}",
+                  "# HELP sdlc_token_gate_mode The gate's mode (1 for the one in force)", "# TYPE sdlc_token_gate_mode gauge"]
+        lines += [f'sdlc_token_gate_mode{{mode="{m}"}} {1 if tp["mode"] == m else 0}' for m in ("observe", "enforce", "off")]
     return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
 

@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '../../api/client';
 import { tokensLabel } from '../../lib/agents';
-import { parseTokens, signedTokens, sortPools, STATE_LABEL, STATE_TONE, usedShare, type PoolDetail, type PoolsOverview, type PoolView, type TokenRequest } from '../../lib/pools';
+import { GATE_LABEL, gateSentence, parseTokens, signedTokens, sortPools, STATE_LABEL, STATE_TONE, usedShare, type GateMode, type GateStatus, type PoolDetail, type PoolsOverview, type PoolView, type TokenRequest } from '../../lib/pools';
 import { Pill } from '../bits';
 
 const LIMIT = 12;
@@ -32,6 +32,7 @@ export default function PoolsPanel() {
           {org.metered ? 'Add to the organisation’s tokens' : 'Set the organisation’s tokens'}
         </button>
       </div>
+      <GateControl />
       <div className="mb-3 grid gap-3 sm:grid-cols-3" data-testid="v2-pool-org">
         <Stat label="Organisation" value={org.metered ? signedTokens(org.balance ?? 0) : 'Not limited'} sub={org.metered ? `${tokensLabel(org.consumed)} used of ${tokensLabel(org.allocated)}` : 'No allocation set'} pill={org.metered ? org.state : undefined} />
         <Stat label="Given to projects" value={tokensLabel(o.allocatedToProjects)} sub={o.unallocated === null ? 'across all projects' : `${signedTokens(o.unallocated)} not yet given out`} />
@@ -73,6 +74,40 @@ export default function PoolsPanel() {
       {!find && rows.length > LIMIT && <button type="button" className="mt-2 text-sm text-brand-600 hover:underline" onClick={() => setAll(!all)} data-testid="v2-pool-more">{all ? 'Show fewer' : `Show all ${rows.length} projects`}</button>}
       {target && <AllocateDialog target={target} onClose={() => setTarget(null)} />}
     </section>
+  );
+}
+
+/** Observe -> enforce without a restart: what the gate is doing now, and what it has done (or would have done) this week. */
+function GateControl() {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ['token-gate'], queryFn: () => api.get<GateStatus>('/api/token-gate') });
+  const [confirming, setConfirming] = useState<GateMode | null>(null);
+  const set = useMutation({
+    mutationFn: (mode: GateMode) => api.put<GateStatus>('/api/token-gate', { mode }),
+    onSuccess: (g) => { qc.setQueryData(['token-gate'], g); setConfirming(null); },
+  });
+  const g = q.data;
+  if (!g) return null;
+  const choose = (m: GateMode) => { if (m === g.mode) return; if (m === 'enforce') setConfirming(m); else set.mutate(m); };
+  return (
+    <div className="mb-3 rounded-lg border border-slate-200 p-3" data-testid="v2-gate">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">New-work gate</div><p className="text-sm text-slate-700" data-testid="v2-gate-sentence">{gateSentence(g)}</p></div>
+        <div className="inline-flex overflow-hidden rounded-lg border border-slate-300" role="group" aria-label="Gate mode">
+          {(['observe', 'enforce', 'off'] as GateMode[]).map((m) => (
+            <button key={m} type="button" aria-pressed={g.mode === m} onClick={() => choose(m)} data-testid={`v2-gate-${m}`}
+              className={`px-3 py-1 text-sm ${g.mode === m ? 'bg-brand-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-100'}`}>{GATE_LABEL[m]}</button>
+          ))}
+        </div>
+      </div>
+      {confirming && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-amber-50 p-2 text-sm text-amber-900" role="alertdialog" data-testid="v2-gate-confirm">
+          <span>From now on, new work is refused for any project or the organisation at zero tokens or below. Work already running is not stopped.</span>
+          <button type="button" className="rounded-lg bg-brand-600 px-3 py-1 text-white" onClick={() => set.mutate('enforce')} data-testid="v2-gate-confirm-yes">Turn on blocking</button>
+          <button type="button" className="rounded-lg border border-slate-300 bg-white px-3 py-1" onClick={() => setConfirming(null)}>Not yet</button>
+        </div>
+      )}
+    </div>
   );
 }
 

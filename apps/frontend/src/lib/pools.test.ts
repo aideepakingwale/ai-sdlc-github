@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isBlocked, balanceLine, orgNote, parseTokens, signedTokens, sortPools, usedShare, type PoolState, type ProjectPool } from './pools';
+import { gateSentence, isBlocked, balanceLine, orgNote, parseTokens, signedTokens, sortPools, usedShare, type PoolState, type ProjectPool } from './pools';
 
 describe('token pool helpers', () => {
   it('reads the ways people write a token amount', () => {
@@ -48,5 +48,17 @@ describe('isBlocked', () => {
     const p = (a: string, b: string) => ({ state: a, organisation: { state: b } }) as unknown as ProjectPool;
     expect([isBlocked(p('ok', 'ok')), isBlocked(p('low', 'unmetered')), isBlocked(p('empty', 'ok')), isBlocked(p('overdrawn', 'ok')), isBlocked(p('ok', 'empty')), isBlocked(p('unmetered', 'overdrawn'))])
       .toEqual([false, false, true, true, true, true]);
+  });
+});
+
+describe('gateSentence', () => {
+  const g = (mode: 'observe' | 'enforce' | 'off', refused7d: number, wouldRefuse7d: number) => ({ mode, default: 'observe', options: [], refused7d, wouldRefuse7d }) as never;
+  it('says what the gate is doing and what it has done', () => {
+    expect(gateSentence(g('observe', 0, 3))).toBe('Nothing is blocked yet. In the last 7 days it would have refused 3 starts.');
+    expect(gateSentence(g('observe', 0, 1))).toContain('1 start.');
+    expect(gateSentence(g('observe', 0, 0))).toContain('nothing would have been');
+    expect(gateSentence(g('enforce', 2, 0))).toContain('refused 2 starts');
+    expect(gateSentence(g('enforce', 0, 0))).toContain('Nothing was refused');
+    expect(gateSentence(g('off', 0, 0))).toContain('never block');
   });
 });

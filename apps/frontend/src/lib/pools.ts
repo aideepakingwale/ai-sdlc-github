@@ -72,3 +72,15 @@ export interface TokenRequest { id: string; projectId: string; project: string; 
 export function isBlocked(p: Pick<ProjectPool, 'state' | 'organisation'>): boolean {
   return p.state === 'empty' || p.state === 'overdrawn' || p.organisation.state === 'empty' || p.organisation.state === 'overdrawn';
 }
+
+export type GateMode = 'observe' | 'enforce' | 'off';
+export interface GateStatus { mode: GateMode; default: GateMode; options: GateMode[]; refused7d: number; wouldRefuse7d: number }
+export const GATE_LABEL: Record<GateMode, string> = { observe: 'Observe only', enforce: 'Enforce', off: 'Off' };
+
+/** What the gate is doing, in a sentence an administrator can act on. */
+export function gateSentence(g: GateStatus): string {
+  const n = (x: number) => `${x} start${x === 1 ? '' : 's'}`;
+  if (g.mode === 'observe') return g.wouldRefuse7d > 0 ? `Nothing is blocked yet. In the last 7 days it would have refused ${n(g.wouldRefuse7d)}.` : 'Nothing is blocked yet, and in the last 7 days nothing would have been.';
+  if (g.mode === 'enforce') return g.refused7d > 0 ? `New work is refused when a pool is at zero or below. It refused ${n(g.refused7d)} in the last 7 days.` : 'New work is refused when a pool is at zero or below. Nothing was refused in the last 7 days.';
+  return 'The gate is off: tokens are counted but never block anything.';
+}

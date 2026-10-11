@@ -1305,19 +1305,19 @@ class Database:
         self, *, project_id: str | None, stage: int | None, kind: str,
         provider: str | None, model: str | None, tier: str | None, tag: str | None,
         prompt_tokens: int, completion_tokens: int, latency_ms: int,
-        status: str, error: str | None, cost_usd: float,
+        status: str, error: str | None,
         request_body: str | None = None, response_body: str | None = None,
     ) -> None:
         assert self.pool
         await self.pool.execute(
             """
             INSERT INTO llm_traces (id, project_id, stage, kind, provider, model, tier, tag,
-                                    prompt_tokens, completion_tokens, latency_ms, status, error, cost_usd,
+                                    prompt_tokens, completion_tokens, latency_ms, status, error,
                                     request_body, response_body)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
             """,
             new_id(), project_id, stage, kind, provider, model, tier, tag,
-            prompt_tokens, completion_tokens, latency_ms, status, error, cost_usd,
+            prompt_tokens, completion_tokens, latency_ms, status, error,
             request_body, response_body,
         )
 
@@ -1414,43 +1414,55 @@ class Database:
             project_id, trait, value, by)
 
     async def obs_summary(self, days: int) -> dict:
+        """Operations view: calls, latency and errors from the traces; TOKENS from the token ledger (the system of record: cache reads and
+        writes included, failed and cancelled attempts included). No money: tokens are the unit."""
         assert self.pool
         totals = await self.pool.fetchrow(
             """
             SELECT count(*) FILTER (WHERE kind='llm')                          AS llm_calls,
                    count(*) FILTER (WHERE kind='tool')                         AS tool_calls,
-                   coalesce(sum(prompt_tokens), 0)                             AS prompt_tokens,
-                   coalesce(sum(completion_tokens), 0)                         AS completion_tokens,
                    coalesce(avg(latency_ms) FILTER (WHERE kind='llm'), 0)      AS avg_latency_ms,
                    coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)
                             FILTER (WHERE kind='llm'), 0)                      AS p95_latency_ms,
-                   count(*) FILTER (WHERE status='error')                      AS errors,
-                   coalesce(sum(cost_usd), 0)                                  AS cost_usd
+                   count(*) FILTER (WHERE status='error')                      AS errors
             FROM llm_traces WHERE ts > now() - make_interval(days => $1)
+            """,
+            days,
+        )
+        ledger = await self.pool.fetchrow(
+            """
+            SELECT coalesce(sum(input_tokens + cache_read_tokens + cache_write_tokens), 0)::bigint AS prompt_tokens,
+                   coalesce(sum(output_tokens), 0)::bigint AS completion_tokens,
+                   coalesce(sum(cache_read_tokens), 0)::bigint AS cache_read_tokens
+            FROM llm_usage_events WHERE ts > now() - make_interval(days => $1)
             """,
             days,
         )
         providers = await self.pool.fetch(
             """
             SELECT provider, count(*) AS calls,
-                   coalesce(sum(prompt_tokens), 0) AS prompt_tokens,
-                   coalesce(sum(completion_tokens), 0) AS completion_tokens,
                    coalesce(avg(latency_ms), 0) AS avg_latency_ms,
-                   count(*) FILTER (WHERE status='error') AS errors,
-                   coalesce(sum(cost_usd), 0) AS cost_usd
+                   count(*) FILTER (WHERE status='error') AS errors
             FROM llm_traces
             WHERE kind='llm' AND ts > now() - make_interval(days => $1)
             GROUP BY provider ORDER BY calls DESC
             """,
             days,
         )
+        ledger_by_provider = {
+            r["provider"]: r for r in await self.pool.fetch(
+                """SELECT provider, coalesce(sum(input_tokens + cache_read_tokens + cache_write_tokens), 0)::bigint AS prompt_tokens,
+                          coalesce(sum(output_tokens), 0)::bigint AS completion_tokens
+                   FROM llm_usage_events WHERE ts > now() - make_interval(days => $1) GROUP BY provider""", days)
+        }
         daily = await self.pool.fetch(
             """
-            SELECT date_trunc('day', ts)::date AS day,
-                   count(*) FILTER (WHERE kind='llm') AS llm_calls,
-                   coalesce(sum(prompt_tokens + completion_tokens), 0) AS tokens
-            FROM llm_traces WHERE ts > now() - make_interval(days => $1)
-            GROUP BY 1 ORDER BY 1
+            SELECT d.day, d.llm_calls, coalesce(l.tokens, 0)::bigint AS tokens
+            FROM (SELECT date_trunc('day', ts)::date AS day, count(*) FILTER (WHERE kind='llm') AS llm_calls
+                  FROM llm_traces WHERE ts > now() - make_interval(days => $1) GROUP BY 1) d
+            LEFT JOIN (SELECT (ts AT TIME ZONE 'UTC')::date AS day, sum(total_tokens) AS tokens
+                       FROM llm_usage_events WHERE ts > now() - make_interval(days => $1) GROUP BY 1) l ON l.day = d.day
+            ORDER BY d.day
             """,
             days,
         )
@@ -1464,10 +1476,17 @@ class Database:
             """,
             days,
         )
+        out_providers = []
+        for r in providers:
+            row = dict(r)
+            led = ledger_by_provider.get(row["provider"])
+            row["prompt_tokens"] = led["prompt_tokens"] if led else 0
+            row["completion_tokens"] = led["completion_tokens"] if led else 0
+            out_providers.append(row)
         return {
             "days": days,
-            "totals": dict(totals) if totals else {},
-            "providers": [dict(r) for r in providers],
+            "totals": {**(dict(totals) if totals else {}), **(dict(ledger) if ledger else {})},
+            "providers": out_providers,
             "daily": [dict(r) for r in daily],
             "tools": [dict(r) for r in tools],
         }
@@ -1479,7 +1498,7 @@ class Database:
         # bodies are fetched per-row via get_trace (D-104).
         cols = (
             "id, ts, project_id, stage, kind, provider, model, tier, tag, "
-            "prompt_tokens, completion_tokens, latency_ms, status, error, cost_usd, "
+            "prompt_tokens, completion_tokens, latency_ms, status, error, "
             "(request_body IS NOT NULL OR response_body IS NOT NULL) AS has_bodies"
         )
         if project_id:

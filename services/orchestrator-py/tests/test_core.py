@@ -1572,8 +1572,8 @@ def test_phase_prompt_composed_from_library_with_policy():
 
 
 # ---------------------------------------------------------------- observability
-async def test_telemetry_records_spans_with_run_context_and_cost():
-    from app.services.telemetry import TelemetryService, estimate_cost_usd, set_run_context
+async def test_telemetry_records_spans_with_run_context():
+    from app.services.telemetry import TelemetryService, set_run_context
 
     class _Db:
         def __init__(self):
@@ -1591,10 +1591,7 @@ async def test_telemetry_records_spans_with_run_context_and_cost():
     (row,) = db.rows
     assert row["project_id"] == "proj-1" and row["stage"] == 3
     assert row["status"] == "ok" and row["latency_ms"] == 1234
-    # 1000 in @ $5/M + 2000 out @ $25/M = 0.005 + 0.05
-    assert row["cost_usd"] == pytest.approx(0.055)
-    assert estimate_cost_usd("mock", 10_000, 10_000) == 0.0
-    assert estimate_cost_usd("unknown-provider", 10_000, 10_000) == 0.0
+    assert "cost_usd" not in row                  # tokens are the unit: no dollar estimate is made or stored
 
 
 async def test_telemetry_failures_never_raise():

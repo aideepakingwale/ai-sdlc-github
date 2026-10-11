@@ -173,3 +173,21 @@ async def test_the_export_and_drilldown_carry_the_ledger_rows(world):
     assert len(mine.strip().splitlines()) == 1 + 2 and "BOB" not in mine
     ev = await svc.events(_u("pm", "PROJECT_MANAGER"), p1, None, None, "billable", None, "stage.generate", "refused", 50, 0)
     assert [(e["status"], e["totalTokens"]) for e in ev["events"]] == [("refused", 600)]
+
+
+@needs_pg
+async def test_the_operations_dashboard_takes_its_tokens_from_the_ledger_and_has_no_dollar_figures(world):
+    _svc, p1, _p2, db = world
+    await db.pool.execute("INSERT INTO llm_traces (id, project_id, kind, provider, model, prompt_tokens, completion_tokens, latency_ms, status) "
+                          "VALUES ('t1',$1,'llm','bedrock','m',1,1,100,'ok'),('t2',$1,'llm','bedrock','m',0,0,300,'error')", p1)
+    s = await db.obs_summary(7)
+    t = s["totals"]
+    assert (t["llm_calls"], t["errors"]) == (2, 1)                                   # latency and errors still come from the traces
+    # the ledger fixture: Alpha 1000+800 cached in, 200 out (+refused 500+100); Bob 300+50; mock 200+30; Beta 4000+1000; unattributed 50+5
+    assert t["prompt_tokens"] == (1000 + 800) + 500 + 300 + 200 + 4000 + 50
+    assert t["completion_tokens"] == 200 + 100 + 50 + 30 + 1000 + 5
+    assert t["cache_read_tokens"] == 800
+    assert "cost_usd" not in t and all("cost_usd" not in p for p in s["providers"])
+    prov = {p["provider"]: p for p in s["providers"]}
+    assert prov["bedrock"]["prompt_tokens"] > 0 and prov["bedrock"]["calls"] == 2
+    assert sum(d["tokens"] for d in s["daily"]) > 0

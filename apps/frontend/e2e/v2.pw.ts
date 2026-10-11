@@ -1153,6 +1153,7 @@ test.describe('token usage', () => {
 
   test('when a project is out of tokens new work is refused with a reason, a person can ask for more, and an allocation lets work start again', async ({ page }) => {
     await login(page, '/?ui=v2');
+    await page.request.put('/api/token-gate', { data: { mode: 'enforce' } });         // a fresh deployment starts in observe; this test is about enforcing
     const { id, name } = await newProject(page);
     const d = (await (await page.request.post('/api/agent-defs', { data: { kind: 'agent', name: `Gate ${Date.now()}`, scope: 'project', projectId: id } })).json()) as { def: { id: string } };
     const test = () => page.request.post(`/api/agent-defs/${d.def.id}/test`, { data: { inputs: { input_1: 'x' } }, headers: { 'x-project-id': id } });
@@ -1197,5 +1198,20 @@ test.describe('token usage', () => {
     await expect(page.getByTestId('v2-pool-request').filter({ hasText: name })).toHaveCount(0);
     expect((await test()).ok()).toBeTruthy();                                   // work starts again
   });
-});
 
+  test('an administrator can see what the gate would do and turn blocking on from the allocation console', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    await page.request.put('/api/token-gate', { data: { mode: 'observe' } });
+    await page.getByTestId('v2-nav-orgusage').click();
+    await expect(page.getByTestId('v2-gate-sentence')).toContainText('Nothing is blocked yet');
+    await page.getByTestId('v2-gate-enforce').click();
+    await expect(page.getByTestId('v2-gate-confirm')).toContainText('refused');
+    await page.getByTestId('v2-gate-confirm-yes').click();
+    await expect(page.getByTestId('v2-gate-sentence')).toContainText('New work is refused');
+    await expect(page.getByTestId('v2-gate-enforce')).toHaveAttribute('aria-pressed', 'true');
+    expect(((await (await page.request.get('/api/token-gate')).json()) as { mode: string }).mode).toBe('enforce');
+    await page.getByTestId('v2-gate-observe').click();                              // back, without a confirmation: loosening needs none
+    await expect(page.getByTestId('v2-gate-observe')).toHaveAttribute('aria-pressed', 'true');
+    await page.request.put('/api/token-gate', { data: { mode: 'enforce' } });
+  });
+});

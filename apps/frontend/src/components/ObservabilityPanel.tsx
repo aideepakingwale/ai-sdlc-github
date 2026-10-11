@@ -6,7 +6,7 @@ import ModelRoutesControl from './ModelRoutesControl';
 /**
  * AI observability dashboard (D-35, SUPER_ADMIN): live view over every LLM
  * call and MCP tool execution — volumes, tokens, latency, error rate,
- * estimated cost, per-provider/per-day breakdowns and a recent-trace feed.
+ * per-provider/per-day breakdowns and a recent-trace feed.
  * Backed by the same llm_traces table that /metrics (Prometheus) exposes.
  */
 
@@ -14,11 +14,11 @@ interface Summary {
   days: number;
   totals: {
     llm_calls: number; tool_calls: number; prompt_tokens: number; completion_tokens: number;
-    avg_latency_ms: number; p95_latency_ms: number; errors: number; cost_usd: number;
+    avg_latency_ms: number; p95_latency_ms: number; errors: number; cache_read_tokens: number;
   };
   providers: Array<{
     provider: string; calls: number; prompt_tokens: number; completion_tokens: number;
-    avg_latency_ms: number; errors: number; cost_usd: number;
+    avg_latency_ms: number; errors: number;
   }>;
   daily: Array<{ day: string; llm_calls: number; tokens: number }>;
   tools: Array<{ tool: string; calls: number; avg_latency_ms: number; errors: number }>;
@@ -29,7 +29,7 @@ interface Trace {
   ts: string; projectId: string | null; stage: number | null; kind: string;
   provider: string | null; model: string | null; tier: string | null; tag: string | null;
   promptTokens: number; completionTokens: number; latencyMs: number;
-  status: string; error: string | null; costUsd: number;
+  status: string; error: string | null;
   hasBodies?: boolean;
 }
 interface TraceDetail {
@@ -427,7 +427,7 @@ export default function ObservabilityPanel({ onClose, page = false }: { onClose:
                 value={`${((Number(t.errors) / Math.max(1, Number(t.llm_calls) + Number(t.tool_calls))) * 100).toFixed(1)}%`}
                 sub={`${t.errors} errors`}
               />
-              <Kpi label="Est. cost" value={`$${Number(t.cost_usd).toFixed(4)}`} sub="list-price estimate" />
+              <Kpi label="Input from cache" value={`${Math.round((Number(t.cache_read_tokens) / Math.max(1, Number(t.prompt_tokens))) * 100)}%`} sub="from the token ledger" />
             </div>
           )}
 
@@ -461,7 +461,7 @@ export default function ObservabilityPanel({ onClose, page = false }: { onClose:
               <table className="w-full text-left text-xs">
                 <thead>
                   <tr className="text-[9px] uppercase text-slate-400">
-                    <th className="py-1">Provider</th><th>Calls</th><th>Tokens</th><th>Avg ms</th><th>Err</th><th>Cost</th>
+                    <th className="py-1">Provider</th><th>Calls</th><th>Tokens</th><th>Avg ms</th><th>Err</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -472,7 +472,6 @@ export default function ObservabilityPanel({ onClose, page = false }: { onClose:
                       <td>{Number(p.prompt_tokens) + Number(p.completion_tokens)}</td>
                       <td>{Number(p.avg_latency_ms).toFixed(0)}</td>
                       <td className={Number(p.errors) > 0 ? 'text-red-600' : ''}>{p.errors}</td>
-                      <td>${Number(p.cost_usd).toFixed(4)}</td>
                     </tr>
                   ))}
                 </tbody>

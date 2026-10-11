@@ -5,7 +5,8 @@ Design:
     instrumented LlmClient / tool wrapper can attribute spans without
     threading identifiers through every call signature.
   - Traces persist to Postgres (`llm_traces`) — one row per span with tokens,
-    latency, status and an estimated cost — powering the admin dashboard
+    latency and status (no money: tokens are the unit, and the token ledger is the
+    source for them) — powering the admin dashboard
     (`/api/observability/*`), the Prometheus text endpoint (`/metrics`) and
     any external BI over the same table.
   - Recording is fire-and-safe: telemetry failures NEVER break the pipeline.
@@ -25,17 +26,6 @@ from . import usage_context
 
 log = logging.getLogger("telemetry")
 
-# Rough public list prices per 1M tokens (input, output) for cost ESTIMATES on
-# the dashboard — indicative, not billing. Unknown providers count as 0.
-COST_PER_MTOK: dict[str, tuple[float, float]] = {
-    "bedrock": (5.00, 25.00),   # anthropic.claude-opus-4-8
-    "groq": (0.59, 0.79),       # llama-3.3-70b
-    "gemini": (0.10, 0.40),     # gemini flash
-    "grok": (2.00, 10.00),
-    "local": (0.0, 0.0),
-    "mock": (0.0, 0.0),
-}
-
 _run_context: ContextVar[dict[str, Any] | None] = ContextVar("obs_run_context", default=None)
 
 
@@ -43,11 +33,6 @@ def set_run_context(project_id: str | None, stage: int | None = None) -> None:
     _run_context.set({"projectId": project_id, "stage": stage})
     # The token ledger reads the same project/stage (docs/token-governance.md).
     usage_context.update(project_id=project_id, stage=stage)
-
-
-def estimate_cost_usd(provider: str | None, prompt_tokens: int, completion_tokens: int) -> float:
-    cin, cout = COST_PER_MTOK.get(provider or "", (0.0, 0.0))
-    return round((prompt_tokens * cin + completion_tokens * cout) / 1_000_000, 6)
 
 
 class TelemetryService:
@@ -70,7 +55,6 @@ class TelemetryService:
                 provider=provider, model=model, tier=tier, tag=tag,
                 prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
                 latency_ms=latency_ms, status=status, error=(error or "")[:500] or None,
-                cost_usd=estimate_cost_usd(provider, prompt_tokens, completion_tokens),
                 request_body=request_body, response_body=response_body,
             )
         except Exception:  # observability must never take the pipeline down

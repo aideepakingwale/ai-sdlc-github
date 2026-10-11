@@ -132,7 +132,8 @@ async def lifespan(app: FastAPI):
     token_pools = TokenPoolService(PoolRepo(db), authz, db, settings.TOKEN_ALERT_WEBHOOK_URL)
     llm.ledger = UsageLedger(db, token_pools)       # token ledger: one row per provider attempt (docs/token-governance.md)
     container.token_pools = token_pools
-    token_gate = TokenGate(PoolRepo(db), mode=settings.TOKEN_GATE_MODE, task_ceiling=settings.TOKEN_TASK_CEILING)
+    token_gate = TokenGate(PoolRepo(db), mode=settings.TOKEN_GATE_MODE, task_ceiling=settings.TOKEN_TASK_CEILING,
+                           mode_reader=lambda: db.get_setting("token_gate_mode"))
     llm.gate = token_gate
     container.token_gate = token_gate
     canon = CanonService(db, authz, audit)                      # D-38

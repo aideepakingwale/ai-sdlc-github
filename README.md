@@ -135,5 +135,8 @@ role must equal the user's Keycloak role — a PM cannot grant authority the IdP
   `packages/shared`; LLM JSON passes schema validation with one repair retry.
 - **Build loop:** webhook-primary, poll-fallback; at most 5 AI fix iterations, then
   `ESCALATED` (project flagged, humans notified via gate state).
+- **Token governance:** every model call is recorded in an append-only ledger (tokens, per attempt, per person, project and activity); projects and the organisation have token
+  balances that block *new* work at zero; the ledger is reconciled nightly with Bedrock's invocation logs. See
+  [docs/token-governance.md](docs/token-governance.md) and [docs/bedrock-reconciliation.md](docs/bedrock-reconciliation.md).
 - **Audit:** every AI generation and human decision → S3 JSON (immutable) + Postgres index;
   the audit table has a trigger forbidding UPDATE/DELETE.

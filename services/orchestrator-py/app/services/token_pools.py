@@ -105,6 +105,36 @@ class TokenPoolService:
                 "unallocated": (org_row["allocated_tokens"] - carved) if org_row and org_row["metered"] else None,
                 "overAllocated": bool(org_row and org_row["metered"] and carved > org_row["allocated_tokens"])}
 
+    async def gate_status(self, user: UserPublic, gate: Any) -> dict[str, Any]:
+        """The gate's mode, and what it has done (or, in observe mode, would have done) in the last 7 days."""
+        self._admin(user)
+        refused, would = await self._repo.block_counts(7)
+        return {"mode": await gate.mode(), "default": gate.default_mode, "options": list(("observe", "enforce", "off")), "refused7d": refused, "wouldRefuse7d": would}
+
+    async def set_gate_mode(self, user: UserPublic, gate: Any, mode: str) -> dict[str, Any]:
+        self._admin(user)
+        if mode not in ("observe", "enforce", "off"):
+            raise SdlcError("VALIDATION_FAILED", "mode must be observe, enforce or off")
+        await self._db.set_setting("token_gate_mode", mode, user.email)
+        gate.forget_mode()
+        log.warning("token gate mode set to %s by %s", mode, user.email)
+        return await self.gate_status(user, gate)
+
+    async def metrics(self, gate: Any) -> dict[str, Any]:
+        """Numbers for /metrics: the organisation's balance, how many projects are in each state, and what the gate has done this week.
+        No per-project series (that would be unbounded); the console has the per-project view."""
+        pools = await self._repo.metered_pools()
+        states: dict[str, int] = {}
+        org = None
+        for p in pools:
+            if p["scope_type"] == "org":
+                org = p["balance_tokens"]
+                continue
+            st = state_name(p["balance_tokens"], level_for(p["balance_tokens"], p["reference_tokens"]))
+            states[st] = states.get(st, 0) + 1
+        refused, would = await self._repo.block_counts(7)
+        return {"orgBalance": org, "projectStates": states, "refused7d": refused, "wouldRefuse7d": would, "mode": await gate.mode()}
+
     async def detail(self, user: UserPublic, scope_type: str, scope_id: str) -> dict[str, Any]:
         self._admin(user)
         pid = await self._scope(scope_type, scope_id)

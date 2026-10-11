@@ -243,3 +243,60 @@ async def test_tasks_started_together_at_a_positive_balance_are_all_admitted_and
     uc.reset(user_id="ann", project_id=w.p1)
     with pytest.raises(SdlcError):
         await gate.admit(project_id=w.p1, user_id="ann", entry="trigger")
+
+
+# ----------------------------------------------------------------------------- the mode is a runtime setting
+async def test_the_mode_comes_from_the_administrators_setting_with_the_environment_as_the_default():
+    from app.services import token_gate as tg
+    from app.services.token_gate import TokenGate
+
+    value: dict = {"v": None}
+    reads = {"n": 0, "fail": False}
+
+    async def reader():
+        reads["n"] += 1
+        if reads["fail"]:
+            raise RuntimeError("db down")
+        return value["v"]
+
+    gate = TokenGate(SimpleNamespace(), mode="observe", mode_reader=reader)
+    assert await gate.mode() == "observe" and gate.default_mode == "observe"             # nothing set: the default
+    value["v"] = "enforce"
+    assert await gate.mode() == "observe" and reads["n"] == 1                            # cached for a few seconds: not a database read per call
+    gate.forget_mode()
+    assert await gate.mode() == "enforce"
+    value["v"] = "nonsense"
+    gate.forget_mode()
+    assert await gate.mode() == "observe"                                                # an unknown value is ignored
+    value["v"] = "enforce"
+    gate.forget_mode()
+    assert await gate.mode() == "enforce"
+    reads["fail"] = True
+    gate._cached = ("enforce", gate._cached[1] - tg._MODE_TTL - 1)                       # expired
+    assert await gate.mode() == "enforce"                                                # a failed read keeps the last known mode: never looser
+    assert await TokenGate(SimpleNamespace(), mode="bogus").mode() == "enforce"          # a bad default is the strict one
+
+
+@needs_pg
+async def test_an_administrator_moves_the_gate_from_observe_to_enforce_and_sees_what_it_would_have_done(world):
+    w = world
+    gate = w.make_gate("observe")
+    gate._reader = lambda: w.db.get_setting("token_gate_mode")
+    await w.pools.allocate(ROOT, "project", w.p1, 100)
+    await spend(w, w.p1, 500)
+    for _ in range(3):
+        uc.reset(user_id="ann", project_id=w.p1)
+        await gate.admit(project_id=w.p1, user_id="ann", entry="plan")                   # observe: let through, but remember
+    st = await w.pools.gate_status(ROOT, gate)
+    assert (st["mode"], st["default"], st["refused7d"], st["wouldRefuse7d"]) == ("observe", "observe", 0, 3)
+    out = await w.pools.set_gate_mode(ROOT, gate, "enforce")
+    assert out["mode"] == "enforce"
+    uc.reset(user_id="ann", project_id=w.p1)
+    with pytest.raises(SdlcError):
+        await gate.admit(project_id=w.p1, user_id="ann", entry="plan")                   # the very next start is refused, no restart
+    assert (await w.pools.gate_status(ROOT, gate))["refused7d"] == 1
+    with pytest.raises(SdlcError):
+        await w.pools.set_gate_mode(ROOT, gate, "sometimes")
+    ann = UserPublic(id="ann", email="ann@t", displayName="ANN", role="DEV")  # type: ignore[arg-type]
+    with pytest.raises(SdlcError):
+        await w.pools.set_gate_mode(ann, gate, "off")                                    # administrators only

@@ -328,3 +328,19 @@ async def test_the_overview_counts_refused_starts_per_project_for_the_week(world
     await w.db.pool.execute("INSERT INTO token_gate_blocks (project_id, user_id, pool, balance, entry, enforced) VALUES ($1,'ann','project',-5,'plan', FALSE)", w.p1)
     ov = await w.svc.overview(ROOT)
     assert {p["name"]: p["blocked7d"] for p in ov["projects"]} == {"Alpha": 2, "Beta": 1}
+
+
+@needs_pg
+async def test_the_metrics_summarise_balances_and_the_gate_without_per_project_series(world):
+    from app.services.token_gate import TokenGate
+
+    w = world
+    await w.svc.allocate(ROOT, "org", "org", 1000)
+    await w.svc.allocate(ROOT, "project", w.p1, 1000)
+    await w.svc.allocate(ROOT, "project", w.p2, 1000)
+    await w.spend(w.p1, 850)                                                          # Alpha: 15% left, low
+    await w.spend(w.p2, 1500)                                                         # Beta: overdrawn
+    await w.db.pool.execute("INSERT INTO token_gate_blocks (project_id, pool, balance, entry, enforced) VALUES ($1,'project',-500,'plan',TRUE),($1,'project',-500,'plan',FALSE)", w.p2)
+    m = await w.svc.metrics(TokenGate(w.svc._repo, mode="observe"))
+    assert m["orgBalance"] == 1000 - 2350 and m["projectStates"] == {"low": 1, "overdrawn": 1}
+    assert (m["refused7d"], m["wouldRefuse7d"], m["mode"]) == (1, 1, "observe")

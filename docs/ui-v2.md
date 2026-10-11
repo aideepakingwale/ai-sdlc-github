@@ -198,3 +198,9 @@ stack presets and platform templates for administrators. See [project-config.md]
 `v2-profile-tab`, `v2-rules-tab`, `v2-pack-recommended`, `v2-advice` (the card on stages 2 and 3), `v2-templates-tab`, `v2-see-tab`, `v2-org-context`.
 
 Sidebar -> **MindDesigner** is the designer for your own agents and skills (see [custom-agents.md](custom-agents.md)); it was a tab of this page before and now stands on its own.
+
+## Token usage and allocations
+
+Sidebar -> **Token usage** (`v2/usage/UsagePage.tsx`, test hook `v2-nav-usage`) shows what the project spent in tokens: a balance card, totals, tokens per day, by person (a manager sees everyone, another member sees their own line and the project total), by kind of work, stage, model and MindDesigner agent, the calls that produced nothing, and the calls behind every number, with a CSV export. Administrators also get **Token usage (all projects)** at the foot of the sidebar (`v2-nav-orgusage`): the organisation view, the **Token allocations** console (organisation and project balances, allocate / monthly top-up / take back, the new-work gate's mode, requests for more tokens) and **Checked against AWS** (the nightly reconciliation). Test hooks: `v2-balance*`, `v2-pool-*`, `v2-gate-*`, `v2-recon-*`, `v2-tokens-*`.
+
+A slim balance line sits above the stage composer and at the top of MindDesigner once a project has been allocated tokens. When a pool is at zero or below it says "New work is paused" with an *Ask for more tokens* button, and trying to start work opens the out-of-tokens dialog (`v2/usage/TokensDialog.tsx`) wherever the person is. The design, the rules and the API are in [token-governance.md](token-governance.md); the AWS side is in [bedrock-reconciliation.md](bedrock-reconciliation.md). The classic UI shows only the API's error message.

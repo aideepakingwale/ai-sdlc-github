@@ -29,6 +29,21 @@ async def pools_overview(user: UserPublic = Depends(current_user), c: Container 
     return await c.token_pools.overview(user)
 
 
+class GateModeBody(BaseModel):
+    mode: str
+
+
+@router.get("/api/token-gate")
+async def gate_status(user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    return await c.token_pools.gate_status(user, c.token_gate)
+
+
+@router.put("/api/token-gate")
+async def set_gate_mode(body: GateModeBody, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
+    """observe (record what would be refused), enforce (refuse new work at zero or below) or off. Administrators."""
+    return await c.token_pools.set_gate_mode(user, c.token_gate, body.mode)
+
+
 @router.get("/api/token-pools/{scope}/{scope_id}")
 async def pool_detail(scope: str, scope_id: str, user: UserPublic = Depends(current_user), c: Container = Depends(get_container)) -> dict:
     return await c.token_pools.detail(user, scope, scope_id)

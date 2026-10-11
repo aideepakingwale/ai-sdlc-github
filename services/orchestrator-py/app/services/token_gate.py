@@ -14,7 +14,8 @@ A pool that was never allocated is unlimited and never blocks. Work with no proj
 from __future__ import annotations
 
 import logging
-from typing import Any
+import time
+from typing import Any, Awaitable, Callable
 
 from ..domain.errors import SdlcError
 from ..repos.pool_repo import PoolRepo
@@ -29,18 +30,48 @@ def _fmt(n: int) -> str:
     return f"-{s}" if n < 0 else s
 
 
+MODES = ("enforce", "observe", "off")
+MODE_SETTING = "token_gate_mode"
+_MODE_TTL = 5.0
+
+
 class TokenGate:
-    def __init__(self, repo: PoolRepo, *, mode: str = "enforce", task_ceiling: int = 0) -> None:
-        self._repo, self._mode, self._ceiling = repo, mode, max(0, int(task_ceiling))
+    """`mode` is the default from the environment; an administrator can change it at runtime (a platform setting, read with a short cache), so a
+    deployment can run in `observe` first and move to `enforce` without a restart."""
+
+    def __init__(self, repo: PoolRepo, *, mode: str = "enforce", task_ceiling: int = 0, mode_reader: Callable[[], Awaitable[str | None]] | None = None) -> None:
+        self._repo, self._default, self._ceiling = repo, mode if mode in MODES else "enforce", max(0, int(task_ceiling))
+        self._reader = mode_reader
+        self._cached: tuple[str, float] | None = None
 
     @property
-    def mode(self) -> str:
-        return self._mode
+    def default_mode(self) -> str:
+        return self._default
+
+    async def mode(self) -> str:
+        """The mode in force now: the administrator's setting, else the environment default. If the setting cannot be read the last known
+        value stays (the gate never becomes looser because a read failed)."""
+        if self._reader is None:
+            return self._default
+        now = time.monotonic()
+        if self._cached and now - self._cached[1] < _MODE_TTL:
+            return self._cached[0]
+        try:
+            raw = await self._reader()
+            value = raw if raw in MODES else self._default
+        except Exception:  # noqa: BLE001
+            value = self._cached[0] if self._cached else self._default
+        self._cached = (value, now)
+        return value
+
+    def forget_mode(self) -> None:
+        self._cached = None
 
     # ------------------------------------------------------------------ admission
     async def admit(self, *, project_id: str | None, user_id: str | None, entry: str) -> None:
         """Check the balance at the start of a task and mark the current context admitted. Raises TOKENS_EXHAUSTED (or TOKENS_UNAVAILABLE)."""
-        if self._mode == "off":
+        mode = await self.mode()
+        if mode == "off":
             uc.update(admitted=True)
             return
         try:
@@ -56,7 +87,7 @@ class TokenGate:
             blocked = ("organisation", org)
         if blocked:
             pool, row = blocked
-            enforced = self._mode == "enforce"
+            enforced = mode == "enforce"
             try:
                 await self._repo.record_block(project_id=project_id, user_id=user_id, pool=pool, balance=row["balance_tokens"], entry=entry, enforced=enforced)
             except Exception:  # noqa: BLE001 — the refusal does not depend on the log
@@ -70,7 +101,7 @@ class TokenGate:
     async def admit_started(self, project_id: str | None) -> None:
         """A task that was admitted earlier (a queued stage run) is starting: mark it admitted and give it its ceiling. Never refuses."""
         budget = None
-        if self._mode != "off" and self._ceiling:
+        if await self.mode() != "off" and self._ceiling:
             try:
                 state = await self._repo.gate_state(project_id)
                 if any(x and x["metered"] for x in state.values()):
@@ -94,7 +125,7 @@ class TokenGate:
         ctx = uc.current()
         if ctx.admitted:
             t = ctx.task
-            if t is not None and t.ceiling and t.spent >= t.ceiling and self._mode == "enforce":
+            if t is not None and t.ceiling and t.spent >= t.ceiling and await self.mode() == "enforce":
                 raise SdlcError(
                     "TASK_TOKEN_CEILING",
                     f"This task used its safety limit of {_fmt(t.ceiling)} tokens and was stopped. What it finished is kept. Start it again to continue, or ask an administrator to look at why it used so much.",

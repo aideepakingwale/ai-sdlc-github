@@ -190,6 +190,16 @@ class PoolRepo:
             "SELECT project_id, count(*)::int AS n FROM token_gate_blocks WHERE ts >= now() - make_interval(days => $1) AND enforced AND project_id IS NOT NULL GROUP BY 1", days)
         return {r["project_id"]: r["n"] for r in rows}
 
+    async def metered_pools(self) -> list[dict[str, Any]]:
+        rows = await self._p.fetch("SELECT scope_type, balance_tokens, reference_tokens FROM token_pools WHERE metered")
+        return [dict(r) for r in rows]
+
+    async def block_counts(self, days: int = 7) -> tuple[int, int]:
+        """(starts refused, starts that observe mode would have refused) in the last `days`."""
+        r = await self._p.fetchrow(
+            "SELECT count(*) FILTER (WHERE enforced)::int AS refused, count(*) FILTER (WHERE NOT enforced)::int AS would FROM token_gate_blocks WHERE ts >= now() - make_interval(days => $1)", days)
+        return r["refused"], r["would"]
+
     # ------------------------------------------------------------------ requests for more tokens
     async def open_request(self, project_id: str, user_id: str) -> dict[str, Any] | None:
         r = await self._p.fetchrow("SELECT * FROM token_requests WHERE project_id=$1 AND requested_by=$2 AND status='open'", project_id, user_id)
