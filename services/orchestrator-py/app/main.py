@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 
 from .agents.phase_agents import AgentDeps
-from .api import agents_routes, auth_routes, chat_routes, config_routes, project_routes, rules_routes
+from .api import agents_routes, auth_routes, chat_routes, config_routes, project_routes, rules_routes, usage_routes
 from .api.deps import Container
 from .auth.keycloak import KeycloakAuth
 from .config import get_settings
@@ -40,7 +40,9 @@ from .services.publisher import PublishService
 from .services.rag import RagService
 from .services.skills import SkillService
 from .services.telemetry import TelemetryService
+from .repos.usage_repo import UsageRepo
 from .services.usage_ledger import UsageLedger
+from .services.usage_reports import UsageReports
 from .services.workflow import WorkflowService
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -200,6 +202,7 @@ async def lifespan(app: FastAPI):
     chat.agent_defs = agent_defs
     container.workflow = workflow
     container.telemetry = telemetry
+    container.usage_reports = UsageReports(UsageRepo(db), authz)   # token ledger reports (phase 1)
     container.extras["publisher"] = publisher
     container.code_gen = code_gen
     container.canon, container.formworks = canon, formworks
@@ -316,3 +319,4 @@ app.include_router(project_routes.router)
 app.include_router(config_routes.router)
 app.include_router(rules_routes.router)
 app.include_router(agents_routes.router)
+app.include_router(usage_routes.router)

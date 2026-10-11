@@ -37,6 +37,15 @@ class AuthzService:
             return
         raise SdlcError("FORBIDDEN", "You are not a member of this project")
 
+    async def is_project_manager(self, project_id: str, user: UserPublic) -> bool:
+        """The managing PROJECT_MANAGER (its creator) or a SUPER_ADMIN: who sees every person's figures (token reports)."""
+        if user.role == "SUPER_ADMIN":
+            return True
+        if user.role != "PROJECT_MANAGER":
+            return False
+        project = await self._db.get_project(project_id)
+        return bool(project and project["created_by"] == user.id)
+
     def assert_can_create_project(self, user: UserPublic) -> None:
         if not can_manage_projects(user.role):
             raise SdlcError(

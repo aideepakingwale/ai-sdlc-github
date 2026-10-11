@@ -25,6 +25,7 @@ from ..repos.pg import Database, new_id
 from ..services.applicability import (
     constraints_block, derive_traits, inapplicable_types, project_corpus,
 )
+from ..services import usage_context
 from ..services.audit import AuditService
 from ..services.content_store import ContentStore, artifact_key, source_key
 from ..services.content_validators import format_issues, syntactic_issues
@@ -1532,11 +1533,13 @@ async def _generate_validated(deps: AgentDeps, state: AgentState, emit: Emit) ->
             emit({"type": "node", "node": "validator",
                   "label": f"Validator: reworking only {', '.join(flagged)} "
                            f"({len(flagged)} of {len(type(out).model_fields)} artifacts) - the rest is kept"})
-            out = await _generate(
-                deps, rework_state.model_copy(update={"retrigger_fields": flagged, "per_artifact": True}),
-                emit, rework=_rework_text(verdict))
+            with usage_context.scope(activity="stage.rework"):     # token ledger: these tokens are rework, not first-pass writing
+                out = await _generate(
+                    deps, rework_state.model_copy(update={"retrigger_fields": flagged, "per_artifact": True}),
+                    emit, rework=_rework_text(verdict))
         else:
-            out = await _generate(deps, rework_state, emit, rework=_rework_text(verdict))
+            with usage_context.scope(activity="stage.rework"):
+                out = await _generate(deps, rework_state, emit, rework=_rework_text(verdict))
     return out
 
 

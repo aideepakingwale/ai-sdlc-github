@@ -313,3 +313,15 @@ async def test_a_project_header_is_attributed_only_for_a_project_the_person_can_
     assert await _header_project(req("ghost"), c, user) is None           # an administrator naming a project that does not exist
     assert await _header_project(req(None), c, user) is None
     assert await _header_project(req("x" * 100), c, user) is None
+
+
+async def test_an_activity_override_reaches_tasks_spawned_inside_the_scope_and_ends_with_it():
+    seen: list[str] = []
+
+    async def worker() -> None:
+        seen.append(build_rows(request_id="r", activity="stage.generate", tag=None, usage_log=[_attempt()])[0]["activity"])
+
+    with uc.scope(activity="stage.rework"):
+        await asyncio.gather(*(asyncio.get_running_loop().create_task(worker()) for _ in range(3)))
+    await worker()
+    assert seen == ["stage.rework"] * 3 + ["stage.generate"]

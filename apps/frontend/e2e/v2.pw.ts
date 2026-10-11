@@ -1059,3 +1059,47 @@ test.describe('custom agents', () => {
     expect(Array.isArray(body.open)).toBe(true);
   });
 });
+
+test.describe('token usage', () => {
+  test('a project shows what it spent, by person and by kind of work, and an administrator can see every project', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    // design-time work from the open project: an agent is drafted and audited, which calls the model several times
+    const body = { description: 'Scores refunds', prompt: 'You review refund requests for fraud.\nAnalyse {refund} and return a risk score from 0 to 1 and the three strongest signals.', role: 'reason', inputs: [{ name: 'refund', type: 'object', source: 'brief' }], outputs: [{ name: 'fraud_score', type: 'number', artefact_type: 'RISK_ASSESSMENT', format: 'JSON' }] };
+    const d = (await (await page.request.post('/api/agent-defs', { data: { kind: 'agent', name: `Usage ${Date.now()}`, scope: 'project', projectId: id, body } })).json()) as { def: { id: string } };
+    expect((await page.request.post(`/api/agent-defs/${d.def.id}/audit`, { headers: { 'x-project-id': id } })).ok()).toBeTruthy();
+
+    await openProject(page, name);
+    await page.getByTestId('v2-nav-usage').click();
+    await expect(page.getByTestId('v2-usage-page')).toBeVisible();
+    // the mock and local models are not provider tokens: the default view is empty, "Everything" shows them
+    await expect(page.getByTestId('v2-usage-headline')).toContainText('No model calls');
+    await page.getByTestId('v2-usage-scope').selectOption('all');
+    await expect(page.getByTestId('v2-usage-headline')).toContainText('tokens across');
+    await expect(page.getByTestId('v2-usage-total')).not.toHaveText('0');
+    await expect(page.getByTestId('v2-usage-people')).toContainText('(you)');
+    await expect(page.getByTestId('v2-usage-activity')).toContainText('Designing agents');
+    await expect(page.getByTestId('v2-usage-csv')).toHaveAttribute('href', new RegExp(`/api/projects/${id}/usage/export.csv\\?from=.*billable=all`));
+
+    // the daily columns read out the figure under the pointer
+    const day = page.getByTestId('v2-usage-days').getByRole('listitem').last();
+    await day.hover();
+    await expect(page.getByTestId('v2-usage-day-readout')).toContainText('tokens');
+
+    // the calls behind the numbers
+    await page.getByTestId('v2-usage-calls-toggle').click();
+    await expect(page.getByTestId('v2-usage-calls').locator('tbody tr').first()).toContainText('Designing agents');
+
+    // a person's line is only a line inside this project: picking them narrows the page to what they used here
+    const people = page.getByTestId('v2-usage-person');
+    await expect(people.locator('option')).toHaveCount(2);
+
+    // administrators: the whole organisation, then into a project
+    await page.getByTestId('v2-usage-tab-org').click();
+    await expect(page.getByTestId('v2-usage-org')).toBeVisible();
+    await expect(page.getByTestId('v2-usage-projects')).toContainText(name);
+    await page.getByTestId('v2-usage-projects').getByRole('button', { name: new RegExp(name) }).click();
+    await expect(page.getByTestId('v2-usage-people')).toBeVisible();
+    await expect(page.getByTestId('v2-usage-headline')).toContainText(name);
+  });
+});

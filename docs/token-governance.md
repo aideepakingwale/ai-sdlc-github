@@ -154,7 +154,7 @@ Bedrock's own account quotas (tokens and requests per minute) are what really th
 | Phase | Content | Size |
 |---|---|---|
 | 0. Capture (**built**) | Full usage object and per-attempt rows in the gateway; partial usage on failure; `UsageContext` with required `activity` and user attribution for HTTP and background jobs; the ledger table; billable flag. No behaviour change. | M |
-| 1. Reporting | Rollup, project and organisation views and API, per-person breakdown inside a project, CSV, waste view; MindDesigner Usage moves onto the ledger. | M |
+| 1. Reporting (**built**) | Rollup, project and organisation views and API, per-person breakdown inside a project, CSV, waste view; MindDesigner Usage moves onto the ledger. | M |
 | 2. Reconcile | Invocation logging, nightly drift check, application inference profiles with tags. | S/M |
 | 3. Pools and allocation | `token_pools` and `token_grants`, admin allocation console, balance meter, thresholds and notifications; **recording only** (the balance can go negative and nothing is blocked), so balances can be set sensibly from real consumption. | M |
 | 4. The gate | Block new tasks at zero or below, fail-closed, "Request tokens", per-task safety ceiling, retire `agent_usage` limits. | M |
@@ -207,7 +207,7 @@ What changed, and where to look.
 * Attribution: the `current_user` dependency sets the person; the project comes from the route (`/projects/{project_id}/...`) or, for calls whose URL has none (MindDesigner audit, test, draft, compare), from the `X-Project-Id` header the web app sends for the open project. The header is honoured only for a project the person can access and that exists. Background generation jobs set the person (resolved from the job's `started_by` email), the project, the stage and the job id explicitly, so one job never inherits the previous job's identity. Agent runs add the agent id and classify their calls (`agent.run`, `agent.stage_run`, `agent.build`).
 * A billable call with no project logs `UNATTRIBUTED model call` (the target is zero).
 
-**Not in phase 0, on purpose.** No quota, no reports, no UI, and `llm_traces`, `audit_index` and `agent_usage` are untouched (they keep working; phase 1 moves reporting onto the ledger, phase 4 retires the custom-agent limits). `stage.rework` exists in the taxonomy but is not assigned yet: rework passes are visible today through the tag and the per-attempt rows.
+**Not in phase 0, on purpose.** No quota, no reports, no UI, and `llm_traces`, `audit_index` and `agent_usage` are untouched (they keep working; phase 1 moves reporting onto the ledger, phase 4 retires the custom-agent limits). Validator rework passes are classed `stage.rework` (the regeneration the validator triggers), so first-pass writing and rework are separate in every report.
 
 **Checking it on a running system**
 
@@ -231,3 +231,23 @@ FROM llm_usage_events WHERE provider = 'bedrock';
 ```
 
 **To confirm against a real Bedrock account.** The cache fields were implemented from the SDK's types and covered with a faked stream; they have not yet been seen on a live response. After the first real run, compare a few `provider_request_id` values and their token counts with the Bedrock invocation log (phase 2 automates this).
+
+## 14. Phase 1, as built (reporting)
+
+**Where it is.** A *Token usage* page in the web app: in the project sidebar (Configure) for everyone on the project, and "Token usage (all projects)" at the bottom of the sidebar for administrators, who can also switch between "This project" and "Whole organisation" and open any project from the organisation list.
+
+**What it shows** (all in tokens): total, calls, input versus output, the share of input served from the prompt cache, and the share spent on calls that produced nothing (failed, refused, cancelled, cut off); tokens per day (hover or tab to a day for its figure); by person (inside the project), by kind of work (the activity list), by stage, by model, by MindDesigner agent; a list of the unproductive calls grouped by work and outcome; and the calls behind every number, newest first, filterable by work and outcome. The period (7, 30 or 90 days) and a **which tokens** switch apply to everything: *Provider tokens* (the default: what a real provider billed), *Offline (mock and local)*, or *Everything*. CSV export of the same selection.
+
+**Who sees what.** The project's manager and administrators see every person's line and can narrow the whole page to one person. Any other member sees the project total and their own line ("Just me" narrows the page to them); their drill-down and CSV contain only their own rows; asking for someone else's figures is refused. A project you are not on is refused. The organisation view is administrators only and stops at projects (it never lists people).
+
+**API** (all `GET`; dates are UTC days, `from`/`to` inclusive, default the last 30 days, at most 400):
+`/api/projects/{id}/usage`, `/api/projects/{id}/usage/events` (`activity`, `status`, `limit`, `offset`), `/api/projects/{id}/usage/export.csv`, `/api/usage`, `/api/usage/export.csv`; common parameters `billable=billable|offline|all` and, in a project, `person=<user id>|me`. CSV cells that start with `=`, `+`, `-` or `@` are prefixed so a spreadsheet never runs them as formulas.
+
+**Differences from the design, on purpose.**
+
+* No `llm_usage_daily` rollup table yet: reports aggregate the ledger directly, using its project and time indexes. A rollup is a later optimisation when volume needs it; the reports would not change.
+* The composer meter and the forecast arrive with the pools in phase 3 (there is no balance to show yet).
+* MindDesigner's own *Usage* tab and its monthly agent budget still read `agent_usage` (history before the ledger lives only there). The project page lists tokens per agent from the ledger from now on; the old limit is retired in phase 4.
+* Ledger rows of deleted projects are kept (finance history); they appear in the organisation view as "Deleted project (id)" and are not clickable.
+
+**Open point found while building it.** Building an agent for the *organisation's* library (Governance → MindDesigner) happens outside any project, so its audit and test calls have no project and show up as "no project or person recorded" in the organisation view (the amber notice). Under the rule that all work is charged to a project, phase 4 needs a decision: ask the author to pick the project to charge when they audit or test an organisation agent, or charge such design time to the organisation pool. Until then they are counted and visible but charged to nobody.

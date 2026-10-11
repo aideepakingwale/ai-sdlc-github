@@ -7,7 +7,7 @@ import { StageDot } from './bits';
 import { useV2, type ProjectTab } from './store';
 
 export type V2View = 'dashboard' | 'pipeline' | 'stage';
-export type V2Modal = 'explorer' | 'context' | 'minddesigner' | 'quality' | 'governance' | 'observability' | 'models' | 'designer' | 'connections';
+export type V2Modal = 'explorer' | 'context' | 'minddesigner' | 'quality' | 'usage' | 'orgusage' | 'governance' | 'observability' | 'models' | 'designer' | 'connections';
 
 export const PROJECT_TOOLS: Array<{ tab: ProjectTab; label: string; hint: string; icon: IconName }> = [
   { tab: 'team', label: 'Team', hint: 'Who is on this project and which stage each person covers', icon: 'users' },
@@ -150,6 +150,10 @@ export default function Sidebar({
             <Icon name="chart" size={16} className="text-slate-500" />
             <span><span className="block text-sm font-medium text-navy">Quality</span><span className="block text-xs text-slate-500">Scores and rework</span></span>
           </Item>
+          <Item onClick={() => onModal('usage')} testid="v2-nav-usage">
+            <Icon name="chart" size={16} className="text-slate-500" />
+            <span><span className="block text-sm font-medium text-navy">Token usage</span><span className="block text-xs text-slate-500">What the project spent, and on what</span></span>
+          </Item>
           <Item onClick={() => onModal('connections')} testid="v2-nav-connections">
             <Icon name="cloud" size={16} className="text-slate-500" />
             <span><span className="block text-sm font-medium text-navy">Connections</span><span className="block text-xs text-slate-500">Git, Jira, Confluence, knowledge base</span></span>
@@ -177,6 +181,7 @@ export default function Sidebar({
 
       <div className="mt-auto border-t border-slate-200 p-2 pt-2">
         <button type="button" onClick={() => onModal('governance')} className="block w-full rounded-lg px-3 py-1.5 text-left text-sm text-slate-600 hover:bg-slate-200/60" data-testid="v2-nav-governance">Governance</button>
+        {isAdmin && <button type="button" onClick={() => onModal('orgusage')} className="block w-full rounded-lg px-3 py-1.5 text-left text-sm text-slate-600 hover:bg-slate-200/60" data-testid="v2-nav-orgusage">Token usage (all projects)</button>}
         {isAdmin && <button type="button" onClick={() => onModal("observability")} className="block w-full rounded-lg px-3 py-1.5 text-left text-sm text-slate-600 hover:bg-slate-200/60" data-testid="v2-nav-observability">Observability</button>}
         {isAdmin && <button type="button" onClick={() => onModal('models')} className="block w-full rounded-lg px-3 py-1.5 text-left text-sm text-slate-600 hover:bg-slate-200/60" data-testid="v2-nav-models">Model routes</button>}
       </div>
