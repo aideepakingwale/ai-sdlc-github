@@ -10,7 +10,7 @@ import pytest
 from app.agents import specialists
 from app.services import agent_catalog
 from app.services.artifact_formats import norm_type
-from app.services.plan_graph import build_graph, fold_events
+from app.services.plan_graph import build_graph, fold_events, reconstruct
 from app.services.plan_graph_service import PlanGraphService
 from app.services.plan_model import derive_plan_steps
 
@@ -205,8 +205,17 @@ class FakeChat:
 
 
 class FakeDb:
-    def __init__(self, stored: dict | None = None) -> None:
-        self.stored, self.saved = stored, []
+    def __init__(self, stored: dict | None = None, parts: list | None = None, runs: list | None = None, validations: list | None = None) -> None:
+        self.stored, self.saved, self.parts, self.runs, self.validations = stored, [], parts or [], runs or [], validations or []
+
+    async def list_generation_parts(self, *_a: Any) -> list:
+        return self.parts
+
+    async def list_artefact_runs(self, *_a: Any) -> list:
+        return self.runs
+
+    async def list_stage_validations(self, *_a: Any) -> list:
+        return self.validations
 
     async def latest_generation_job(self, *_a: Any) -> dict:
         return {"id": "job-9", "status": "done"}
@@ -226,9 +235,9 @@ class FakeRedis:
         return self.events
 
 
-def service(status: str, *, active: bool, stored: bool, events: list[bytes] | None = None) -> tuple[PlanGraphService, FakeDb]:
+def service(status: str, *, active: bool, stored: bool, events: list[bytes] | None = None, **durable: Any) -> tuple[PlanGraphService, FakeDb]:
     base = graph()
-    db = FakeDb({"job_id": "job-8", "status": "done", "graph": fold_events(base, [{"type": "done"}])} if stored else None)
+    db = FakeDb({"job_id": "job-8", "status": "done", "graph": fold_events(base, [{"type": "done"}])} if stored else None, **durable)
     svc = PlanGraphService(FakeChat(status), db, FakeRedis(events or []), SimpleNamespace(route_chain=lambda r: _chain(r)))
     jobs = SimpleNamespace(is_active=lambda *_a: _async(active), _progress_key=lambda p, n: f"progress:{p}:{n}")
     svc.jobs = jobs
@@ -378,3 +387,107 @@ async def test_a_json_generation_that_starts_another_attempt_tells_a_listener():
     answers = iter(["bad", '{"name": "q"}'])
     inst, _ = await c.generate_json(intent="generation", messages=[{"role": "user", "content": "x"}], schema=Shape, activity="stage.generate", max_attempts=3)   # no listener: nothing breaks
     assert inst.name == "q"
+
+
+# ----------------------------------------------------------------------------- statuses for runs that left no graph, and for plans worded differently
+def test_sub_agents_do_not_depend_on_how_the_planner_words_the_outputs():
+    specs = specs_of()
+    plan = plan_for(specs)
+    plan["intel"] = {"willProduce": [{"output": "A high level design document", "include": True}, {"output": "Decision log", "include": True}]}   # none match an artefact type
+    plan["stage"] = {"outputs": []}
+    g = graph(specs=specs, plan=plan)
+    assert {n["id"] for n in g["nodes"] if n["type"] == "subagent"} == {f"sub:{s['id']}" for s in specs if s["artifacts"] or True}
+    assert set(g["fieldOwners"]) == {f for s in specs for f in s["fields"]}, "every field the run writes has a node to report its progress"
+    first = next(s for s in specs if s["artifacts"])
+    plan["intel"]["willProduce"].append({"output": first["artifacts"][0], "include": False})
+    left_out = {f"sub:{s['id']}" for s in specs if s["artifacts"] and all(norm_type(a) == norm_type(first["artifacts"][0]) for a in s["artifacts"])}
+    assert not (left_out & {n["id"] for n in by_id(graph(specs=specs, plan=plan)).values()}), "an agent whose every deliverable was unticked is left out"
+
+
+def test_a_step_event_for_a_sub_agent_that_was_not_drawn_adds_it_instead_of_being_lost():
+    g = graph()
+    n = by_id(fold_events(g, [{"type": "step", "id": "sub:brand-new", "name": "Brand new agent", "status": "done", "tokens": 90}]))
+    assert n["sub:brand-new"]["status"] == "done" and n["sub:brand-new"]["unplanned"] is True and n["sub:brand-new"]["label"] == "Brand new agent"
+
+
+def saved_run(g: dict[str, Any], *, failed_field: str | None = None, reused_field: str | None = None) -> tuple[list, list]:
+    parts = []
+    reused_owner = g["fieldOwners"].get(reused_field) if reused_field else None
+    failed_owner = g["fieldOwners"].get(failed_field) if failed_field else None
+    for f, o in g["fieldOwners"].items():
+        st = "failed" if o == failed_owner and failed_owner and f == failed_field else "done"
+        parts.append({"field": f, "status": st, "error": "boom" if st == "failed" else None, "run": {"model": "m-1", "tokens": {"prompt": 100, "completion": 20}, "reused": bool(reused_owner) and o == reused_owner}})
+    runs = []
+    for n in g["nodes"]:
+        if n["type"] == "artefact":
+            runs.append({"agent_id": "x", "agent_name": "x", "type": n["id"][4:], "run": {}})
+    return parts, runs
+
+
+def test_a_run_with_no_stored_graph_is_rebuilt_from_what_it_saved():
+    g = graph()
+    first_of: dict[str, str] = {}
+    for f, o in g["fieldOwners"].items():
+        first_of.setdefault(o, f)
+    fields = list(first_of.values())                                             # one field per sub-agent, so each shows its own state
+    parts, runs = saved_run(g, failed_field=fields[0], reused_field=fields[1])
+    ca = custom_agent()
+    g2 = graph(custom=[ca, custom_agent("c9", "Never ran")])
+    runs.append({"agent_id": "c1", "agent_name": "Risk scorer", "type": "RISK_ASSESSMENT", "run": {"custom": True, "model": "m-r", "tokens": {"prompt": 50, "completion": 10}, "delegates": []}})
+    out = reconstruct(g2, parts=parts, runs=runs, validations=[{"ok": False, "attempt": 0, "errors": ["a"]}, {"ok": True, "attempt": 1, "errors": []}], stage_status="PENDING_REVIEW")
+    assert out is not None
+    n = by_id(out)
+    owners = g2["fieldOwners"]
+    assert n[owners[fields[0]]]["status"] == "failed" and n[owners[fields[0]]]["detail"] == "boom"
+    assert n[owners[fields[1]]]["status"] == "reused"
+    done = fields[2:]
+    assert done and all(n[owners[f]]["status"] == "done" and n[owners[f]]["model"] == "m-1" and n[owners[f]]["tokens"] >= 120 for f in done)
+    assert n["lead"]["status"] == "done" and n["guard"]["status"] == "done" and n["in:instructions"]["status"] == "done"
+    assert n["cust:c1"]["status"] == "done" and n["cust:c1"]["tokens"] == 60 and n["cust:c9"]["status"] == "skipped" and "no output" in n["cust:c9"]["detail"]
+    assert n["validate"]["status"] == "done" and n["validate"]["retries"] == 1                    # it passed after one rework
+    assert n["gate"]["status"] == "waiting" and out["run"]["source"] == "reconstructed" and out["run"]["state"] == "done"
+    assert n["tool:github_commit_diagrams"]["detail"].startswith("Whether this tool ran was not recorded")
+    assert n["tool:confluence_publish_hld"]["status"] == "deferred"                               # the external write waits for the gate
+    approved = by_id(reconstruct(g2, parts=parts, runs=runs, validations=[], stage_status="APPROVED"))
+    assert approved["gate"]["status"] == "done" and approved["tool:confluence_publish_hld"]["status"] == "done" and approved["validate"]["status"] == "planned"
+    flagged = by_id(reconstruct(g2, parts=parts, runs=runs, validations=[{"ok": False, "attempt": 0, "errors": ["x", "y"]}], stage_status="ESCALATED"))
+    assert flagged["validate"]["status"] == "failed" and "2 issue(s)" in flagged["validate"]["detail"] and flagged["gate"]["status"] == "failed"
+
+
+def test_a_stage_that_saved_nothing_has_nothing_to_rebuild_and_a_run_that_only_failed_says_so():
+    g = graph()
+    assert reconstruct(g, parts=[], runs=[], validations=[], stage_status="PENDING_REVIEW") is None
+    failed = reconstruct(g, parts=[{"field": f, "status": "failed", "error": "e", "run": None} for f in g["fieldOwners"]], runs=[], validations=[], stage_status="IN_PROGRESS")
+    assert failed is not None and by_id(failed)["lead"]["status"] == "failed" and failed["run"]["state"] == "failed"
+    interrupted = by_id(reconstruct(g, parts=[{"field": next(iter(g["fieldOwners"])), "status": "running", "error": None, "run": None}], runs=[], validations=[], stage_status="IN_PROGRESS"))
+    assert any(x["status"] == "failed" and "did not finish" in x.get("detail", "") for x in interrupted.values())
+
+
+async def test_the_view_uses_the_stored_graph_then_buffered_events_then_what_the_run_saved():
+    g = graph()
+    parts, runs = saved_run(g)
+    # nothing stored and the live events have expired: the statuses are rebuilt from what the run saved
+    old, _ = service("PENDING_REVIEW", active=False, stored=False, parts=parts, runs=runs)
+    v = await old.view("p", 2, USER)
+    assert v["mode"] == "record" and v["graph"]["run"]["source"] == "reconstructed" and by_id(v["graph"])["lead"]["status"] == "done"
+    assert any(n["status"] == "done" for n in v["graph"]["nodes"] if n["type"] == "subagent")
+    # nothing stored, but the events are still buffered (the record could not be written): they are folded
+    buffered, _ = service("PENDING_REVIEW", active=False, stored=False, events=[b'{"type":"session"}', b'{"type":"node","node":"guardrail","label":"x"}', b'{"type":"done"}'], parts=parts, runs=runs)
+    assert (await buffered.view("p", 2, USER))["graph"]["run"]["source"] == "events"
+    # a stored graph wins
+    stored, _ = service("PENDING_REVIEW", active=False, stored=True, parts=parts, runs=runs)
+    assert (await stored.view("p", 2, USER))["graph"]["run"]["source"] == "stored"
+    # a stage being re-planned shows the plan, but the last run is one click away
+    amend, _ = service("AMEND_REQUESTED", active=False, stored=False, parts=parts, runs=runs)
+    assert (await amend.view("p", 2, USER))["mode"] == "planned" and (await amend.view("p", 2, USER, "run"))["graph"]["run"]["source"] == "reconstructed"
+
+
+def test_a_sub_agent_that_writes_several_fields_shows_its_worst_one():
+    g = graph()
+    multi = next(o for o in set(g["fieldOwners"].values()) if sum(1 for x in g["fieldOwners"].values() if x == o) > 1) if len(set(g["fieldOwners"].values())) < len(g["fieldOwners"]) else None
+    if multi is None:
+        pytest.skip("no specialist of this stage writes more than one field")
+    fs = [f for f, o in g["fieldOwners"].items() if o == multi]
+    parts = [{"field": fs[0], "status": "done", "error": None, "run": {}}, {"field": fs[1], "status": "failed", "error": "second part broke", "run": {}}]
+    out = by_id(reconstruct(g, parts=parts, runs=[], validations=[], stage_status="PENDING_REVIEW"))
+    assert out[multi]["status"] == "failed" and out[multi]["detail"] == "second part broke"

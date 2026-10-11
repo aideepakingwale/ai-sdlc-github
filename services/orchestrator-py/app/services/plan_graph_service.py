@@ -14,7 +14,7 @@ from ..agents import specialists
 from ..domain.errors import SdlcError
 from ..domain.models import UserPublic
 from . import agent_catalog
-from .plan_graph import build_graph, fold_events
+from .plan_graph import build_graph, fold_events, reconstruct
 
 log = logging.getLogger("plan-graph")
 
@@ -73,29 +73,42 @@ class PlanGraphService:
         return out
 
     # ------------------------------------------------------------------ the views
+    async def _past_run(self, project_id: str, phase: int, graph: dict[str, Any], stored: dict | None, status: str, job: Any) -> dict[str, Any] | None:
+        """The graph of the last finished run, from the best source there is: the graph stored when it ended; else its buffered events (a record that
+        could not be written); else what the run saved (runs from before graphs were stored, or whose events have expired)."""
+        if stored is not None:
+            return {**stored["graph"], "run": {**stored["graph"].get("run", {}), "jobId": stored["job_id"], "state": stored["status"], "source": "stored"}}
+        events = await self._events(project_id, phase)
+        if any(e.get("type") in ("session", "part", "step", "tool_call") for e in events):
+            state = "failed" if any(e.get("type") == "error" for e in events) else "done"
+            return fold_events(graph, events, run={"state": state, "jobId": job["id"] if job else None, "source": "events"})
+        parts = await self._db.list_generation_parts(project_id, phase)
+        runs = await self._db.list_artefact_runs(project_id, phase)
+        validations = await self._db.list_stage_validations(project_id, phase)
+        return reconstruct(graph, parts=parts, runs=runs, validations=validations, stage_status=status)
+
     async def view(self, project_id: str, phase: int, user: UserPublic, which: str = "auto") -> dict[str, Any]:
         if which not in ("auto", "planned", "run"):
             raise SdlcError("VALIDATION_FAILED", "view must be auto, planned or run")
         graph, plan = await self._planned(project_id, phase, user)
         job = await self._db.latest_generation_job(project_id, phase)
         active = await self.jobs.is_active(project_id, phase)
-        stored = await self._db.get_run_graph(project_id, phase)
-        has_record = stored is not None
         status = plan.get("status") or ""
+        past = None if active else await self._past_run(project_id, phase, graph, await self._db.get_run_graph(project_id, phase), status, job)
         if which == "planned":
             mode = "planned"
         elif active:
             mode = "live"
-        elif which == "run":
-            mode = "record" if has_record else "planned"
+        elif past is not None and (which == "run" or status in RECORD_STATUSES):
+            mode = "record"
         else:
-            mode = "record" if has_record and status in RECORD_STATUSES else "planned"
+            mode = "planned"
         out_graph = graph
         if mode == "live":
             out_graph = fold_events(graph, await self._events(project_id, phase), run={"state": "running", "jobId": job["id"] if job else None})
-        elif mode == "record" and stored:
-            out_graph = {**stored["graph"], "run": {**stored["graph"].get("run", {}), "jobId": stored["job_id"], "state": stored["status"]}}
-        return {"mode": mode, "graph": out_graph, "available": {"planned": True, "run": has_record or active},
+        elif mode == "record":
+            out_graph = past
+        return {"mode": mode, "graph": out_graph, "available": {"planned": True, "run": active or past is not None},
                 "stageStatus": status, "canEdit": bool(plan.get("canEdit"))}
 
     # ------------------------------------------------------------------ the record
@@ -103,7 +116,8 @@ class PlanGraphService:
         """Store the folded graph when a run ends. Never raises: the record is a convenience, not part of the run."""
         try:
             graph, _ = await self._planned(project_id, phase, user)
-            folded = fold_events(graph, await self._events(project_id, phase), run={"state": status, "jobId": job_id})
+            events = await self._events(project_id, phase)
+            folded = fold_events(graph, events, run={"state": status, "jobId": job_id})
             await self._db.save_run_graph(job_id, project_id, phase, status, folded)
         except Exception:  # noqa: BLE001
             log.warning("could not record the run graph for %s/%s", project_id, phase, exc_info=True)

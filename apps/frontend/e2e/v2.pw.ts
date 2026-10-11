@@ -1354,4 +1354,63 @@ test.describe('current plan graph', () => {
     await expect(page.getByTestId('v2-plan-graph-node-status')).toHaveText('Retrying');
     await page.screenshot({ path: 'test-results/plan-graph-statuses.png' });
   });
+
+  test('a run that left no stored graph and whose live events are gone still shows each step as done or failed', async ({ page }) => {
+    // Mimics a run from before graphs were stored: the stored graph and the buffered events are removed, so only what the run saved is left.
+    const dsn = process.env.E2E_DATABASE_URL;
+    test.skip(!dsn, 'E2E_DATABASE_URL is not set');
+    test.setTimeout(180_000);
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-stage-1').click();
+    await page.getByTestId('v2-composer').getByRole('textbox').first().click();
+    await page.keyboard.type('Build a loyalty points API for a retail bank. Python 3.12 and FastAPI on AWS.');
+    await page.getByTestId('v2-primary').click();
+    await expect(page.getByTestId('v2-stagechat')).toHaveAttribute('data-mode', 'plan', { timeout: 60_000 });
+    await page.getByTestId('v2-primary').click();
+    for (let i = 0; i < 4; i++) {
+      const q = page.getByTestId('v2-questions');
+      if (!(await q.isVisible().catch(() => false))) { await page.waitForTimeout(1500); if (!(await q.isVisible().catch(() => false))) break; }
+      await q.locator('button[aria-pressed]').first().click();
+      await page.getByTestId('v2-primary').click();
+      await page.waitForTimeout(800);
+    }
+    await expect(page.getByTestId('v2-stagechat')).toHaveAttribute('data-mode', /review|escalated/, { timeout: 120_000 });
+    execFileSync('psql', [dsn!, '-v', 'ON_ERROR_STOP=1', '-c', `DELETE FROM stage_run_graphs WHERE project_id='${id}'`]);
+    try { execFileSync('redis-cli', ['-u', process.env.E2E_REDIS_URL ?? 'redis://localhost:6379', 'DEL', `progress:${id}:1`]); } catch { /* no redis-cli: the buffered events are folded instead, which shows the same marks */ }
+    await page.getByTestId('v2-current-plan').click();
+    const view = page.getByTestId('v2-plan-graph');
+    await expect(page.getByTestId('v2-plan-graph-mode')).toHaveText('Record of the last run', { timeout: 20_000 });
+    await expect(view.locator('[data-node="lead"]')).toHaveAttribute('data-status', 'done');
+    await expect(view.locator('[data-type="subagent"][data-status="done"]').first()).toBeVisible();
+    await expect(view.locator('[data-type="artefact"][data-status="done"]').first()).toBeVisible();
+    await expect(view.locator('[data-node="gate"]')).toHaveAttribute('data-status', 'waiting');
+    await expect(view.locator('[data-node="validate"]')).toHaveAttribute('data-status', /done|failed/);
+    await expect(page.getByTestId('v2-plan-steps').locator('[data-testid="v2-plan-step"][data-status="done"]').first()).toBeVisible();
+    const g = (await (await page.request.get(`/api/projects/${id}/phase/1/plan-graph`)).json()) as { graph: { run: { source: string } } };
+    expect(['reconstructed', 'events']).toContain(g.graph.run.source);
+  });
+
+  test('a view opened before the run starts picks the run up on its own', async ({ page }) => {
+    test.setTimeout(120_000);
+    await login(page, '/?ui=v2');
+    const { id, name } = await newProject(page);
+    await page.reload();
+    await openProject(page, name);
+    await page.getByTestId('v2-stage-1').click();
+    await page.getByTestId('v2-current-plan').click();
+    await expect(page.getByTestId('v2-plan-graph-mode')).toHaveText('The plan for the next run');
+    await expect(page.getByTestId('v2-plan-graph').locator('[data-node="lead"]')).toHaveAttribute('data-status', 'planned');
+    // someone starts the stage (here through the API, as another tab or a teammate would) while the view is open
+    expect((await page.request.put(`/api/projects/${id}/phase/1/plan`, { data: { promptOverlay: 'Build a loyalty points API for a retail bank. Python 3.12 and FastAPI on AWS.' } })).ok()).toBeTruthy();
+    expect((await page.request.get(`/api/projects/${id}/phase/1/plan`)).ok()).toBeTruthy();
+    expect((await page.request.post(`/api/projects/${id}/phase/1/plan/trigger`)).ok()).toBeTruthy();
+    // the agent asks its questions first; answer them once that first run has ended
+    await expect.poll(async () => ((await (await page.request.post(`/api/projects/${id}/phase/1/clarify`, { data: { answers: [] } })).json()) as { alreadyRunning?: boolean }).alreadyRunning, { timeout: 30_000, intervals: [1000] }).toBeFalsy();
+    await expect(page.getByTestId('v2-plan-graph-mode')).toHaveText(/Live: this run is in progress|Record of the last run/, { timeout: 30_000 });
+    await expect(page.getByTestId('v2-plan-graph').locator('[data-node="lead"]')).toHaveAttribute('data-status', 'done', { timeout: 60_000 });
+    await expect(page.getByTestId('v2-plan-graph').locator('[data-type="subagent"][data-status="done"]').first()).toBeVisible();
+  });
 });

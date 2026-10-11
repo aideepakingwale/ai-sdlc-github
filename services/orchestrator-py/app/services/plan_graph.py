@@ -118,7 +118,13 @@ def build_graph(*, stage: dict[str, Any], plan: dict[str, Any], specialists: lis
     g.link("guard", "lead")
 
     # ---- built-in specialist sub-agents, in waves
-    wanted = [s for s in specialists if any(norm_type(a) in types for a in s["artifacts"])] if template != 7 else []
+    # The run writes every field of the stage's schema except those the plan leaves out, so the sub-agents are all of the stage's specialists minus the ones
+    # whose every deliverable was unticked. (Matching the planner's own wording of the outputs would drop agents whenever a model words them differently.)
+    left_out = {norm_type(str(w.get("output") or w.get("type") or "")) for w in intel.get("willProduce") or [] if not w.get("include", True)}
+    wanted = [s for s in specialists if not (s["artifacts"] and all(norm_type(a) in left_out for a in s["artifacts"]))] if template != 7 else []
+    for s in wanted:
+        for a in s["artifacts"]:
+            types.setdefault(norm_type(a), a)
     owner_of_field: dict[str, str] = {}
     producer_of_type: dict[str, str] = {}
     for s in wanted:
@@ -332,6 +338,8 @@ def fold_events(graph: dict[str, Any], events: Iterable[dict[str, Any]], *, run:
             if st == RETRYING:
                 setn(nid, RETRYING, str(ev.get("detail") or ""))
                 continue
+            if nid not in by_id and nid.startswith("sub:"):
+                ensure_after(nid, "subagent", str(ev.get("name") or nid[4:]), "lead")
             if nid not in by_id and nid.startswith("cust:"):
                 ensure_after(nid, "subagent", str(ev.get("name") or "Custom agent"), "lead", custom=True)
             if nid not in by_id and nid.startswith("deleg:"):
@@ -377,4 +385,117 @@ def fold_events(graph: dict[str, Any], events: Iterable[dict[str, Any]], *, run:
             n["status"] = DONE
         elif FAILED in sts:
             n["status"] = FAILED
+    return out
+
+
+# ------------------------------------------------------------------------------------------------ a run that left only what it saved
+def reconstruct(graph: dict[str, Any], *, parts: list[dict[str, Any]], runs: list[dict[str, Any]], validations: list[dict[str, Any]], stage_status: str) -> dict[str, Any] | None:
+    """Rebuild what a finished run did from what it saved (the stage's parts, the record of each artefact, the validation audit events), for a run
+    whose live events are gone and which stored no graph (it ran before this feature, or its record could not be written). Returns None when the
+    stage left nothing behind. Honest about the gaps: tools that are not recorded stay planned, and a step with no output is marked skipped."""
+    if not parts and not runs:
+        return None
+    out = {**graph, "nodes": [dict(n) for n in graph["nodes"]], "edges": [dict(e) for e in graph["edges"]], "run": {**graph.get("run", {}), "source": "reconstructed"}}
+    by_id = {n["id"]: n for n in out["nodes"]}
+    owners = graph.get("fieldOwners") or {}
+
+    def put(nid: str, status: str, detail: str = "", **extra: Any) -> None:
+        n = by_id.get(nid)
+        if n is None:
+            return
+        n["status"] = status
+        if detail:
+            n["detail"] = detail
+        for k, v in extra.items():
+            if v not in (None, "", 0):
+                n[k] = v
+
+    def ensure(nid: str, typ: str, label: str, after: str) -> None:
+        if nid in by_id:
+            return
+        n = _node(nid, typ, label, sub="not in the plan", unplanned=True)
+        n["layer"] = by_id[after]["layer"] + 1 if after in by_id else 0
+        out["nodes"].append(n)
+        by_id[nid] = n
+        if after in by_id:
+            out["edges"].append({"id": f"{after}>{nid}", "from": after, "to": nid, "kind": "flow", "label": ""})
+
+    def tok(r: dict[str, Any]) -> int | None:
+        t = r.get("tokens")
+        return (int((t or {}).get("prompt") or 0) + int((t or {}).get("completion") or 0)) if isinstance(t, dict) else None
+
+    ok_parts = [p for p in parts if p.get("status") == "done"]
+    per_node: dict[str, list[tuple[str, str, dict[str, Any]]]] = {}
+    for p in parts:
+        field, st = str(p.get("field") or ""), str(p.get("status") or "")
+        run = p.get("run") if isinstance(p.get("run"), dict) else {}
+        status = FAILED if st in ("failed", "running") else REUSED if run.get("reused") else DONE
+        detail = str(p.get("error") or "") or ("it did not finish" if st == "running" else "")
+        per_node.setdefault(owners.get(field) or "lead", []).append((status, detail, run))
+    for nid, items in per_node.items():                  # a sub-agent that writes several fields is as bad as its worst field
+        states = [i[0] for i in items]
+        status = FAILED if FAILED in states else DONE if DONE in states else REUSED
+        if nid == "lead" and status != FAILED:
+            continue
+        detail = next((i[1] for i in items if i[0] == FAILED and i[1]), "")
+        runs_ = [i[2] for i in items if i[2]]
+        put(nid, status, _clip(detail, 240), model=(runs_[0].get("model") if runs_ else None), tokens=sum(tok(r) or 0 for r in runs_))
+    evidence = bool(ok_parts or runs)
+    if evidence:
+        for i in [n["id"] for n in out["nodes"] if n["type"] == "input"] + ["guard"]:
+            put(i, DONE)
+    failed_all = bool(parts) and all(p.get("status") != "done" for p in parts) and not runs
+    put("lead", FAILED if failed_all else DONE if evidence else by_id["lead"]["status"])
+    # custom agents and their delegates, from the record of what they wrote
+    seen_custom: set[str] = set()
+    for r in runs:
+        rec = r.get("run") if isinstance(r.get("run"), dict) else {}
+        if not rec.get("custom"):
+            continue
+        aid = str(r.get("agent_id") or rec.get("agentId") or "")
+        nid = f"cust:{aid}"
+        ensure(nid, "subagent", str(r.get("agent_name") or rec.get("agentName") or "Custom agent"), "lead")
+        put(nid, DONE, model=rec.get("model"), tokens=tok(rec))
+        seen_custom.add(nid)
+        for cid in rec.get("delegates") or []:
+            did = f"deleg:{aid}:{cid}"
+            if did in by_id:
+                put(did, DONE)
+    if evidence:
+        for n in out["nodes"]:
+            if n["id"].startswith("cust:") and n["id"] not in seen_custom and n["status"] == PLANNED and "on request" not in n["sub"]:
+                put(n["id"], SKIPPED, "it saved no output for this run (its condition was not met, it needed an input the stage did not have, or it failed)")
+    # deliverables that exist
+    have = {norm_type(str(r.get("type") or "")) for r in runs}
+    for n in out["nodes"]:
+        if n["type"] == "artefact" and n["id"][4:] in have and n["status"] == PLANNED:
+            n["status"] = DONE
+    # validation
+    if validations:
+        retries = sum(1 for v in validations if int(v.get("attempt") or 0) > 0)
+        last = validations[-1]
+        errors = last.get("errors") or []
+        if last.get("ok") or not errors:
+            put("validate", DONE)
+        else:
+            put("validate", FAILED, f"{len(errors)} issue(s) remained after rework and were flagged for the reviewer")
+        if retries:
+            by_id["validate"]["retries"] = retries
+    # the gate follows the stage's decision
+    gate_status = {"PENDING_REVIEW": (WAITING, ""), "APPROVED": (DONE, ""), "ESCALATED": (FAILED, "escalated"), "AMEND_REQUESTED": (FAILED, "changes were requested")}.get(stage_status)
+    if gate_status and evidence:
+        put("gate", gate_status[0], gate_status[1])
+    for n in out["nodes"]:
+        if n["type"] == "tool" and evidence and n["status"] == PLANNED:
+            if n.get("deferred"):
+                put(n["id"], DONE if stage_status == "APPROVED" else DEFERRED)
+            else:
+                n["detail"] = "Whether this tool ran was not recorded for this run"
+    for n in out["nodes"]:                              # deliverables follow their writers
+        if n["type"] == "artefact" and n["status"] == PLANNED:
+            writers = [e["from"] for e in out["edges"] if e["to"] == n["id"] and e["kind"] == "writes"]
+            sts = {by_id[w]["status"] for w in writers if w in by_id}
+            if FAILED in sts:
+                n["status"] = FAILED
+    out["run"]["state"] = "failed" if failed_all else "done"
     return out

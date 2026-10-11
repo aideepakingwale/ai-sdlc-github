@@ -30,9 +30,13 @@ Click a box to see its details (model, what it reads and writes, why it ran or d
 |---|---|---|
 | **Plan** | before a run, or when changes were requested and the stage is being re-planned | built from the stage's saved plan, its agents and what is connected |
 | **Live** | a run is queued or running (refreshes every 2 seconds) | the plan with the run's progress events laid over it: boxes show running, done, failed, skipped, reused, queued until approval, waiting for the reviewer; model and tokens appear as each sub-agent finishes |
-| **Last run** | the stage is waiting on review or approved | the finished run's graph, stored when the run ended, so it outlives the live event buffer (2 hours). The newest 10 runs per stage are kept |
+| **Last run** | the stage is waiting on review or approved (or the person picks it) | the best source there is, in this order: **the graph stored when the run ended** (the newest 10 runs per stage are kept); else **the run's buffered events** (a record that could not be written; the buffer lasts 2 hours); else **rebuilt from what the run saved** (see below). The page says "Rebuilt from what the run saved" in the last case |
 
 The **Plan / Last run** switch lets a person look at either. Work that happened but was not in the plan (a tool that ran unexpectedly) is added to the run's graph and marked "not in the plan".
+
+## Runs from before graphs were stored
+
+A run that ran before this feature, or whose record could not be written, has no stored graph and its events have expired. Its marks are rebuilt from what it saved: each part of the stage (done, failed, reused, or never finished), the record of each artefact (which agent wrote it, the model, the tokens; for a custom agent, the agents it delegated to), the validation results in the audit trail (passed, how many reworks, or issues that remained), and the stage's decision (waiting for review, approved, escalated, changes requested). What cannot be rebuilt is said so: whether a tool ran was not recorded (shown with a note), a custom agent that saved nothing is marked skipped, and retries inside a single model call are not known. Skills have no start or finish and show a mark only once something reports them.
 
 ## What each mark means
 
@@ -68,4 +72,5 @@ Node ids are stable (`lead`, `sub:<specialist>`, `cust:<definition>`, `deleg:<de
 
 * Code generation (the Generated codebase workspace) has its own plan of files; it is not drawn here.
 * A custom agent's delegates report when the agent finishes, not while it is running.
+* The sub-agents drawn are all of the stage's specialists except those whose every deliverable was unticked in the plan, matching what a run writes; they no longer depend on how the planner words the outputs.
 * The graph shows the agents a stage has today. A run that started before an agent was attached or removed shows the plan as it is now, folded with what happened.

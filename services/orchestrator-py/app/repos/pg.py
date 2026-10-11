@@ -397,6 +397,28 @@ class Database:
             "WHERE r.project_id=$1 AND r.artefact_id=$2", project_id, artefact_id)
         return dict(row) if row else None
 
+    async def list_artefact_runs(self, project_id: str, phase: int) -> list[dict]:
+        """The record of every current artefact of a stage (what wrote it, on which model, with how many tokens), newest first."""
+        assert self.pool
+        rows = await self.pool.fetch(
+            "SELECT r.agent_id, r.agent_name, r.field, r.run, a.type, a.title FROM artefact_runs r JOIN artefacts a ON a.id = r.artefact_id "
+            "WHERE r.project_id=$1 AND r.phase=$2 AND a.is_latest ORDER BY r.created_at DESC", project_id, phase)
+        return [dict(r) for r in rows]
+
+    async def list_stage_validations(self, project_id: str, phase: int) -> list[dict]:
+        """The validation outcomes of the stage's latest generation, oldest first (the audit events after the last time it started)."""
+        assert self.pool
+        rows = await self.pool.fetch(
+            "SELECT timestamp, event, detail FROM audit_index WHERE project_id=$1 AND phase=$2 AND event IN ('ai.validation','stage.generation_started') "
+            "ORDER BY timestamp DESC LIMIT 20", project_id, phase)
+        out: list[dict] = []
+        for r in rows:                                       # newest first: stop at the start of the latest generation
+            if r["event"] == "stage.generation_started":
+                break
+            d = r["detail"] if isinstance(r["detail"], dict) else {}
+            out.append({"ok": bool(d.get("ok")), "attempt": int(d.get("attempt") or 0), "errors": d.get("errors") or []})
+        return list(reversed(out))
+
     async def latest_artefact_version(
         self, project_id: str, phase: int, type_: str, title: str,
     ) -> asyncpg.Record | None:

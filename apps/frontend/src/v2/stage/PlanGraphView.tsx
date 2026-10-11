@@ -24,7 +24,8 @@ export default function PlanGraphView({ projectId, seq, stageName, onClose }: { 
   const q = useQuery({
     queryKey: ['plan-graph', projectId, seq, view],
     queryFn: () => api.get<PlanGraphResponse>(`/api/projects/${projectId}/phase/${seq}/plan-graph?view=${view}`),
-    refetchInterval: (query) => (query.state.data?.mode === 'live' ? 1000 : false),
+    // Always watching: a run can start (or end) while the view is open, and the view must pick it up. Quick while a run is live, slower otherwise.
+    refetchInterval: (query) => (query.state.data?.mode === 'live' ? 1000 : 4000),
     placeholderData: keepPreviousData,
   });
   const data = q.data;
@@ -42,6 +43,7 @@ export default function PlanGraphView({ projectId, seq, stageName, onClose }: { 
 
   const prog = data ? progress(data.graph) : null;
   const modeText = data?.mode === 'live' ? 'Live: this run is in progress' : data?.mode === 'record' ? 'Record of the last run' : 'The plan for the next run';
+  const source = data?.graph.run.source;
   return createPortal(
     <div className="fixed inset-0 z-[60] flex flex-col bg-slate-100" role="dialog" aria-label={`Current plan: ${stageName}`} data-testid="v2-plan-graph">
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-4 py-2">
@@ -51,6 +53,10 @@ export default function PlanGraphView({ projectId, seq, stageName, onClose }: { 
         </div>
         {data?.mode === 'live' && <span className="animate-pulse rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-700" data-testid="v2-plan-graph-live">Live</span>}
         {data && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600" data-testid="v2-plan-graph-mode">{modeText}</span>}
+        {source === 'reconstructed' && data?.mode === 'record' && (
+          <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] text-amber-800" data-testid="v2-plan-graph-reconstructed"
+            title="This run ran before its steps were recorded. Each step's mark is rebuilt from what the run saved: its parts, the record of each artefact, and the validation results. Tools and some retries were not recorded.">Rebuilt from what the run saved</span>
+        )}
         {prog && data?.mode !== 'planned' && (
           <span className="text-[11px] text-slate-600" data-testid="v2-plan-graph-progress">{prog.done} of {prog.total} steps{prog.retrying ? ` · ${prog.retrying} retrying` : ''}{prog.failed ? ` · ${prog.failed} failed` : ''}</span>
         )}
@@ -148,7 +154,7 @@ function Node({ n, dim, active, onSelect }: { n: Placed; dim: boolean; active: b
       </rect>
       <text x={n.x + 12} y={n.y + 26} fontSize={14.5} fontWeight={700} fill={c.text}>{clip(n.label, 23)}</text>
       <text x={n.x + 12} y={n.y + 47} fontSize={12} fill="#475569">{clip(n.sub || TYPE_LABEL[n.type], 31)}</text>
-      <g transform={`translate(${n.x + NODE_W - 16}, ${n.y + 16})`} aria-hidden="true" data-glyph={n.status}><Glyph status={n.status} /></g>
+      <g transform={`translate(${n.x + NODE_W - 16}, ${n.y + 16})`} aria-hidden="true" data-glyph={n.status}>{n.type === 'skill' && n.status === 'planned' ? null : <Glyph status={n.status} />}</g>
       {n.retries ? <text x={n.x + 12} y={n.y + NODE_H - 8} fontSize={10.5} fontWeight={700} fill={STATUS_COLOR.retrying} data-testid="plan-node-retries">↻ retried {n.retries}×</text> : null}
       {n.custom && <text x={n.x + NODE_W - 10} y={n.y + NODE_H - 9} textAnchor="end" fontSize={10} fontWeight={700} fill={c.stroke}>CUSTOM</text>}
     </g>

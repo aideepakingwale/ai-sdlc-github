@@ -61,7 +61,7 @@ describe('helpers', () => {
   it('lists the steps in the order they happen and says where each one is, including retries', () => {
     const run: PlanGraph = { ...g, nodes: g.nodes.map((x) => (x.id === 'a' ? { ...x, status: 'retrying', retries: 2, detail: '1 issue(s) found: reworking' } : x.id === 'b' ? { ...x, status: 'failed', detail: 'model said no' } : x.id === 'c' ? { ...x, status: 'done', retries: 1 } : x)) };
     const list = steps(run);
-    expect(list.map((x) => x.id)).toEqual(['guard', 'lead', 'a', 'b', 'c', 'sk', 'art1', 'art2', 'gate']);          // inputs are not steps
+    expect(list.map((x) => x.id)).toEqual(['guard', 'lead', 'a', 'b', 'c', 'art1', 'art2', 'gate']);                      // inputs and unused skills are not steps
     const by = (id: string) => stepLine(list.find((x) => x.id === id)!);
     expect(by('a')).toBe('Retrying · retried 2 times · 1 issue(s) found: reworking');
     expect(by('b')).toBe('Failed · model said no');

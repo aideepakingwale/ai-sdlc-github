@@ -15,7 +15,7 @@ export interface PlanGraph {
   version: number; stage: { seq: number; key: string; name: string; template: number; persona: string | null; reviewerRole: string | null };
   nodes: PlanNode[]; edges: PlanEdge[]; layers: number;
   counts: { agents: number; subAgents: number; skills: number; tools: number; artefacts: number };
-  run: { state: string; jobId: string | null; startedAt?: string | null; finishedAt?: string | null; error?: string };
+  run: { state: string; jobId: string | null; startedAt?: string | null; finishedAt?: string | null; error?: string; source?: 'stored' | 'events' | 'reconstructed' };
 }
 export interface PlanGraphResponse {
   mode: 'planned' | 'live' | 'record'; graph: PlanGraph; available: { planned: boolean; run: boolean }; stageStatus: string; canEdit: boolean;
@@ -125,7 +125,8 @@ export function progress(g: PlanGraph): { done: number; total: number; failed: n
 
 /** The steps a person follows as a checklist: everything that does work (inputs and tools that are not connected are left out), in the order they happen. */
 export function steps(g: Pick<PlanGraph, 'nodes'>): PlanNode[] {
-  return g.nodes.filter((n) => n.type !== 'input' && !n.unavailable).sort((a, b) => a.layer - b.layer || ORDER.indexOf(a.type) - ORDER.indexOf(b.type) || a.label.localeCompare(b.label));
+  // Skills are capabilities an agent may use: they have no start or finish of their own, so they are steps only once something reports them.
+  return g.nodes.filter((n) => n.type !== 'input' && !n.unavailable && !(n.type === 'skill' && n.status === 'planned')).sort((a, b) => a.layer - b.layer || ORDER.indexOf(a.type) - ORDER.indexOf(b.type) || a.label.localeCompare(b.label));
 }
 
 /** One short line about where a step is: its state, how often it was retried, and the reason when there is one. */
