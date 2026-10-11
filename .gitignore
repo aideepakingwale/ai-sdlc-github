@@ -45,3 +45,6 @@ Thumbs.db
 
 # ---- Office lock files ----
 ~$*
+
+# local Redis snapshots
+*.rdb
