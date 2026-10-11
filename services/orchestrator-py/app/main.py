@@ -41,6 +41,8 @@ from .services.rag import RagService
 from .services.skills import SkillService
 from .services.telemetry import TelemetryService
 from .repos.usage_repo import UsageRepo
+from .repos.recon_repo import ReconRepo
+from .services.bedrock_reconcile import BedrockReconciler, ReconcileScheduler, build_recon_source
 from .services.usage_ledger import UsageLedger
 from .services.usage_reports import UsageReports
 from .services.workflow import WorkflowService
@@ -255,9 +257,19 @@ async def lifespan(app: FastAPI):
     except Exception as err:  # table may not exist yet on a fresh DB pre-migrate
         log.warning("LLM settings mirror skipped: %s", err)
 
+    # Reconcile the token ledger with Bedrock's invocation logs every night, when a log source is configured.
+    reconciler = BedrockReconciler(ReconRepo(db), build_recon_source(settings), threshold=settings.BEDROCK_RECON_THRESHOLD,
+                                   identity_contains=settings.BEDROCK_RECON_IDENTITY_FILTER, redis=redis)
+    container.reconciler = reconciler
+    recon_scheduler = ReconcileScheduler(reconciler, settings.BEDROCK_RECON_HOUR_UTC)
+    recon_scheduler.start()
+    if reconciler.configured:
+        log.info("Bedrock token reconciliation: source=%s, after %02d:00 UTC", reconciler.source_name, settings.BEDROCK_RECON_HOUR_UTC)
+
     log.info("orchestrator (python/langgraph) ready on :%s", settings.ORCHESTRATOR_PORT)
     yield
 
+    await recon_scheduler.stop()
     monitor.stop_polling()
     if container.gen_jobs is not None:
         await container.gen_jobs.stop_workers()

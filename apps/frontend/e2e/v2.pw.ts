@@ -1102,4 +1102,21 @@ test.describe('token usage', () => {
     await expect(page.getByTestId('v2-usage-people')).toBeVisible();
     await expect(page.getByTestId('v2-usage-headline')).toContainText(name);
   });
+
+  test('the organisation view says whether the ledger is checked against AWS, and can compare a day when it is set up', async ({ page }) => {
+    await login(page, '/?ui=v2');
+    await page.getByTestId('v2-nav-orgusage').click();
+    const panel = page.getByTestId('v2-usage-recon');
+    await expect(panel).toBeVisible();
+    await expect(page.getByTestId('v2-recon-headline')).not.toBeEmpty();
+    const run = page.getByTestId('v2-recon-run');
+    if (await run.count()) {
+      await run.click();
+      await expect(page.getByTestId('v2-recon-row').first()).toBeVisible();
+      await expect(page.getByTestId('v2-recon-detail')).toBeVisible();
+    } else {
+      await expect(page.getByTestId('v2-recon-headline')).toContainText('Not set up');
+    }
+  });
 });
+

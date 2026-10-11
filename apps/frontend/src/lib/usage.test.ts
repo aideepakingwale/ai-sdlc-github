@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { activityLabel, barWidths, calls, fillDays, headline, percent, rangeFor, statusLabel, tokensFull, usageQuery, type ProjectUsageReport } from './usage';
+import { driftLabel, reconHeadline, type ReconList, activityLabel, barWidths, calls, fillDays, headline, percent, rangeFor, statusLabel, tokensFull, usageQuery, type ProjectUsageReport } from './usage';
 
 describe('usage helpers', () => {
   it('bars are relative to the longest and anything above zero stays visible', () => {
@@ -45,5 +45,19 @@ describe('usage helpers', () => {
     const r = { totals: { tokens: 1000, calls: 4 }, byActivity: [{ activity: 'stage.generate', tokens: 750, calls: 3, wasteTokens: 0 }] } as unknown as ProjectUsageReport;
     expect(headline(r)).toBe('1,000 tokens across 4 calls; 75% went to writing stage artefacts.');
     expect(headline({ ...r, totals: { tokens: 5, calls: 1 } } as unknown as ProjectUsageReport)).toContain('across 1 call;');
+  });
+});
+
+describe('reconciliation helpers', () => {
+  it('shows the drift as a signed percentage of what AWS reports', () => {
+    expect([driftLabel(null), driftLabel(0), driftLabel(0.0004), driftLabel(0.0123), driftLabel(-0.034), driftLabel(0.5)]).toEqual(['n/a', '0%', '0%', '+1.2%', '−3.4%', '+50%']);
+  });
+  it('the headline says what the latest night found', () => {
+    const run = { day: '2026-10-10', status: 'ok', drift: 0.004, threshold: 0.02, error: null } as unknown as ReconList['runs'][number];
+    expect(reconHeadline({ configured: false, source: '', threshold: 0.02, runs: [] })).toMatch(/Not set up/);
+    expect(reconHeadline({ configured: true, source: 'cloudwatch', threshold: 0.02, runs: [] })).toMatch(/first comparison/);
+    expect(reconHeadline({ configured: true, source: 'cloudwatch', threshold: 0.02, runs: [run] })).toBe('2026-10-10: the ledger agrees with AWS (+0.4%).');
+    expect(reconHeadline({ configured: true, source: 'cloudwatch', threshold: 0.02, runs: [{ ...run, status: 'drift', drift: 0.07 }] })).toBe('2026-10-10: the ledger differs from AWS by +7.0%, more than the 2% allowed.');
+    expect(reconHeadline({ configured: true, source: 'cloudwatch', threshold: 0.02, runs: [{ ...run, status: 'no_data' }] })).toMatch(/no invocation log records/);
   });
 });

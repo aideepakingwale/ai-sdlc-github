@@ -1,9 +1,10 @@
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState, type ReactNode } from 'react';
 import { api } from '../../api/client';
 import { tokensLabel } from '../../lib/agents';
+import { Pill } from '../bits';
 import {
-  activityLabel, barWidths, calls, fillDays, headline, percent, RANGES, rangeFor, SCOPE_LABEL, statusLabel, tokensFull, usageQuery,
+  activityLabel, barWidths, calls, DIFF_LABEL, driftLabel, reconHeadline, RECON_STATUS, type ReconDiff, type ReconList, type ReconRun, fillDays, headline, percent, RANGES, rangeFor, SCOPE_LABEL, statusLabel, tokensFull, usageQuery,
   type OrgUsageReport, type ProjectUsageReport, type UsageEvent, type UsageScope, type UsageTotals, type WasteRow,
 } from '../../lib/usage';
 
@@ -209,6 +210,70 @@ function OrgView({ range, scope, onOpenProject }: { range: { from: string; to: s
         <Panel title="By model" hint="Which model served the tokens" testid="v2-usage-org-model"><Bars rows={r.byModel.map((m) => ({ key: `${m.provider}/${m.model}`, label: m.model || m.provider, value: m.tokens, note: `${m.provider} · ${calls(m.calls)}` }))} /></Panel>
       </div>
       <Waste rows={r.waste} totals={r.totals} onPick={() => undefined} />
+      <Reconciliation />
+    </div>
+  );
+}
+
+/** Is the ledger right? The nightly comparison with what AWS itself logged for the same calls. */
+function Reconciliation() {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ['usage-recon'], queryFn: () => api.get<ReconList>('/api/usage/reconciliation?days=14') });
+  const [day, setDay] = useState<string | null>(null);
+  const [err, setErr] = useState('');
+  const detail = useQuery({ queryKey: ['usage-recon', day], enabled: Boolean(day), queryFn: () => api.get<{ run: ReconRun; differences: ReconDiff[] }>(`/api/usage/reconciliation/${day}`) });
+  const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  const run = useMutation({
+    mutationFn: () => api.post<{ status: string }>('/api/usage/reconciliation/run', { day: yesterday }),
+    onSuccess: () => { setErr(''); void qc.invalidateQueries({ queryKey: ['usage-recon'] }); setDay(yesterday); },
+    onError: (e) => setErr(e instanceof Error ? e.message : 'Could not run'),
+  });
+  const l = q.data;
+  const drifted = l?.runs[0]?.status === 'drift';
+  return (
+    <Panel title="Checked against AWS" hint="Each night the ledger is compared, call by call, with Bedrock's own invocation log" testid="v2-usage-recon">
+      {!l ? <div className="animate-pulse text-sm text-slate-400">Loading…</div> : (
+        <>
+          <p className={`mb-2 text-sm ${drifted ? 'font-medium text-red-700' : 'text-slate-700'}`} data-testid="v2-recon-headline" role={drifted ? 'alert' : undefined}>{reconHeadline(l)}</p>
+          {!l.configured && <p className="text-xs text-slate-500">To turn it on, enable Bedrock model invocation logging and set <code>BEDROCK_RECON_SOURCE</code> (see docs/bedrock-reconciliation.md).</p>}
+          {l.configured && (
+            <>
+              <div className="mb-2 flex items-center gap-2 text-sm">
+                <button type="button" onClick={() => run.mutate()} disabled={run.isPending} className="rounded-lg border border-slate-300 bg-white px-3 py-1 font-medium text-navy hover:bg-slate-100 disabled:opacity-50" data-testid="v2-recon-run">{run.isPending ? 'Comparing…' : `Compare ${yesterday} now`}</button>
+                <span className="text-xs text-slate-500">Source: {l.source}. Allowed difference {Math.round(l.threshold * 100)}%.</span>
+                {err && <span className="text-xs text-red-700" role="alert">{err}</span>}
+              </div>
+              {l.runs.length > 0 && (
+                <table className="w-full text-sm"><thead><tr className="text-left text-xs uppercase tracking-wide text-slate-500"><th className="py-1">Day</th><th>Result</th><th className="text-right">Ledger</th><th className="text-right">AWS</th><th className="text-right">Difference</th><th className="text-right">Calls that differ</th></tr></thead>
+                  <tbody>{l.runs.map((r) => (
+                    <tr key={r.day} className={`cursor-pointer border-t border-slate-200 hover:bg-slate-50 ${day === r.day ? 'bg-slate-50' : ''}`} onClick={() => setDay(day === r.day ? null : r.day)} data-testid="v2-recon-row">
+                      <td className="py-1">{r.day}</td><td><Pill tone={RECON_STATUS[r.status].tone}>{RECON_STATUS[r.status].label}</Pill></td>
+                      <td className="text-right tabular-nums">{tokensFull(r.ledgerTokens)}</td><td className="text-right tabular-nums">{tokensFull(r.awsTokens)}</td>
+                      <td className="text-right tabular-nums">{driftLabel(r.drift)}</td><td className="text-right tabular-nums">{r.mismatched + r.missingInLedger + r.missingInAws}</td></tr>))}</tbody></table>
+              )}
+              {day && detail.data && <ReconDetail run={detail.data.run} diffs={detail.data.differences} />}
+            </>
+          )}
+        </>
+      )}
+    </Panel>
+  );
+}
+
+function ReconDetail({ run, diffs }: { run: ReconRun; diffs: ReconDiff[] }) {
+  return (
+    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm" data-testid="v2-recon-detail">
+      <p className="text-slate-700">{calls(run.matched)} match exactly; {run.mismatched} with different counts; {run.missingInLedger} in AWS only; {run.missingInAws} in the ledger only{run.unmatchableLedger ? `; ${run.unmatchableLedger} ledger rows carry no AWS request id` : ''}.</p>
+      {run.note && <p className="mt-1 text-xs text-amber-800">{run.note}</p>}
+      {run.error && <p className="mt-1 text-xs text-red-700">{run.error}</p>}
+      {run.convention && <p className="mt-1 text-xs text-slate-500">AWS counts input {run.convention === 'input_includes_cache' ? 'including' : run.convention === 'input_excludes_cache' ? 'excluding' : 'in a way indistinguishable from the ledger with respect to'} cached tokens.</p>}
+      {run.byModel.length > 0 && <ul className="mt-2 text-xs text-slate-600">{run.byModel.map((m) => <li key={m.model}>{m.model}: ledger {tokensFull(m.ledger)}, AWS {tokensFull(m.aws)} ({driftLabel(m.drift)})</li>)}</ul>}
+      {diffs.length > 0 && (
+        <table className="mt-2 w-full text-xs"><thead><tr className="text-left uppercase tracking-wide text-slate-500"><th className="py-1">What</th><th>AWS request id</th><th>Work</th><th className="text-right">Ledger</th><th className="text-right">AWS</th></tr></thead>
+          <tbody>{diffs.slice(0, 25).map((d, i) => (
+            <tr key={`${d.providerRequestId}-${i}`} className="border-t border-slate-200"><td className="py-1">{DIFF_LABEL[d.kind]}</td><td className="font-mono">{d.providerRequestId}</td><td>{d.activity ? activityLabel(d.activity) : ''}</td>
+              <td className="text-right tabular-nums">{tokensFull(d.ledgerTokens)}</td><td className="text-right tabular-nums">{tokensFull(d.awsTokens)}</td></tr>))}</tbody></table>
+      )}
     </div>
   );
 }

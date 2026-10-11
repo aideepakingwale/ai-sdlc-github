@@ -93,6 +93,20 @@ class Settings(BaseSettings):
     # is a backward-compatible superset of v1; set v1 to roll back to the original.
     WORKFLOW_ENGINE: Literal["v1", "v2"] = "v2"
 
+    # Reconciliation of the token ledger with Bedrock's invocation logs (docs/bedrock-reconciliation.md). Off until a source is set.
+    # BEDROCK_RECON_SOURCE: cloudwatch (needs BEDROCK_RECON_LOG_GROUP) | s3 (needs BEDROCK_RECON_S3_BUCKET) | file (a directory of exported logs).
+    BEDROCK_RECON_SOURCE: Literal["", "cloudwatch", "s3", "file"] = ""
+    BEDROCK_RECON_LOG_GROUP: str = ""
+    BEDROCK_RECON_S3_BUCKET: str = ""
+    BEDROCK_RECON_S3_PREFIX: str = ""
+    BEDROCK_RECON_FILE_DIR: str = ""
+    BEDROCK_RECON_REGION: str = ""              # defaults to BEDROCK_REGION, then AWS_REGION
+    BEDROCK_RECON_THRESHOLD: float = 0.02       # |ledger - aws| / aws above this is a drift
+    BEDROCK_RECON_HOUR_UTC: int = 3             # the previous day is reconciled after this hour (delivery delay)
+    # Only count AWS calls whose caller identity (the IAM role ARN) contains this: the account may serve other applications.
+    BEDROCK_RECON_IDENTITY_FILTER: str = ""
+    BEDROCK_REGION: str = ""
+
     CONTEXT_TOKEN_THRESHOLD: int = 4_000
     # Max OUTPUT tokens for a phase agent's structured generation (D-95). The
     # built-in phases (esp. Solution Architect) emit several large artifacts in one

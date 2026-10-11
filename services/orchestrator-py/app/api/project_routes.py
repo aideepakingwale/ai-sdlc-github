@@ -2057,6 +2057,16 @@ async def prometheus_metrics(container: Container = Depends(get_container)) -> P
         lines.append(
             f'sdlc_llm_provider_calls_total{{provider="{p["provider"]}"}} {int(p["calls"])}'
         )
+    # Token ledger vs Bedrock's invocation logs (latest nightly comparison); absent until one has run.
+    try:
+        latest = (await container.reconciler._repo.runs(1)) if container.reconciler is not None else []
+    except Exception:  # noqa: BLE001 — metrics must never fail on this
+        latest = []
+    if latest and latest[0]["drift"] is not None:
+        lines += ["# HELP sdlc_token_ledger_drift (ledger - AWS) / AWS tokens for the latest reconciled day",
+                  "# TYPE sdlc_token_ledger_drift gauge", f"sdlc_token_ledger_drift {float(latest[0]['drift']):.4f}",
+                  "# HELP sdlc_token_ledger_drift_alert 1 when the latest reconciled day drifted past the threshold",
+                  "# TYPE sdlc_token_ledger_drift_alert gauge", f"sdlc_token_ledger_drift_alert {1 if latest[0]['status'] == 'drift' else 0}"]
     return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
 

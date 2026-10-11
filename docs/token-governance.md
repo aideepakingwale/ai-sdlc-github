@@ -155,7 +155,7 @@ Bedrock's own account quotas (tokens and requests per minute) are what really th
 |---|---|---|
 | 0. Capture (**built**) | Full usage object and per-attempt rows in the gateway; partial usage on failure; `UsageContext` with required `activity` and user attribution for HTTP and background jobs; the ledger table; billable flag. No behaviour change. | M |
 | 1. Reporting (**built**) | Rollup, project and organisation views and API, per-person breakdown inside a project, CSV, waste view; MindDesigner Usage moves onto the ledger. | M |
-| 2. Reconcile | Invocation logging, nightly drift check, application inference profiles with tags. | S/M |
+| 2. Reconcile (**built**) | Invocation logging, nightly drift check, application inference profiles with tags. | S/M |
 | 3. Pools and allocation | `token_pools` and `token_grants`, admin allocation console, balance meter, thresholds and notifications; **recording only** (the balance can go negative and nothing is blocked), so balances can be set sensibly from real consumption. | M |
 | 4. The gate | Block new tasks at zero or below, fail-closed, "Request tokens", per-task safety ceiling, retire `agent_usage` limits. | M |
 | 5. Hardening | Rate governor, retention jobs, pseudonymised exports. | S |
@@ -251,3 +251,17 @@ FROM llm_usage_events WHERE provider = 'bedrock';
 * Ledger rows of deleted projects are kept (finance history); they appear in the organisation view as "Deleted project (id)" and are not clickable.
 
 **Open point found while building it.** Building an agent for the *organisation's* library (Governance → MindDesigner) happens outside any project, so its audit and test calls have no project and show up as "no project or person recorded" in the organisation view (the amber notice). Under the rule that all work is charged to a project, phase 4 needs a decision: ask the author to pick the project to charge when they audit or test an organisation agent, or charge such design time to the organisation pool. Until then they are counted and visible but charged to nobody.
+
+## 15. Phase 2, as built (reconciliation with AWS)
+
+Full guide: [bedrock-reconciliation.md](bedrock-reconciliation.md). In short: each night, once the day's logs have had time to arrive, every
+Bedrock call in the ledger is matched by request id to Bedrock's invocation log; the day's totals, the per-model split and the calls
+that differ are stored (`usage_reconciliation_runs`, `usage_reconciliation_diffs`, migration `0052`), shown to administrators on the
+organisation Usage view, exposed as `sdlc_token_ledger_drift` metrics, and logged as `TOKEN LEDGER DRIFT` when the difference passes
+the threshold (default 2%).
+
+* **Sources:** CloudWatch Logs, S3, or a directory of exported logs (offline checks and tests).
+* **Not assumed:** how the log counts input (uncached or total) is worked out per day from the matched calls and recorded.
+* **Idempotent and self-healing:** a day's result is replaced atomically; a day with no log or an error is retried after six hours for three days.
+* **Not built:** application inference profiles per project (one environment-level profile and its cost tags are scripted; see the guide), and the AWS cost-report comparison from section 7 (it needs Cost Explorer access and a price table, which the tokens-only decision removes).
+* **Still unverified against a live account:** the invocation-log field layout. The reader takes counts from the record's own fields and falls back to the logged response usage; the first real day will show whether any record is "unreadable".

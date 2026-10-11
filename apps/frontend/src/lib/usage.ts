@@ -105,3 +105,36 @@ export function headline(r: ProjectUsageReport): string {
   const what = top ? `${percent(top.tokens / Math.max(1, r.totals.tokens))} went to ${activityLabel(top.activity).toLowerCase()}` : '';
   return `${tokensFull(r.totals.tokens)} tokens across ${calls(r.totals.calls)}${what ? `; ${what}` : ''}.`;
 }
+
+// ------------------------------------------------------------------------------------------------- reconciliation with AWS
+export interface ReconRun {
+  day: string; status: 'ok' | 'drift' | 'no_data' | 'error'; source: string; triggeredBy: string; finishedAt: string | null; threshold: number;
+  convention: string | null; ledgerTokens: number; awsTokens: number; drift: number | null; matched: number; mismatched: number;
+  missingInLedger: number; missingInAws: number; unmatchableLedger: number; estimatedPairs: number;
+  byModel: Array<{ model: string; ledger: number; aws: number; calls: number; drift: number | null }>; note: string | null; error: string | null;
+}
+export interface ReconList { configured: boolean; source: string; threshold: number; runs: ReconRun[] }
+export interface ReconDiff { kind: 'mismatch' | 'missing_in_ledger' | 'missing_in_aws'; providerRequestId: string | null; model: string | null; ts: string | null; ledgerTokens: number; awsTokens: number; delta: number; projectId: string | null; activity: string | null }
+
+export const RECON_STATUS: Record<ReconRun['status'], { label: string; tone: 'green' | 'red' | 'amber' | 'slate' }> = {
+  ok: { label: 'Agrees', tone: 'green' }, drift: { label: 'Differs', tone: 'red' }, no_data: { label: 'No AWS log', tone: 'amber' }, error: { label: 'Could not run', tone: 'amber' },
+};
+/** Signed difference as a percentage of what AWS reports; "n/a" when AWS reported nothing. */
+export function driftLabel(drift: number | null): string {
+  if (drift === null) return 'n/a';
+  const p = drift * 100;
+  if (Math.abs(p) < 0.05) return '0%';
+  return `${p > 0 ? '+' : '−'}${Math.abs(p) < 10 ? Math.abs(p).toFixed(1) : Math.round(Math.abs(p))}%`;
+}
+export const DIFF_LABEL: Record<ReconDiff['kind'], string> = {
+  mismatch: 'Different token counts', missing_in_ledger: 'AWS served it; the ledger has no record', missing_in_aws: 'The ledger has it; AWS has no record',
+};
+/** The sentence for the top of the panel: what the latest night found, or what to do when there is none. */
+export function reconHeadline(l: ReconList): string {
+  if (!l.configured) return 'Not set up. The ledger is not being checked against AWS.';
+  const r = l.runs[0];
+  if (!r) return 'Set up. The first comparison runs after the next full UTC day.';
+  if (r.status === 'error') return `${r.day}: the comparison could not run. ${r.error ?? ''}`.trim();
+  if (r.status === 'no_data') return `${r.day}: AWS returned no invocation log records for this day.`;
+  return r.status === 'ok' ? `${r.day}: the ledger agrees with AWS (${driftLabel(r.drift)}).` : `${r.day}: the ledger differs from AWS by ${driftLabel(r.drift)}, more than the ${Math.round(r.threshold * 100)}% allowed.`;
+}
